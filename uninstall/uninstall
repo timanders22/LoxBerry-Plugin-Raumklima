@@ -1,0 +1,21 @@
+#!/bin/bash
+# Raumklima - Deinstallation
+#
+# Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
+# config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN -
+# config/plugins/<ordner>.backup.json - bliebe liegen. Beim WifiScanner
+# enthielt so eine Datei die MAC-Adressen und Namen aller ueberwachten
+# Personen. Hier stehen Raumnamen und die Adressen im Heimnetz drin; es gibt
+# keinen Grund, sie liegen zu lassen.
+SELF=$(cd "$(dirname "$0")" && pwd)
+PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
+BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+
+rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+# Die Datei mit den Zugangsdaten liegt im Ordner und geht mit ihm; zur
+# Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
+rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"
+rm -rf "$BASE/data/plugins/$PFOLDER"
+
+echo "<OK> Raumklima-Plugin entfernt, Sicherungsdatei und Zugangsdaten geloescht."
+exit 0

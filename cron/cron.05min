@@ -1,0 +1,12 @@
+#!/bin/sh
+# Raumklima - regelmaessiger Abruf, alle fuenf Minuten.
+#
+# Kein Dauerdienst: Raumklima aendert sich in Minuten, nicht in Sekunden, und
+# ein Prozess, der 288-mal am Tag ein paar Sekunden arbeitet, braucht keinen
+# Waechter. Der Abstand steht zusaetzlich in den Einstellungen - ist der Takt
+# groesser als fuenf Minuten, kehrt das Skript sofort wieder um.
+#
+# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
+# Ausdruecklich ueber php aufgerufen: geht bei einem misslungenen Update das
+# Ausfuehrungsrecht verloren, schluege der unmittelbare Aufruf lautlos fehl.
+php "REPLACELBPBINDIR/raumklima_abruf.php" >/dev/null 2>&1

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)">
+    <!-- Raumklima Motif (Exakt dein Motiv, oberhalb der gestrichelten Linie eingepasst) -->
+    <g transform="translate(71.6, 12) scale(0.72)">
+      <!-- Haus im Schnitt -->
+      <path d="M136 246 L256 148 L376 246 L376 386 L136 386 Z"
+            fill="none" stroke="#ffffff" stroke-width="18"
+            stroke-linejoin="round" stroke-linecap="round"/>
+
+      <!-- Tropfen: die Feuchte im Raum -->
+      <path d="M256 232 C256 232 214 282 214 310 a42 42 0 0 0 84 0 C298 282 256 232 256 232 Z"
+            fill="#ffffff"/>
+
+      <!-- Fensterfluegel, aufgestellt: der Weg nach draussen -->
+      <path d="M330 268 L392 240 L392 372 L330 344 Z"
+            fill="#ffffff" fill-opacity="0.92" stroke="#ffffff" stroke-width="10"
+            stroke-linejoin="round"/>
+      <path d="M361 254 L361 358" stroke="#6dac20" stroke-width="8" stroke-linecap="round"/>
+
+      <!-- Luftstrom herein -->
+      <path d="M58 296 h68" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
+      <path d="M70 340 h56" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-opacity="0.7"/>
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Raumklima</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+</svg>
