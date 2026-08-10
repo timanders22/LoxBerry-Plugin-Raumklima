@@ -1,97 +1,60 @@
-<h2>Raumklima</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Das Plugin rechnet aus Temperatur und Feuchte je Raum den Taupunkt, die
-absolute Feuchte und das Schimmelrisiko und sagt, <b>wann</b> sich Lüften
-lohnt &ndash; nicht nur, <b>ob</b> es gerade lohnt.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>Warum absolute Feuchte und nicht relative</h3>
+<h3><TMPL_VAR HILFE.K03></h3>
 
-<p>Draußen 5&nbsp;°C bei 90&nbsp;% relativer Feuchte fühlt sich nass an,
-enthält aber nur 6,1&nbsp;g Wasser je Kubikmeter. Drinnen 20&nbsp;°C bei
-50&nbsp;% sind 8,6&nbsp;g. Die kalte Luft ist also <b>trockener</b> und nimmt
-beim Aufwärmen Feuchte auf &ndash; im Zimmer werden aus ihren 90&nbsp;% rund
-34&nbsp;%.</p>
+<p><TMPL_VAR HILFE.K04></p>
 
-<p>Wer nach der relativen Feuchte lüftet, macht es im Winter genau falsch
-herum. Deshalb vergleicht das Plugin durchgehend Gramm je Kubikmeter.</p>
+<p><TMPL_VAR HILFE.K05></p>
 
-<h3>Woher die Messwerte kommen</h3>
+<h3><TMPL_VAR HILFE.K06></h3>
 
-<p>Das Plugin kennt bewusst keine Sensormarke. Es nimmt <b>jede Adresse, die
-JSON liefert</b>, und einen <b>Pfad</b> darin &ndash; die Ebenen mit Punkten
-getrennt, zum Beispiel <code>ch_aisle.0.temp</code>. Das funktioniert mit
-Ecowitt, Shelly, einem Zigbee-Gateway, dem Endpunkt eines anderen
-LoxBerry-Plugins oder einer selbst erzeugten Datei.</p>
+<p><TMPL_VAR HILFE.K07></p>
 
-<p>Liefert eine einzige Antwort alle Räume &ndash; das ist bei Gateways der
-Normalfall &ndash;, trägst du die Adresse einmal oben ein und je Raum nur die
-beiden Pfade. Sie wird dann pro Abruf <b>einmal</b> geholt, nicht je Raum.</p>
+<p><TMPL_VAR HILFE.K08></p>
 
-<p>Weißt du den Pfad nicht, hilft der Reiter <b>Test</b>: „Quellen und Pfade
-prüfen&ldquo; holt die Antwort und zeigt, welche Schlüssel es an der Stelle
-tatsächlich gibt, an der dein Pfad abbricht.</p>
+<p><TMPL_VAR HILFE.K09></p>
 
-<h3>Die Aussenluft und die Vorhersage</h3>
+<h3><TMPL_VAR HILFE.K10></h3>
 
-<p>Über <b>Open-Meteo</b> kommen Temperatur und Feuchte kostenlos und ohne
-Konto &ndash; und, das ist der Punkt, <b>stündlich für die nächsten Tage</b>.
-Nur damit lässt sich die eigentlich interessante Frage beantworten: Lohnt es
-sich, noch zwei Stunden zu warten?</p>
+<p><TMPL_VAR HILFE.K11></p>
 
-<p>Eine eigene Wetterstation lässt sich stattdessen eintragen. Dann gibt es
-allerdings nur die Momentaufnahme &ndash; und damit genau das, was eine
-Formel in Loxone auch schon kann.</p>
+<p><TMPL_VAR HILFE.K12></p>
 
-<h3>Schimmel: eine Schätzung, die als solche gekennzeichnet ist</h3>
+<h3><TMPL_VAR HILFE.K13></h3>
 
-<p>Schimmel wächst nicht erst am Taupunkt, sondern ab etwa <b>80&nbsp;%
-relativer Feuchte an der Oberfläche</b>. Maßgeblich ist deshalb nicht die
-Raumluft, sondern die kälteste Wand &ndash; und die misst kaum jemand.</p>
+<p><TMPL_VAR HILFE.K14></p>
 
-<p>Das Plugin schätzt sie über den <b>Temperaturfaktor fRsi</b>:</p>
+<p><TMPL_VAR HILFE.K15></p>
 
-<p><code>T_Oberfläche = T_außen + fRsi &times; (T_innen &minus; T_außen)</code></p>
+<p><TMPL_VAR HILFE.K16></p>
 
-<p>fRsi&nbsp;=&nbsp;1 wäre eine perfekt gedämmte Wand, 0,4 eine, die fast die
-Außentemperatur annimmt. Die DIN&nbsp;4108-2 verlangt im Neubau an
-Wärmebrücken mindestens 0,70; ungedämmte Altbau-Ecken liegen darunter.</p>
+<p><TMPL_VAR HILFE.K17></p>
 
-<p><b>Das ist eine Einstellung, keine Messung.</b> Wer es genau wissen will,
-klebt einen Temperaturfühler in die kalte Ecke und trägt ihn als eigenen
-„Raum&ldquo; ein &ndash; dann rechnet das Plugin mit dem echten Wert.</p>
+<p><TMPL_VAR HILFE.K18></p>
 
-<h3>Wann geraten wird zu lüften</h3>
+<h3><TMPL_VAR HILFE.K19></h3>
 
-<p>Drei Bedingungen müssen zusammenkommen:</p>
+<p><TMPL_VAR HILFE.K20></p>
 
 <ol>
-<li>Draußen ist es absolut trockener, und zwar um mindestens den eingestellten
-Abstand. Ohne diesen Abstand springt die Empfehlung bei jedem Messrauschen
-hin und her.</li>
-<li>Es ist nicht zu kalt. Bei &minus;10&nbsp;°C wirkt Lüften zwar, kostet aber
-viel Heizenergie &ndash; wo die Grenze liegt, entscheidest du.</li>
-<li>Die Raumluft ist nicht schon zu trocken. Im Winter ist das das häufigere
-Problem, und Lüften macht es schlimmer.</li>
+<li><TMPL_VAR HILFE.K21></li>
+<li><TMPL_VAR HILFE.K22></li>
+<li><TMPL_VAR HILFE.K23></li>
 </ol>
 
-<h3>Was nach Loxone geht</h3>
+<h3><TMPL_VAR HILFE.K24></h3>
 
-<p>Zwei Wege, beide gleichzeitig nutzbar:</p>
+<p><TMPL_VAR HILFE.K25></p>
 
 <ul>
-<li><b>MQTT</b> &ndash; über das MQTT Gateway von LoxBerry, ohne
-Broker-Zugangsdaten. Der Reiter MQTT listet alle Themen.</li>
-<li><b>Virtueller Eingang</b> &ndash; der Reiter „Einbindung in Loxone&ldquo;
-erzeugt eine fertige Vorlage zum Import in Loxone Config, mit Adresse und
-Wortzeichen darin.</li>
+<li><TMPL_VAR HILFE.K26></li>
+<li><TMPL_VAR HILFE.K27></li>
 </ul>
 
-<p>Werte, die es nicht gibt, werden <b>nicht</b> gesendet und in der Tabelle
-als Strich gezeigt. Eine 0 wäre eine Falschaussage &ndash; bei einer
-Temperatur sähe sie aus wie eine Messung.</p>
+<p><TMPL_VAR HILFE.K28></p>
 
-<h3>Kein CO₂, kein VOC</h3>
+<h3><TMPL_VAR HILFE.K29></h3>
 
-<p>Bewusst nicht enthalten. Ohne entsprechende Sensoren gäbe es nichts zu
-rechnen, und eine Oberfläche mit leeren Feldern hilft niemandem. Sobald
-Sensoren da sind, ist die generische Quelle der richtige Ort dafür.</p>
+<p><TMPL_VAR HILFE.K30></p>

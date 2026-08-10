@@ -616,6 +616,9 @@ if ($rk_rahmen) {
   <input data-role="none" type="text" id="rk_thema" name="mqtt_topic" value="<?= rk_e($rk_cfg['mqtt_topic']) ?>">
   <p class="sm-hilfe"><?= rk_t('MQTT.THEMA_HILFE') ?></p>
 </div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i><?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= rk_e(rk_t('ALLG.SPEICHERN')) ?></button>
 </div>
