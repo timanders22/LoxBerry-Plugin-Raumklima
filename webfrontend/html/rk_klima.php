@@ -446,17 +446,17 @@ function rk_selbsttest()
      * Draussen 5 C bei 90 % fuehlt sich nass an, ist aber trockener als
      * drinnen 20 C bei 50 %. Wer nach RELATIVER Feuchte lueftet, macht es
      * falsch herum. */
-    $pr('Aussenluft 5 C/90 % ist trockener als Raum 20 C/50 %',
+    $pr('Außenluft 5 C/90 % ist trockener als Raum 20 C/50 %',
         rk_absolut(5, 90) < rk_absolut(20, 50), true);
     $pr('  und beim Aufwaermen auf 20 C werden daraus rund 34 %',
         rk_rf_bei(20, 5, 90), 33.6, 0.2);
     $l = rk_lueften(rk_absolut(20, 50), 5, 90, 0.5, -5, null);
-    $pr('  also lohnt Lueften', array($l['lohnt'], $l['grund']), array(1, 'lohnt'));
+    $pr('  also lohnt Lüften', array($l['lohnt'], $l['grund']), array(1, 'lohnt'));
     $pr('  Gewinn rund 2,5 g/m3', $l['gewinn'], 2.51, 0.02);
 
     /* Sommer: draussen 25 C bei 70 % ist deutlich feuchter als drinnen. */
     $l = rk_lueften(rk_absolut(22, 55), 25, 70, 0.5, -5, null);
-    $pr('Sommerschwuele: Lueften lohnt nicht',
+    $pr('Sommerschwuele: Lüften lohnt nicht',
         array($l['lohnt'], $l['grund']), array(0, 'aussen_feuchter'));
 
     /* Mindestabstand: 0,2 g/m3 Unterschied reicht nicht, wenn 0,5 gefordert. */
@@ -470,21 +470,21 @@ function rk_selbsttest()
 
     /* Zu kalt und zu trocken schlagen den Gewinn. */
     $l = rk_lueften(rk_absolut(20, 50), -12, 90, 0.5, -5, null);
-    $pr('Zu kalt: Lueften wird abgeraten', array($l['lohnt'], $l['grund']), array(0, 'zu_kalt'));
+    $pr('Zu kalt: Lüften wird abgeraten', array($l['lohnt'], $l['grund']), array(0, 'zu_kalt'));
     /* 20 C bei 30 % sind 5,17 g/m3 - unter der Untergrenze von 6,0. */
     $l = rk_lueften(rk_absolut(20, 30), 0, 60, 0.5, -20, 6.0);
-    $pr('Raumluft schon zu trocken: Lueften wird abgeraten',
+    $pr('Raumluft schon zu trocken: Lüften wird abgeraten',
         array($l['lohnt'], $l['grund']), array(0, 'zu_trocken'));
 
     /* ---------- Schimmel ---------- */
-    $pr('Oberflaeche bei fRsi 0,7, innen 20, aussen 0', rk_oberflaeche(20, 0, 0.7), 14.0, 0.01);
-    $pr('Oberflaeche bei fRsi 0,4 ist kaelter', rk_oberflaeche(20, 0, 0.4), 8.0, 0.01);
-    $pr('fRsi 1,0: Oberflaeche gleich Raumluft', rk_oberflaeche(20, 0, 1.0), 20.0, 0.01);
+    $pr('Oberfläche bei fRsi 0,7, innen 20, aussen 0', rk_oberflaeche(20, 0, 0.7), 14.0, 0.01);
+    $pr('Oberfläche bei fRsi 0,4 ist kaelter', rk_oberflaeche(20, 0, 0.4), 8.0, 0.01);
+    $pr('fRsi 1,0: Oberfläche gleich Raumluft', rk_oberflaeche(20, 0, 1.0), 20.0, 0.01);
     /* 20 C / 60 % an einer Ecke mit fRsi 0,70 bei 0 C draussen: die
      * Oberflaeche liegt bei 14 C, dort sind es rund 88 % - Schimmelgefahr,
      * obwohl die Raumluft mit 60 % unauffaellig aussieht. */
     $ro = rk_rf_oberflaeche(20, 60, 0, 0.7);
-    $pr('Kalte Ecke: 60 % im Raum werden ueber 80 % an der Wand', $ro > 80, true);
+    $pr('Kalte Ecke: 60 % im Raum werden über 80 % an der Wand', $ro > 80, true);
     $pr('  genauer Wert rund 88 %', $ro, 87.6, 0.5);
     /* Bei fRsi 0,55 liegt die Oberflaeche schon unter dem Taupunkt - dann
      * ist es nicht mehr Schimmelgefahr, sondern Tauwasser. Die Rechnung
@@ -494,7 +494,7 @@ function rk_selbsttest()
         rk_rf_oberflaeche(20, 60, 0, 0.55), 100.0, 0.01);
     $pr('Gut gedaemmt (fRsi 0,9): dieselbe Raumluft bleibt unauffaellig',
         rk_rf_oberflaeche(20, 60, 0, 0.9) < 80, true);
-    $pr('Ohne Aussentemperatur keine Aussage', rk_rf_oberflaeche(20, 60, null, 0.7), null);
+    $pr('Ohne Außentemperatur keine Aussage', rk_rf_oberflaeche(20, 60, null, 0.7), null);
 
     /* ---------- Bester Zeitpunkt ---------- */
     $t0 = mktime(12, 0, 0, 11, 15, 2026);
@@ -548,7 +548,7 @@ function rk_selbsttest()
     $pr('Keine Antwort wird gemeldet', $m3, 'KEINE_ANTWORT');
     list($v4, $m4) = rk_meteo_lesen(array('error' => true, 'reason' => 'x'));
     $pr('Fehlermeldung des Dienstes wird durchgereicht', $m4, 'DIENST_MELDET_FEHLER');
-    $pr('Adresse enthaelt beide Reihen und die Zeitzone',
+    $pr('Adresse enthält beide Reihen und die Zeitzone',
         (strpos(rk_meteo_url(48.1, 11.6), 'temperature_2m') !== false
          && strpos(rk_meteo_url(48.1, 11.6), 'relative_humidity_2m') !== false
          && strpos(rk_meteo_url(48.1, 11.6), 'timezone=auto') !== false), true);
@@ -562,7 +562,7 @@ function rk_selbsttest()
         array('mindest' => 0.5, 't_min' => -5, 'af_unter' => 0, 'vorschau' => 12), $t0);
     $pr('Raum: erkannt als zu feucht', array($r['ok'], $r['feucht'], $r['trocken']),
         array(1, 1, 0));
-    $pr('Raum: Lueften lohnt', $r['lueften'], 1);
+    $pr('Raum: Lüften lohnt', $r['lueften'], 1);
     $pr('Raum: Schimmelgefahr an der kalten Ecke', $r['schimmel'], 1);
     $leer = rk_raum_rechnen(array('name' => 'Ohne Fuehler'), array('t' => 3.0, 'rf' => 85.0),
         $vor, array(), $t0);

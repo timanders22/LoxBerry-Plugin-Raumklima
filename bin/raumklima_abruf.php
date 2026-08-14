@@ -1,4 +1,18 @@
 <?php
+/* ---- Sperre gegen Parallellaeufe (Muster fer_sperre, FerienFeiertage) ----
+ *
+ * Der Abruf der Messwerte wartet auf ein Netz. Dauert der Lauf laenger als der Cron-Takt,
+ * startet der naechste, waehrend dieser noch laeuft: doppelte Abrufe,
+ * doppelte Meldungen, im schlimmsten Fall zwei Schreibvorgaenge auf dieselbe
+ * Datei. Die Sperre ist nicht blockierend - wer nicht drankommt, geht
+ * kommentarlos wieder (der naechste Takt kommt ohnehin gleich).
+ */
+$rk_sperrdatei = sys_get_temp_dir() . '/rk_cron.lock';
+$rk_sperre = @fopen($rk_sperrdatei, 'c');
+if ($rk_sperre === false || !flock($rk_sperre, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 /**
  * Raumklima - der regelmaessige Abruf
  *
