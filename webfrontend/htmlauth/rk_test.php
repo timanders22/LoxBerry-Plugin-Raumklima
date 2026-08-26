@@ -14,6 +14,7 @@ function rk_test_ausfuehren($welcher)
     switch ($welcher) {
         case 'selbsttest': return rk_test_selbsttest();
         case 'quellen':    return rk_test_quellen();
+        case 'pfade':      return rk_test_pfade();
         case 'meteo':      return rk_test_meteo();
         case 'rechnung':   return rk_test_rechnung();
         case 'mqtt':       return rk_test_mqtt();
@@ -61,7 +62,11 @@ function rk_test_quellen()
     }
 
     foreach ($raeume as $nr => $r) {
-        $o[] = 'Raum ' . $nr . ': ' . $r['name'];
+        $o[] = 'Raum ' . $nr . ': ' . $r['name']
+             . '  [' . $r['art'] . ', '
+             . ($r['einheit_t'] === 'F' ? 'Grad Fahrenheit' : 'Grad Celsius') . ', '
+             . ($r['einheit_rf'] === 'anteil' ? 'Feuchte als Anteil 0-1' : 'Feuchte in Prozent')
+             . ']';
         $eigen = trim((string) $r['quelle']) !== '';
         $daten = null;
         if ($eigen) {
@@ -82,17 +87,99 @@ function rk_test_quellen()
                 if ($w === null) {
                     $o[] = '  ' . $bez . ': Pfad "' . $r[$f] . '" fuehrt zu nichts.';
                     $o[] = '    ' . rk_test_pfadhilfe($daten, $r[$f]);
-                } elseif (!is_numeric($w)) {
-                    $o[] = '  ' . $bez . ': Pfad "' . $r[$f] . '" liefert "' . $w
-                         . '" - das ist keine Zahl.';
-                } else {
-                    $o[] = '  ' . $bez . ': ' . $w;
+                    continue;
                 }
+                /* Rohwert UND gelesene Zahl. Eine Quelle darf "52%" oder
+                 * "24.6 C" liefern; wer die Einheit umstellt, muss sehen,
+                 * was daraus geworden ist. */
+                $zahl = rk_zahl_aus($w);
+                if ($zahl === null) {
+                    $o[] = '  ' . $bez . ': Pfad "' . $r[$f] . '" liefert "' . $w
+                         . '" - daraus laesst sich keine Zahl lesen.';
+                    continue;
+                }
+                $um = ($f === 'pfad_t')
+                    ? rk_temp_c($zahl, $r['einheit_t'])
+                    : rk_rf_prozent($zahl, $r['einheit_rf']);
+                $anhang = '';
+                if ((string) $w !== (string) $zahl) { $anhang = ' (gelesen aus "' . $w . '")'; }
+                if (abs($um - $zahl) > 1e-9) {
+                    $anhang .= ' (umgerechnet aus ' . $zahl . ')';
+                }
+                $gut = ($f === 'pfad_t') ? rk_t_gueltig($um) : ($um > 0.0 && $um <= 100.0);
+                $o[] = '  ' . $bez . ': ' . $um . $anhang
+                     . ($gut ? '' : '   ACHTUNG: ausserhalb des gueltigen Bereichs,'
+                                  . ' wird als Ausfall behandelt.');
             }
         }
         $o[] = '';
     }
     return implode("\n", $o);
+}
+
+/**
+ * Der Quellen-Assistent: JEDEN Zahlenwert der Antwort mit vollem Pfad
+ * auflisten.
+ *
+ * Bei zwoelf Raeumen sind zwei bis vier Pfade je Raum abzutippen, und der
+ * haeufigste Fehler ist ein Tippfehler eine Ebene zu frueh. Wer die Liste
+ * vor sich hat, schreibt ab statt zu raten.
+ *
+ * Die Obergrenze ist hart: ein Gateway mit hundert Kanaelen liefert sonst
+ * eine Seite, die niemand mehr liest.
+ */
+function rk_test_pfade()
+{
+    $cfg = rk_config();
+    $o = array();
+    $quellen = array();
+    if (trim((string) $cfg['quelle']) !== '') { $quellen[rk_t('EINST.QUELLE')] = $cfg['quelle']; }
+    foreach (rk_raeume() as $nr => $r) {
+        if (trim((string) $r['quelle']) !== '') {
+            $quellen[rk_t('EINST.RAUM') . ' ' . $nr . ' (' . $r['name'] . ')'] = $r['quelle'];
+        }
+    }
+    if (trim((string) $cfg['aussen_quelle']) !== '') {
+        $quellen[rk_t('EINST.AUSSEN_QUELLE')] = $cfg['aussen_quelle'];
+    }
+    if (!$quellen) {
+        return 'Es ist noch keine Adresse eingetragen. Der Assistent kann erst dann'
+             . " zeigen, welche Pfade es gibt.
+";
+    }
+    foreach ($quellen as $bez => $url) {
+        $o[] = $bez . ': ' . $url;
+        list($d, $m) = rk_holen($url, true);
+        if ($d === null) { $o[] = '  FEHLER: ' . rk_test_klartext($m); $o[] = ''; continue; }
+        $treffer = array();
+        rk_test_blaetter($d, '', $treffer, 0);
+        if (!$treffer) { $o[] = '  In dieser Antwort steht keine einzige Zahl.'; $o[] = ''; continue; }
+        $o[] = '  ' . count($treffer) . ' Zahlenwerte gefunden:';
+        $n = 0;
+        foreach ($treffer as $pfad => $wert) {
+            $o[] = sprintf('    %-44s = %s', $pfad, $wert);
+            if (++$n >= 300) { $o[] = '    ... weitere ausgelassen.'; break; }
+        }
+        $o[] = '';
+    }
+    $o[] = 'Den passenden Pfad in die Spalte des Raums uebernehmen.';
+    return implode("
+", $o);
+}
+
+/** Rekursiv durch die Antwort - nur Blaetter, die eine Zahl ergeben. */
+function rk_test_blaetter($daten, $praefix, &$treffer, $tiefe)
+{
+    if ($tiefe > 8 || count($treffer) > 400) { return; }
+    if (!is_array($daten)) { return; }
+    foreach ($daten as $k => $v) {
+        $pfad = ($praefix === '') ? (string) $k : $praefix . '.' . $k;
+        if (is_array($v)) {
+            rk_test_blaetter($v, $pfad, $treffer, $tiefe + 1);
+        } elseif (rk_zahl_aus($v) !== null) {
+            $treffer[$pfad] = is_string($v) ? '"' . $v . '"  -> ' . rk_zahl_aus($v) : $v;
+        }
+    }
 }
 
 /**

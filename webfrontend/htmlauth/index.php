@@ -83,8 +83,27 @@ if ($rk_post && isset($_POST['vorlage'])) {
 }
 
 /* ---------------- Einstellungen speichern ---------------- */
+/*
+ * Jedes Formular besitzt nur SEINE Felder.
+ *
+ * Bis 0.9.8 baute dieser Handler jeden Wert aus $_POST neu. Ein Speichern
+ * im Reiter MQTT schickt aber weder Raeume noch Quellen mit - sie kamen als
+ * leer an und wurden als Loeschung uebernommen. Gemessen am 24.08.2026:
+ * ein Klick loeschte alle zwoelf Raeume, die gemeinsame Quelle, die eigene
+ * Wetterquelle samt Pfaden und stellte die Aussenart auf 'meteo' zurueck.
+ * Umgekehrt schaltete ein Speichern im Reiter Einstellungen das
+ * Veroeffentlichen ab und setzte das MQTT-Thema auf die Vorgabe.
+ *
+ * In Loxone faellt das nicht auf: virtuelle Eingaenge behalten ihren letzten
+ * Wert, in der App sieht danach alles normal aus.
+ *
+ * Deshalb traegt jedes Formular ein verstecktes Feld, das sagt, wofuer es
+ * zustaendig ist. Angefasst wird nur, was wirklich mitkam.
+ */
 if ($rk_post && isset($_POST['speichern'])) {
     $rk_cfg = rk_config();
+    $rk_hat_einst = isset($_POST['feld_einst']);
+    $rk_hat_mqtt  = isset($_POST['feld_mqtt']);
 
     /* Kleine Helfer. Nur Steuerzeichen und Anfuehrungszeichen entfernen -
      * ein hartes preg_replace auf eine Positivliste zerstoert eingefuegte
@@ -115,111 +134,178 @@ if ($rk_post && isset($_POST['speichern'])) {
         return $w;
     };
     /* Eine Adresse muss http oder https sein. Wer nur "gateway/status"
-     * eintraegt, bekommt es gesagt statt einer stummen leeren Tabelle. */
+     * eintraegt, bekommt es gesagt statt einer stummen leeren Tabelle.
+     *
+     * Rueckgabe null heisst "abgewiesen, alten Wert behalten" - eine
+     * beanstandete Eingabe darf die gespeicherte Adresse nicht wegwerfen.
+     * Ein absichtlich LEER gelassenes Feld loescht dagegen weiterhin. */
     $rk_adresse = function ($roh, $bezeichnung) use (&$rk_fehler, $rk_sauber) {
         $roh = $rk_sauber($roh);
         if ($roh === '') { return ''; }
         if (!preg_match('#^https?://#i', $roh)) {
             $rk_fehler[] = sprintf(rk_t('FEHLER.ADRESSE'), $bezeichnung, $roh);
-            return '';
+            return null;
         }
         return $roh;
     };
+    /* Eine Auswahl uebernehmen, aber nur einen bekannten Wert. */
+    $rk_wahl = function ($name, $erlaubt, $alt) {
+        if (!isset($_POST[$name])) { return $alt; }
+        $w = (string) $_POST[$name];
+        return in_array($w, $erlaubt, true) ? $w : $alt;
+    };
 
-    /* --- Raeume --- */
-    $rk_neu = array();
-    for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
-        $rk_r = rk_raum_vorgabe();
-        $rk_r['name']    = $rk_feld('r_name', $rk_i);
-        $rk_r['quelle']  = $rk_adresse($rk_feld('r_quelle', $rk_i),
-                                       rk_t('EINST.RAUM') . ' ' . ($rk_i + 1));
-        $rk_r['pfad_t']  = $rk_feld('r_pfad_t', $rk_i);
-        $rk_r['pfad_rf'] = $rk_feld('r_pfad_rf', $rk_i);
+    /* ================= Felder des Reiters Einstellungen ================= */
+    if ($rk_hat_einst) {
+        $rk_neu = array();
+        for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
+            /* Grundlage ist der GESPEICHERTE Raum, nicht die Vorgabe: eine
+             * abgewiesene Zahl faellt sonst auf 0,70 statt auf den Wert
+             * zurueck, der vorher dastand. */
+            $rk_r = $rk_cfg['raeume'][$rk_i];
+            $rk_r['name']    = $rk_feld('r_name', $rk_i);
+            $rk_r['pfad_t']  = $rk_feld('r_pfad_t', $rk_i);
+            $rk_r['pfad_rf'] = $rk_feld('r_pfad_rf', $rk_i);
+            $rk_r['pfad_co2'] = $rk_feld('r_pfad_co2', $rk_i);
+            $rk_r['pfad_fenster'] = $rk_feld('r_pfad_fenster', $rk_i);
 
-        $rk_leer = ($rk_r['name'] === '' && $rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '');
-        $rk_bez = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
+            $rk_bez = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
+            $rk_a = $rk_adresse($rk_feld('r_quelle', $rk_i), $rk_bez);
+            if ($rk_a !== null) { $rk_r['quelle'] = $rk_a; }
 
-        $rk_w = $rk_zahl($rk_feld('r_frsi', $rk_i), 0.05, 1.0, $rk_bez . ' / fRsi');
-        if ($rk_w !== null) { $rk_r['frsi'] = $rk_w; }
-        $rk_w = $rk_zahl($rk_feld('r_min', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MIN'), true);
-        if ($rk_w !== null) { $rk_r['soll_min'] = $rk_w; }
-        $rk_w = $rk_zahl($rk_feld('r_max', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MAX'), true);
-        if ($rk_w !== null) { $rk_r['soll_max'] = $rk_w; }
+            $rk_leer = ($rk_r['name'] === '' && $rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '');
 
-        if (!$rk_leer) {
-            if ($rk_r['name'] === '') {
-                $rk_fehler[] = sprintf(rk_t('FEHLER.NAME_FEHLT'), $rk_i + 1);
+            $rk_w = $rk_zahl($rk_feld('r_frsi', $rk_i), 0.05, 1.0, $rk_bez . ' / fRsi');
+            if ($rk_w !== null) { $rk_r['frsi'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_min', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MIN'), true);
+            if ($rk_w !== null) { $rk_r['soll_min'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_max', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MAX'), true);
+            if ($rk_w !== null) { $rk_r['soll_max'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_erd_t', $rk_i), -20, 40, $rk_bez . ' / ' . rk_t('EINST.ERD_T'));
+            if ($rk_w !== null) { $rk_r['erd_t'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_volumen', $rk_i), 0, 2000,
+                             $rk_bez . ' / ' . rk_t('EINST.VOLUMEN'));
+            if ($rk_w !== null) { $rk_r['volumen'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_t_soll', $rk_i), 0, 35,
+                             $rk_bez . ' / ' . rk_t('EINST.T_SOLL'));
+            if ($rk_w !== null) { $rk_r['t_soll'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_co2_max', $rk_i), 0, 5000,
+                             $rk_bez . ' / ' . rk_t('EINST.CO2_MAX'), true);
+            if ($rk_w !== null) { $rk_r['co2_max'] = $rk_w; }
+            $rk_rf = isset($_POST['r_fenster'][$rk_i]) ? (string) $_POST['r_fenster'][$rk_i] : '';
+            if (in_array($rk_rf, array('kipp', 'stoss', 'quer'), true)) { $rk_r['fenster'] = $rk_rf; }
+
+            $rk_ra = isset($_POST['r_art'][$rk_i]) ? (string) $_POST['r_art'][$rk_i] : '';
+            if (in_array($rk_ra, array('aussen', 'keller', 'innen'), true)) { $rk_r['art'] = $rk_ra; }
+            $rk_re = isset($_POST['r_einheit_t'][$rk_i]) ? (string) $_POST['r_einheit_t'][$rk_i] : '';
+            if (in_array($rk_re, array('C', 'F'), true)) { $rk_r['einheit_t'] = $rk_re; }
+            $rk_re = isset($_POST['r_einheit_rf'][$rk_i]) ? (string) $_POST['r_einheit_rf'][$rk_i] : '';
+            if (in_array($rk_re, array('proz', 'anteil'), true)) { $rk_r['einheit_rf'] = $rk_re; }
+
+            if (!$rk_leer) {
+                if ($rk_r['name'] === '') {
+                    $rk_fehler[] = sprintf(rk_t('FEHLER.NAME_FEHLT'), $rk_i + 1);
+                }
+                if ($rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '') {
+                    $rk_fehler[] = sprintf(rk_t('FEHLER.PFAD_FEHLT'), $rk_i + 1);
+                }
+                if ($rk_r['soll_min'] > 0 && $rk_r['soll_max'] > 0
+                    && $rk_r['soll_min'] >= $rk_r['soll_max']) {
+                    $rk_fehler[] = sprintf(rk_t('FEHLER.KORRIDOR'), $rk_i + 1);
+                }
             }
-            if ($rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '') {
-                $rk_fehler[] = sprintf(rk_t('FEHLER.PFAD_FEHLT'), $rk_i + 1);
-            }
-            if ($rk_r['soll_min'] > 0 && $rk_r['soll_max'] > 0
-                && $rk_r['soll_min'] >= $rk_r['soll_max']) {
-                $rk_fehler[] = sprintf(rk_t('FEHLER.KORRIDOR'), $rk_i + 1);
-            }
+            $rk_neu[$rk_i] = $rk_r;
         }
-        $rk_neu[$rk_i] = $rk_r;
-    }
-    $rk_cfg['raeume'] = $rk_neu;
+        $rk_cfg['raeume'] = $rk_neu;
 
-    /* --- Gemeinsames --- */
-    $rk_cfg['quelle'] = $rk_adresse(isset($_POST['quelle']) ? $_POST['quelle'] : '',
-                                    rk_t('EINST.QUELLE'));
-    $rk_w = $rk_zahl(isset($_POST['takt']) ? $_POST['takt'] : '', 60, 3600, rk_t('EINST.TAKT'), true);
-    if ($rk_w !== null) { $rk_cfg['takt'] = $rk_w; }
+        /* --- Gemeinsames --- */
+        $rk_a = $rk_adresse(isset($_POST['quelle']) ? $_POST['quelle'] : '', rk_t('EINST.QUELLE'));
+        if ($rk_a !== null) { $rk_cfg['quelle'] = $rk_a; }
+        $rk_w = $rk_zahl(isset($_POST['takt']) ? $_POST['takt'] : '', 300, 3600, rk_t('EINST.TAKT'), true);
+        if ($rk_w !== null) { $rk_cfg['takt'] = $rk_w; }
 
-    $rk_cfg['aussen_art'] = (isset($_POST['aussen_art']) && $_POST['aussen_art'] === 'eigen')
-        ? 'eigen' : 'meteo';
-    $rk_w = $rk_zahl(isset($_POST['breite']) ? $_POST['breite'] : '', -90, 90, rk_t('EINST.BREITE'));
-    if ($rk_w !== null) { $rk_cfg['breite'] = $rk_w; }
-    $rk_w = $rk_zahl(isset($_POST['laenge']) ? $_POST['laenge'] : '', -180, 180, rk_t('EINST.LAENGE'));
-    if ($rk_w !== null) { $rk_cfg['laenge'] = $rk_w; }
-    $rk_cfg['aussen_quelle'] = $rk_adresse(isset($_POST['aussen_quelle']) ? $_POST['aussen_quelle'] : '',
-                                           rk_t('EINST.AUSSEN_QUELLE'));
-    $rk_cfg['aussen_t'] = $rk_sauber(isset($_POST['aussen_t']) ? $_POST['aussen_t'] : '');
-    $rk_cfg['aussen_rf'] = $rk_sauber(isset($_POST['aussen_rf']) ? $_POST['aussen_rf'] : '');
-    if ($rk_cfg['aussen_art'] === 'eigen' && $rk_cfg['aussen_quelle'] === '') {
-        $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_QUELLE');
+        $rk_cfg['aussen_art'] = $rk_wahl('aussen_art', array('meteo', 'eigen'), $rk_cfg['aussen_art']);
+        $rk_w = $rk_zahl(isset($_POST['breite']) ? $_POST['breite'] : '', -90, 90, rk_t('EINST.BREITE'));
+        if ($rk_w !== null) { $rk_cfg['breite'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['laenge']) ? $_POST['laenge'] : '', -180, 180, rk_t('EINST.LAENGE'));
+        if ($rk_w !== null) { $rk_cfg['laenge'] = $rk_w; }
+        $rk_a = $rk_adresse(isset($_POST['aussen_quelle']) ? $_POST['aussen_quelle'] : '',
+                            rk_t('EINST.AUSSEN_QUELLE'));
+        if ($rk_a !== null) { $rk_cfg['aussen_quelle'] = $rk_a; }
+        if (isset($_POST['aussen_t'])) { $rk_cfg['aussen_t'] = $rk_sauber($_POST['aussen_t']); }
+        if (isset($_POST['aussen_rf'])) { $rk_cfg['aussen_rf'] = $rk_sauber($_POST['aussen_rf']); }
+        $rk_cfg['aussen_einheit_t'] = $rk_wahl('aussen_einheit_t', array('C', 'F'),
+                                               $rk_cfg['aussen_einheit_t']);
+        $rk_cfg['aussen_einheit_rf'] = $rk_wahl('aussen_einheit_rf', array('proz', 'anteil'),
+                                                $rk_cfg['aussen_einheit_rf']);
+        if ($rk_cfg['aussen_art'] === 'eigen' && $rk_cfg['aussen_quelle'] === '') {
+            $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_QUELLE');
+        }
+
+        $rk_w = $rk_zahl(isset($_POST['mindest']) ? $_POST['mindest'] : '', 0, 10, rk_t('EINST.MINDEST'));
+        if ($rk_w !== null) { $rk_cfg['mindest'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['t_min']) ? $_POST['t_min'] : '', -30, 30, rk_t('EINST.T_MIN'));
+        if ($rk_w !== null) { $rk_cfg['t_min'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['af_unter']) ? $_POST['af_unter'] : '', 0, 20, rk_t('EINST.AF_UNTER'));
+        if ($rk_w !== null) { $rk_cfg['af_unter'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['vorschau']) ? $_POST['vorschau'] : '', 1, 48, rk_t('EINST.VORSCHAU'), true);
+        if ($rk_w !== null) { $rk_cfg['vorschau'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['steht_min']) ? $_POST['steht_min'] : '', 0, 1440,
+                         rk_t('EINST.STEHT_MIN'), true);
+        if ($rk_w !== null) { $rk_cfg['steht_min'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['hyst']) ? $_POST['hyst'] : '', 0, 1, rk_t('EINST.HYST'));
+        if ($rk_w !== null) { $rk_cfg['hyst'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['dauer_min']) ? $_POST['dauer_min'] : '', 0, 120,
+                         rk_t('EINST.DAUER_MIN'), true);
+        if ($rk_w !== null) { $rk_cfg['dauer_min'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['regen_max']) ? $_POST['regen_max'] : '', 0, 20,
+                         rk_t('EINST.REGEN_MAX'));
+        if ($rk_w !== null) { $rk_cfg['regen_max'] = $rk_w; }
+        $rk_w = $rk_zahl(isset($_POST['kuehl_spanne']) ? $_POST['kuehl_spanne'] : '', 0.1, 10,
+                         rk_t('EINST.KUEHL_SPANNE'));
+        if ($rk_w !== null) { $rk_cfg['kuehl_spanne'] = $rk_w; }
+        /* Ein Haken schickt nichts mit, wenn er aus ist - das darf hier
+         * gelesen werden, weil das Formular sich als zustaendig gemeldet hat. */
+        $rk_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
+
+        /* --- Zugangsdaten: eigene Datei, 0600 --- */
+        $rk_g = rk_geheim();
+        if (isset($_POST['zug_benutzer'])) {
+            $rk_g['benutzer'] = $rk_sauber($_POST['zug_benutzer']);
+        }
+        if (isset($_POST['zug_passwort']) && (string) $_POST['zug_passwort'] !== '') {
+            // Ein leeres Feld heisst "unveraendert", nicht "loeschen".
+            $rk_g['passwort'] = (string) $_POST['zug_passwort'];
+        }
+        if (!empty($_POST['zug_loeschen'])) {
+            $rk_g = array('benutzer' => '', 'passwort' => '');
+        }
+        rk_geheim_speichern($rk_g);
     }
 
-    $rk_w = $rk_zahl(isset($_POST['mindest']) ? $_POST['mindest'] : '', 0, 10, rk_t('EINST.MINDEST'));
-    if ($rk_w !== null) { $rk_cfg['mindest'] = $rk_w; }
-    $rk_w = $rk_zahl(isset($_POST['t_min']) ? $_POST['t_min'] : '', -30, 30, rk_t('EINST.T_MIN'));
-    if ($rk_w !== null) { $rk_cfg['t_min'] = $rk_w; }
-    $rk_w = $rk_zahl(isset($_POST['af_unter']) ? $_POST['af_unter'] : '', 0, 20, rk_t('EINST.AF_UNTER'));
-    if ($rk_w !== null) { $rk_cfg['af_unter'] = $rk_w; }
-    $rk_w = $rk_zahl(isset($_POST['vorschau']) ? $_POST['vorschau'] : '', 1, 48, rk_t('EINST.VORSCHAU'), true);
-    if ($rk_w !== null) { $rk_cfg['vorschau'] = $rk_w; }
-
-    $rk_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
-    $rk_thema_neu = strtolower($rk_sauber(isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
-    $rk_thema_neu = trim($rk_thema_neu, '/');
-    if ($rk_thema_neu === '') {
-        $rk_cfg['mqtt_topic'] = 'raumklima';
-    } elseif (!preg_match('#^[a-z0-9_\-/]+$#', $rk_thema_neu)) {
-        // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
-        $rk_fehler[] = sprintf(rk_t('FEHLER.THEMA'), $rk_thema_neu);
-    } else {
-        $rk_cfg['mqtt_topic'] = $rk_thema_neu;
+    /* ===================== Felder des Reiters MQTT ===================== */
+    if ($rk_hat_mqtt) {
+        $rk_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+        $rk_thema_neu = strtolower($rk_sauber(isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
+        $rk_thema_neu = trim($rk_thema_neu, '/');
+        if ($rk_thema_neu === '') {
+            $rk_cfg['mqtt_topic'] = 'raumklima';
+        } elseif (!preg_match('#^[a-z0-9_\-/]+$#', $rk_thema_neu)) {
+            // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
+            $rk_fehler[] = sprintf(rk_t('FEHLER.THEMA'), $rk_thema_neu);
+        } else {
+            $rk_cfg['mqtt_topic'] = $rk_thema_neu;
+        }
     }
 
-    /* --- Zugangsdaten: eigene Datei, 0600 --- */
-    $rk_g = rk_geheim();
-    if (isset($_POST['zug_benutzer'])) {
-        $rk_g['benutzer'] = $rk_sauber($_POST['zug_benutzer']);
-    }
-    if (isset($_POST['zug_passwort']) && (string) $_POST['zug_passwort'] !== '') {
-        // Ein leeres Feld heisst "unveraendert", nicht "loeschen".
-        $rk_g['passwort'] = (string) $_POST['zug_passwort'];
-    }
-    if (!empty($_POST['zug_loeschen'])) {
-        $rk_g = array('benutzer' => '', 'passwort' => '');
-    }
-    rk_geheim_speichern($rk_g);
-
-    if (rk_config_speichern($rk_cfg)) {
+    if (!$rk_hat_einst && !$rk_hat_mqtt) {
+        /* Kein Formular hat sich gemeldet. Lieber nichts speichern als
+         * alles ueberschreiben - genau daran ist 0.9.8 gescheitert. */
+        $rk_fehler[] = rk_t('FEHLER.KEIN_FORMULAR');
+    } elseif (rk_config_speichern($rk_cfg)) {
         $rk_meldungen[] = rk_t('ALLG.GESPEICHERT');
-        rk_log('Einstellungen gespeichert.');
+        rk_log('Einstellungen gespeichert (' . ($rk_hat_einst ? 'Einstellungen' : '')
+               . ($rk_hat_einst && $rk_hat_mqtt ? '+' : '') . ($rk_hat_mqtt ? 'MQTT' : '') . ').');
     } else {
         $rk_fehler[] = rk_t('FEHLER.SPEICHERN');
     }
@@ -287,6 +373,54 @@ $rk_rahmen = class_exists('LBWeb', false);
 if ($rk_rahmen) {
     LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($rk_post && isset($_POST['rk_sichern'])) {
+    $rk_js = json_encode(rk_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($rk_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="raumklima_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $rk_js;
+        exit;
+    }
+    $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($rk_post && isset($_POST['rk_zurueck'])) {
+    if (!isset($_FILES['rk_sicherung']) || !is_array($_FILES['rk_sicherung'])
+        || !isset($_FILES['rk_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['rk_sicherung']['tmp_name'])) {
+        $rk_fehler[] = rk_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['rk_sicherung']['size'] > 262144) {
+        $rk_fehler[] = rk_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($rk_neu, $rk_mangel, $rk_n) = rk_sicherung_lesen(
+            (string) @file_get_contents($_FILES['rk_sicherung']['tmp_name']));
+        if ($rk_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $rk_fehler[] = rk_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $rk_mangel);
+        } elseif (rk_config_speichern($rk_neu)) {
+            $rk_meldungen[] = sprintf(rk_t('EINST.SICH_UEBERNOMMEN'), $rk_n);
+        } else {
+            $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard, wortgetreu aus VORLAGE_hausstandard.css.html uebernommen.
@@ -405,11 +539,22 @@ if ($rk_rahmen) {
      Reiter verlinkbar und Eingaben in anderen Reitern gehen nicht verloren.
      Welcher Reiter offen ist, entscheidet der SERVER - sm-active steht schon
      im ausgelieferten HTML, an der Leiste und am Bereich. -->
+<!-- Ausgeschrieben, nicht als Schleife. hausstandard_pruefen.py sucht
+     data-ziel="tab-..." als LITERAL; bei einer Schleife findet es null
+     Reiter und setzt die Spalte auf "-", also "trifft nicht zu" - und ein
+     Strich sammelt sich beim Ueberfliegen wie ein Haken ein. Die
+     Positivliste fuer activetab entsteht weiterhin aus $rk_reiter. -->
 <div class="sm-tabs">
-<?php foreach ($rk_reiter as $rk_k => $rk_schl): $rk_id = 'tab-' . $rk_k; ?>
-	<a class="sm-tab<?= $rk_tab === $rk_id ? ' sm-active' : '' ?>" data-ziel="<?= rk_e($rk_id) ?>"
-	   href="index.php?form=<?= rk_e($rk_k) ?>"><?= $rk_schl === null ? 'MQTT' : rk_e(rk_t($rk_schl)) ?></a>
-<?php endforeach; ?>
+	<a class="sm-tab<?= $rk_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"
+	   href="index.php?form=settings"><?= rk_e(rk_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $rk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt"
+	   href="index.php?form=mqtt">MQTT</a>
+	<a class="sm-tab<?= $rk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"
+	   href="index.php?form=loxone"><?= rk_e(rk_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $rk_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"
+	   href="index.php?form=test"><?= rk_e(rk_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $rk_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"
+	   href="index.php?form=log"><?= rk_e(rk_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -435,6 +580,10 @@ if ($rk_rahmen) {
   <td><b><?= rk_e($rk_r['name']) ?></b>
     <?php if ($rk_r['feucht']) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.ZU_FEUCHT')) ?></span><?php } ?>
     <?php if ($rk_r['trocken']) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.ZU_TROCKEN')) ?></span><?php } ?>
+    <?php if (!empty($rk_r['steht'])) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.STEHT')) ?></span><?php } ?>
+    <?php if (!$rk_r['ok'] && isset($rk_r['alter']) && $rk_r['alter'] > 0) { ?>
+    <br><span class="sm-aus"><?= sprintf(rk_e(rk_t('TAB.OHNE_SEIT')), (int) round($rk_r['alter'] / 60)) ?></span>
+    <?php } ?>
   </td>
   <td><?= rk_z($rk_r['t'], 1, '&deg;C') ?></td>
   <td><?= rk_z($rk_r['rf'], 0, '%') ?></td>
@@ -444,13 +593,25 @@ if ($rk_rahmen) {
     <?php if ($rk_r['ober_rf'] !== null) { ?>
     <br><span class="<?= $rk_r['schimmel'] ? 'sm-aus' : '' ?>"><?= rk_z($rk_r['ober_rf'], 0, '%') ?></span>
     <?php } ?>
+    <?php if (isset($rk_r['nass24']) && $rk_r['nass24'] > 0) { ?>
+    <br><span class="sm-hilfe"><?= sprintf(rk_e(rk_t('TAB.NASS24')), rk_e(number_format((float) $rk_r['nass24'], 1, ',', ''))) ?></span>
+    <?php } ?>
   </td>
   <td>
     <?php if (!$rk_r['ok']) { ?>
       <?= rk_e(rk_t('TAB.KEINE_WERTE')) ?>
     <?php } elseif ($rk_r['lueften']) { ?>
-      <b class="sm-an"><?= rk_e(rk_t('TAB.JETZT_LUEFTEN')) ?></b><br>
+      <b class="sm-an"><?= rk_e(rk_t('TAB.JETZT_LUEFTEN')) ?></b>
+      <span class="sm-hilfe">(<?= rk_e(rk_t('MELD.' . strtoupper($rk_r['grund']))) ?>)</span><br>
       <span class="sm-hilfe"><?= sprintf(rk_e(rk_t('TAB.GEWINN')), rk_e(number_format((float) $rk_r['gewinn'], 2, ',', ''))) ?></span>
+      <?php if (isset($rk_r['dauer']) && $rk_r['dauer'] > 0) { ?>
+      <br><span class="sm-hilfe"><?= sprintf(rk_e(rk_t('TAB.DAUER')), (int) $rk_r['dauer']) ?><?php
+          if (isset($rk_r['kosten']) && $rk_r['kosten'] > 0) {
+              echo ' &middot; ' . sprintf(rk_e(rk_t('TAB.KOSTEN')), rk_e(number_format((float) $rk_r['kosten'], 0, ',', '.')));
+          } ?></span>
+      <?php } ?>
+    <?php } elseif ($rk_r['best_in'] >= 0 && $rk_r['best_in'] < 90) { ?>
+      <?= sprintf(rk_e(rk_t('TAB.SPAETER_MIN')), (int) $rk_r['best_std'], (int) $rk_r['best_in']) ?>
     <?php } elseif ($rk_r['best_in'] >= 0) { ?>
       <?= sprintf(rk_e(rk_t('TAB.SPAETER')), (int) $rk_r['best_std'], (int) round($rk_r['best_in'] / 60)) ?>
     <?php } else { ?>
@@ -477,6 +638,10 @@ if ($rk_rahmen) {
 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="<?= rk_e($rk_tab) ?>">
+<!-- Sagt dem Speichern-Handler, welche Felder dieses Formular besitzt.
+     Ohne diese Marke uebernahm er auch die Felder der anderen Reiter als
+     leer - und loeschte sie damit. -->
+<input data-role="none" type="hidden" name="feld_einst" value="1">
 
 <h2><?= rk_e(rk_t('EINST.H_QUELLEN')) ?></h2>
 <div class="sm-step"><?= rk_t('EINST.QUELLEN_ERKLAERUNG') ?></div>
@@ -493,25 +658,72 @@ if ($rk_rahmen) {
   <th><?= rk_e(rk_t('EINST.NAME')) ?></th>
   <th><?= rk_e(rk_t('EINST.PFAD_T')) ?></th>
   <th><?= rk_e(rk_t('EINST.PFAD_RF')) ?></th>
+  <th><?= rk_e(rk_t('EINST.PFAD_CO2')) ?></th>
+  <th><?= rk_e(rk_t('EINST.PFAD_FENSTER')) ?></th>
   <th><?= rk_e(rk_t('EINST.EIGENE_QUELLE')) ?></th>
-  <th>fRsi</th>
-  <th><?= rk_e(rk_t('EINST.SOLL_MIN')) ?></th>
-  <th><?= rk_e(rk_t('EINST.SOLL_MAX')) ?></th>
+  <th><?= rk_e(rk_t('EINST.EINHEIT')) ?></th>
 </tr>
 <?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
 <tr>
   <td><?= $rk_i + 1 ?></td>
   <td><input data-role="none" type="text" size="14" name="r_name[<?= $rk_i ?>]" value="<?= rk_e($rk_r['name']) ?>"></td>
-  <td><input data-role="none" type="text" size="22" name="r_pfad_t[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_t']) ?>"></td>
-  <td><input data-role="none" type="text" size="22" name="r_pfad_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_rf']) ?>"></td>
-  <td><input data-role="none" type="text" size="20" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle']) ?>"></td>
+  <td><input data-role="none" type="text" size="20" name="r_pfad_t[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_t']) ?>"></td>
+  <td><input data-role="none" type="text" size="20" name="r_pfad_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_rf']) ?>"></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_co2[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_co2']) ?>"></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_fenster[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_fenster']) ?>"></td>
+  <td><input data-role="none" type="text" size="18" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle']) ?>"></td>
+  <td><select data-role="none" name="r_einheit_t[<?= $rk_i ?>]">
+    <option value="C"<?= $rk_r['einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
+    <option value="F"<?= $rk_r['einheit_t'] === 'F' ? ' selected' : '' ?>>&deg;F</option>
+  </select>
+  <select data-role="none" name="r_einheit_rf[<?= $rk_i ?>]">
+    <option value="proz"<?= $rk_r['einheit_rf'] === 'proz' ? ' selected' : '' ?>>%</option>
+    <option value="anteil"<?= $rk_r['einheit_rf'] === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
+  </select></td>
+</tr>
+<?php } ?>
+</table>
+
+<h3><?= rk_e(rk_t('EINST.H_EIGENSCHAFTEN')) ?></h3>
+<table class="sm-tbl">
+<tr>
+  <th><?= rk_e(rk_t('EINST.RAUM')) ?></th>
+  <th>fRsi</th>
+  <th><?= rk_e(rk_t('EINST.SOLL_MIN')) ?></th>
+  <th><?= rk_e(rk_t('EINST.SOLL_MAX')) ?></th>
+  <th><?= rk_e(rk_t('EINST.ART')) ?></th>
+  <th><?= rk_e(rk_t('EINST.ERD_T')) ?></th>
+  <th><?= rk_e(rk_t('EINST.VOLUMEN')) ?></th>
+  <th><?= rk_e(rk_t('EINST.FENSTERART')) ?></th>
+  <th><?= rk_e(rk_t('EINST.T_SOLL')) ?></th>
+  <th><?= rk_e(rk_t('EINST.CO2_MAX')) ?></th>
+</tr>
+<?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
+<tr>
+  <td><?= $rk_i + 1 ?><?= $rk_r['name'] !== '' ? ' ' . rk_e($rk_r['name']) : '' ?></td>
   <td><input data-role="none" type="text" size="4" name="r_frsi[<?= $rk_i ?>]" value="<?= rk_e($rk_r['frsi']) ?>"></td>
   <td><input data-role="none" type="text" size="3" name="r_min[<?= $rk_i ?>]" value="<?= rk_e($rk_r['soll_min']) ?>"></td>
   <td><input data-role="none" type="text" size="3" name="r_max[<?= $rk_i ?>]" value="<?= rk_e($rk_r['soll_max']) ?>"></td>
+  <td><select data-role="none" name="r_art[<?= $rk_i ?>]">
+    <option value="aussen"<?= $rk_r['art'] === 'aussen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_AUSSEN')) ?></option>
+    <option value="keller"<?= $rk_r['art'] === 'keller' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_KELLER')) ?></option>
+    <option value="innen"<?= $rk_r['art'] === 'innen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_INNEN')) ?></option>
+  </select></td>
+  <td><input data-role="none" type="text" size="4" name="r_erd_t[<?= $rk_i ?>]" value="<?= rk_e($rk_r['erd_t']) ?>"></td>
+  <td><input data-role="none" type="text" size="4" name="r_volumen[<?= $rk_i ?>]" value="<?= rk_e($rk_r['volumen']) ?>"></td>
+  <td><select data-role="none" name="r_fenster[<?= $rk_i ?>]">
+    <option value="kipp"<?= $rk_r['fenster'] === 'kipp' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_KIPP')) ?></option>
+    <option value="stoss"<?= $rk_r['fenster'] === 'stoss' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_STOSS')) ?></option>
+    <option value="quer"<?= $rk_r['fenster'] === 'quer' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_QUER')) ?></option>
+  </select></td>
+  <td><input data-role="none" type="text" size="4" name="r_t_soll[<?= $rk_i ?>]" value="<?= rk_e($rk_r['t_soll']) ?>"></td>
+  <td><input data-role="none" type="text" size="5" name="r_co2_max[<?= $rk_i ?>]" value="<?= rk_e($rk_r['co2_max']) ?>"></td>
 </tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= rk_t('EINST.TABELLE_FELDER') ?></p>
+<p class="sm-hilfe"><?= rk_t('EINST.ART_HILFE') ?></p>
+<p class="sm-hilfe"><?= rk_t('EINST.EINHEIT_HILFE') ?></p>
 
 <h3><?= rk_e(rk_t('EINST.H_ZUGANG')) ?></h3>
 <div class="sm-feld">
@@ -556,6 +768,18 @@ if ($rk_rahmen) {
   <input data-role="none" type="text" id="rk_arf" name="aussen_rf" value="<?= rk_e($rk_cfg['aussen_rf']) ?>">
   <p class="sm-hilfe"><?= rk_t('EINST.AUSSEN_EIGEN_HILFE') ?></p>
 </div>
+<div class="sm-feld">
+  <label for="rk_aeh"><?= rk_e(rk_t('EINST.EINHEIT')) ?></label>
+  <select data-role="none" id="rk_aeh" name="aussen_einheit_t">
+    <option value="C"<?= $rk_cfg['aussen_einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
+    <option value="F"<?= $rk_cfg['aussen_einheit_t'] === 'F' ? ' selected' : '' ?>>&deg;F</option>
+  </select>
+  <select data-role="none" name="aussen_einheit_rf">
+    <option value="proz"<?= $rk_cfg['aussen_einheit_rf'] === 'proz' ? ' selected' : '' ?>>%</option>
+    <option value="anteil"<?= $rk_cfg['aussen_einheit_rf'] === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
+  </select>
+  <p class="sm-hilfe"><?= rk_t('EINST.EINHEIT_HILFE') ?></p>
+</div>
 
 <h2><?= rk_e(rk_t('EINST.H_BEWERTUNG')) ?></h2>
 <div class="sm-step"><?= rk_t('EINST.BEWERTUNG_ERKLAERUNG') ?></div>
@@ -579,6 +803,35 @@ if ($rk_rahmen) {
   <input data-role="none" type="text" id="rk_vs" name="vorschau" value="<?= rk_e($rk_cfg['vorschau']) ?>">
 </div>
 <div class="sm-feld">
+  <label for="rk_hyst"><?= rk_e(rk_t('EINST.HYST')) ?></label>
+  <input data-role="none" type="text" id="rk_hyst" name="hyst" value="<?= rk_e($rk_cfg['hyst']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.HYST_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_dauer"><?= rk_e(rk_t('EINST.DAUER_MIN')) ?></label>
+  <input data-role="none" type="text" id="rk_dauer" name="dauer_min" value="<?= rk_e($rk_cfg['dauer_min']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.DAUER_MIN_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_regen"><?= rk_e(rk_t('EINST.REGEN_MAX')) ?></label>
+  <input data-role="none" type="text" id="rk_regen" name="regen_max" value="<?= rk_e($rk_cfg['regen_max']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.REGEN_MAX_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_ksp"><?= rk_e(rk_t('EINST.KUEHL_SPANNE')) ?></label>
+  <input data-role="none" type="text" id="rk_ksp" name="kuehl_spanne" value="<?= rk_e($rk_cfg['kuehl_spanne']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.KUEHL_SPANNE_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= $rk_cfg['verlauf_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('EINST.VERLAUF')) ?></label>
+  <p class="sm-hilfe"><?= rk_t('EINST.VERLAUF_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_steht"><?= rk_e(rk_t('EINST.STEHT_MIN')) ?></label>
+  <input data-role="none" type="text" id="rk_steht" name="steht_min" value="<?= rk_e($rk_cfg['steht_min']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.STEHT_MIN_HILFE') ?></p>
+</div>
+<div class="sm-feld">
   <label for="rk_takt"><?= rk_e(rk_t('EINST.TAKT')) ?></label>
   <input data-role="none" type="text" id="rk_takt" name="takt" value="<?= rk_e($rk_cfg['takt']) ?>">
   <p class="sm-hilfe"><?= rk_t('EINST.TAKT_HILFE') ?></p>
@@ -591,6 +844,25 @@ if ($rk_rahmen) {
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= rk_e(rk_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<h2><?= rk_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= rk_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= rk_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="rk_sichern" value="1"><?= rk_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="rk_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="rk_zurueck" value="1"><?= rk_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -606,8 +878,31 @@ if ($rk_rahmen) {
 <div class="sm-hinweis"><?= sprintf(rk_t('MQTT.LAEUFT'), rk_e((string) $rk_mqtt['udpport'])) ?></div>
 <?php } ?>
 
+<h3><?= rk_e(rk_t('MQTT.H_ABO')) ?></h3>
+<p class="sm-hilfe"><?= rk_t('MQTT.ABO_HILFE') ?></p>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('MQTT.SP_ABO')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= rk_e($rk_thema . '/#') ?></span></td>
+    <td><?= rk_e(rk_t('MQTT.ABO_ALLES')) ?></td></tr>
+</table>
+<?php
+/* Der Satz haengt an der Fassung des Gateways, nicht an einer Behauptung.
+ * Ist sie nicht lesbar, stehen BEIDE da - einen von beiden zu behaupten
+ * waere fuer die Haelfte der Anlagen falsch. */
+$rk_gwf = (int) $rk_mqtt['fassung'];
+?>
+<?php if ($rk_gwf >= 2) { ?>
+<div class="sm-hinweis"><?= rk_t('MQTT.ABO_V2') ?></div>
+<?php } elseif ($rk_gwf === 1) { ?>
+<div class="sm-warnung"><?= rk_t('MQTT.ABO_PFLICHT') ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?= rk_t('MQTT.ABO_PFLICHT') ?></div>
+<div class="sm-hilfe"><?= rk_t('MQTT.ABO_V2') ?></div>
+<?php } ?>
+
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<input data-role="none" type="hidden" name="feld_mqtt" value="1">
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $rk_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('MQTT.EIN')) ?></label>
 </div>
@@ -646,17 +941,16 @@ if ($rk_rahmen) {
 <div class="sm-warnung"><?= rk_t('LOX.KEINE_RAEUME') ?></div>
 <?php } ?>
 
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= rk_t('LEGENDE.TECHNIK_XML') ?></span>
-</div>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= rk_e(rk_t('LOX.K_VI')) ?></button>
-  </form>
-</div>
+<h3><?= rk_e(rk_t('LOX.H_S1')) ?></h3>
+<div class="sm-step"><?= rk_t('LOX.S1') ?></div>
 
-<h3><?= rk_e(rk_t('LOX.H_ADRESSE')) ?></h3>
+<h3><?= rk_e(rk_t('LOX.H_S2')) ?></h3>
+<div class="sm-step"><?= rk_t('LOX.S2') ?></div>
+
+<h3><?= rk_e(rk_t('LOX.H_S3')) ?></h3>
+<div class="sm-step"><?= rk_t('LOX.S3') ?></div>
+
+<h4><?= rk_e(rk_t('LOX.H_ADRESSE')) ?></h4>
 <p class="sm-hilfe"><?= rk_t('LOX.ADRESSE_HILFE') ?></p>
 <table class="sm-tbl">
 <tr><th><?= rk_e(rk_t('LOX.SP_ZWECK')) ?></th><th><?= rk_e(rk_t('LOX.SP_ADRESSE')) ?></th></tr>
@@ -666,15 +960,33 @@ if ($rk_rahmen) {
 </table>
 
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= rk_t('LEGENDE.TECHNIK_XML') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_TOKEN') ?></span>
 </div>
 <div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= rk_e(rk_t('LOX.K_VI')) ?></button>
+  </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= rk_e(rk_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
 <p class="sm-hilfe"><?= rk_t('LOX.TOKEN_HINWEIS') ?></p>
+
+<h3><?= rk_e(rk_t('LOX.H_NUMMERN')) ?></h3>
+<p class="sm-hilfe"><?= rk_t('LOX.NUMMERN_HILFE') ?></p>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_NUMMER')) ?></th><th><?= rk_e(rk_t('LOX.SP_RAUM')) ?></th>
+    <th><?= rk_e(rk_t('LOX.SP_PRAEFIX')) ?></th></tr>
+<?php if ($rk_raeume) { foreach ($rk_raeume as $rk_nr => $rk_r) { ?>
+<tr><td><?= (int) $rk_nr ?></td><td><?= rk_e($rk_r['name']) ?></td>
+    <td><span class="sm-mono">R<?= (int) $rk_nr ?></span></td></tr>
+<?php } } else { ?>
+<tr><td colspan="3"><?= rk_e(rk_t('LOX.KEINE_RAEUME_KURZ')) ?></td></tr>
+<?php } ?>
+</table>
 
 <h3><?= rk_e(rk_t('LOX.H_FELDER')) ?></h3>
 <table class="sm-tbl">
@@ -684,30 +996,88 @@ if ($rk_rahmen) {
     <td><?= rk_e(rk_t($rk_info[3])) ?><?= $rk_info[0] !== '' ? ' [' . rk_e($rk_info[0]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
+
+<h3><?= rk_e(rk_t('LOX.H_S4')) ?></h3>
+<div class="sm-warnung"><?= rk_t('LOX.S4') ?></div>
+
+<h3><?= rk_e(rk_t('LOX.H_S5')) ?></h3>
+<div class="sm-step"><?= rk_t('LOX.S5') ?></div>
+<?php $rk_bl = rk_bausteine(); ?>
+<p class="sm-hilfe"><?= sprintf(rk_t('LOX.BAUSTEINE_FUER'), rk_e($rk_bl['raum']), (int) $rk_bl['nr']) ?></p>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_NR')) ?></th><th><?= rk_e(rk_t('LOX.SP_TYP')) ?></th>
+    <th><?= rk_e(rk_t('LOX.SP_NAME')) ?></th><th><?= rk_e(rk_t('LOX.SP_PARAM')) ?></th>
+    <th><?= rk_e(rk_t('LOX.SP_EING')) ?></th></tr>
+<?php foreach ($rk_bl['felder'] as $rk_z) { ?>
+<tr><td><?= (int) $rk_z['nr'] ?></td>
+    <td><?= rk_e(rk_t('LOX.B_FELD')) ?></td>
+    <td><span class="sm-mono"><?= rk_e($rk_z['titel']) ?></span></td>
+    <td><?= rk_e($rk_z['bedeutung']) ?></td>
+    <td><?= rk_e(rk_t('LOX.BE_AUS_VORLAGE')) ?></td></tr>
+<?php } ?>
+<?php foreach ($rk_bl['bausteine'] as $rk_z) { ?>
+<tr><td><b><?= (int) $rk_z[0] ?></b></td><td><?= rk_e($rk_z[1]) ?></td>
+    <td><?= rk_e($rk_z[2]) ?></td><td><?= rk_e($rk_z[3]) ?></td>
+    <td><?= rk_e($rk_z[4]) ?></td></tr>
+<?php } ?>
+</table>
+<?php foreach ($rk_bl['hinweise'] as $rk_h) { ?>
+<p class="sm-hilfe"><b><?= sprintf(rk_e(rk_t('LOX.ZU')), rk_e($rk_h[0])) ?></b> <?= $rk_h[1] ?></p>
+<?php } ?>
+<div class="sm-hinweis"><?= sprintf(rk_t('LOX.WEITERE_RAEUME'), (int) $rk_bl['nr']) ?></div>
+
+<h3><?= rk_e(rk_t('LOX.H_S6')) ?></h3>
+<div class="sm-step"><?= rk_t('LOX.S6') ?></div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-seite<?= $rk_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= rk_e(rk_t('TEST.H')) ?></h2>
 <div class="sm-step"><?= rk_t('TEST.ERKLAERUNG') ?></div>
+<!-- Die Klassen stehen LITERAL an jedem Knopf, nicht aus einer Variablen
+     zusammengesetzt: hausstandard_pruefen.py vergleicht je Reiter die Farben
+     der Legende mit denen der Knoepfe und findet nur literale
+     Klassenattribute. Zusammengesetzt war die Spalte blind - und genau darin
+     steckten bis 0.9.8 zwei falsch gefaerbte Knoepfe. -->
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= rk_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-technik"></i> <?= rk_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_TEST') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php foreach (array(
-    'selbsttest' => array('sm-b-technik', 'TEST.K_SELBSTTEST'),
-    'quellen'    => array('sm-b-lesen', 'TEST.K_QUELLEN'),
-    'meteo'      => array('sm-b-lesen', 'TEST.K_METEO'),
-    'rechnung'   => array('sm-b-lesen', 'TEST.K_RECHNUNG'),
-    'mqtt'       => array('sm-b-technik', 'TEST.K_MQTT'),
-    'endpunkt'   => array('sm-b-technik', 'TEST.K_ENDPUNKT'),
-) as $rk_k => $rk_i) { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn <?= rk_e($rk_i[0]) ?>" type="submit" name="test" value="<?= rk_e($rk_k) ?>"><?= rk_e(rk_t($rk_i[1])) ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="quellen"><?= rk_e(rk_t('TEST.K_QUELLEN')) ?></button>
   </form>
-<?php } ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="pfade"><?= rk_e(rk_t('TEST.K_PFADE')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="meteo"><?= rk_e(rk_t('TEST.K_METEO')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="selbsttest"><?= rk_e(rk_t('TEST.K_SELBSTTEST')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="endpunkt"><?= rk_e(rk_t('TEST.K_ENDPUNKT')) ?></button>
+  </form>
+</div>
+
+<h3><?= rk_e(rk_t('TEST.H_SCHALTEN')) ?></h3>
+<div class="sm-step"><?= rk_t('TEST.SCHALTEN_HINWEIS') ?></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="rechnung"><?= rk_e(rk_t('TEST.K_RECHNUNG')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="mqtt"><?= rk_e(rk_t('TEST.K_MQTT')) ?></button>
+  </form>
 </div>
 <?php if ($rk_testausgabe !== '') { ?>
 <div class="sm-pre"><?= rk_e($rk_testausgabe) ?></div>
