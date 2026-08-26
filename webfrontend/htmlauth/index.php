@@ -66,6 +66,23 @@ $rk_fehler = array();      // gesammelt, nicht ueberschrieben
 $rk_testausgabe = '';
 $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($rk_post && isset($_POST['vorlage'])) {
     list($rk_name, $rk_inhalt) = rk_vorlage();
@@ -370,9 +387,6 @@ function rk_z($v, $nach = 1, $einheit = '')
 }
 
 $rk_rahmen = class_exists('LBWeb', false);
-if ($rk_rahmen) {
-    LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -419,6 +433,11 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
             $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($rk_rahmen) {
+    LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
