@@ -102,9 +102,8 @@ NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-raumklima}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 netz_zurueck() {
-    datei=$1; soll=$2
+    datei=$1; soll=$2; zweit=$3
     ziel="$NETZ_CFG/$datei"
-    zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
     [ -f "$zweit" ] || return 0
     verloren=0
     if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
@@ -122,7 +121,16 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "raumklima.json" "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+# EIN Name fuer die Konfigurationssicherung, nicht drei.
+#
+# Bis 0.10.1 gab es .backup.json (aus dem ersten Block von preupgrade.sh und
+# aus rk_config_speichern()) UND .backup.raumklima.json (aus dem angehaengten
+# Block). Gelesen hat rk_config() nur den ersten, zurueckgespielt hat
+# postinstall.sh nur den zweiten. Zwei Sicherungsverfahren sind eines zu
+# viel; preupgrade.sh fuehrt eine vorhandene alte Datei jetzt zusammen.
+netz_zurueck "raumklima.json" \
+    "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356" \
+    "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json"
 
 
 # Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,

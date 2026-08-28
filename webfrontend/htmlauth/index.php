@@ -66,6 +66,25 @@ $rk_fehler = array();      // gesammelt, nicht ueberschrieben
 $rk_testausgabe = '';
 $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* ---------------- EIN Wachposten fuer alle Formulare ----------------
+ *
+ * Vor jedem Handler, nicht in jedem Handler. Eine Abfrage je Knopf haette
+ * man beim naechsten Knopf vergessen - und genau das ist der Grund, warum
+ * hier bis 0.10.1 gar keine stand.
+ *
+ * Alle acht Handler haengen bereits an $rk_post; das Merkmal zu pruefen und
+ * $rk_post auf false zu setzen deckt sie damit vollstaendig ab.
+ * wachposten_pruefen.py misst das nach und meldet die Zahl der ungedeckten
+ * Zweige - vor dem Einbau erschien die Linie in seiner Tabelle ueberhaupt
+ * nicht. */
+$rk_merkmal_fehlt = false;
+if ($rk_post && !rk_formtoken_ok()) {
+    $rk_post = false;
+    $rk_merkmal_fehlt = true;
+    $rk_fehler[] = rk_t('FEHLER.FREMDES_FORMULAR');
+    rk_log('Ein POST ohne gueltiges Formularmerkmal wurde abgewiesen.');
+}
+
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
  * ==================================================================
@@ -80,9 +99,117 @@ $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
  * Beides hat den Fehler lange verdeckt.
  *
- * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * Reihenfolge: Bibliothek, Konfiguration, Reiterwahl, Wachposten,
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ *
+ * SEIT 0.11.0 GIBT ES DEN WACHPOSTEN WIRKLICH. Bis 0.10.1 stand er nur in
+ * diesem Kommentar - fuenfzehn Formulare, kein einziges Merkmal, und
+ * wachposten_pruefen.py hat die Linie deshalb still uebersprungen. Ein
+ * Kommentar, der eine Eigenschaft zusichert, ist kein Beleg fuer sie; das
+ * steht seit dem 17.08.2026 in REGELN_2 und ist hier trotzdem passiert.
+ *
+ * UND DIE HANDLER FUER DIE SICHERUNG STEHEN JETZT HIER OBEN. Bis 0.10.1
+ * lagen sie hinter der Zeile, die die Anzeigewerte liest. Gemessen am
+ * 28.08.2026 mit einer Datei, die takt=1800 trug, gegen einen Stand mit
+ * takt=600:
+ *
+ *     Konfiguration danach : "takt": 1800
+ *     Seite zeigt im Feld  : value="600"
+ *     Meldung auf der Seite: "zurueckgespielt: 24 Werte uebernommen."
+ *
+ * Der Anwender liest "uebernommen" und sieht ueberall die alten Zahlen.
+ * Drueckt er daraufhin Speichern - der naheliegende naechste Griff -, ist
+ * die Rueckspielung wieder fort.
  * ================================================================== */
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ *
+ * Der Kopf mit Datum kommt aus rk_sicherung_bauen(); rk_sicherung_lesen()
+ * uebergeht die Unterstrich-Schluessel. Beide Seiten wurden im selben Zug
+ * gebaut - eine Sicherung, die die eigene Bibliothek zwei Zeilen spaeter
+ * ablehnt, ist der Befund vom 26.08.2026 aus dem WiFi-Scanner. */
+if ($rk_post && isset($_POST['rk_sichern'])) {
+    /* Die Zugangsdaten kommen nur mit, wenn der Haken gesetzt ist. Ein
+     * Passwort geht nicht ungefragt in eine Datei, die jemand herunterlaedt -
+     * und der Kopf der Datei sagt hinterher, was wirklich drin steht. */
+    $rk_mit_zugang = !empty($_POST['sich_zugang']);
+    $rk_js = rk_sicherung_bauen(rk_config(), $rk_mit_zugang ? rk_geheim() : null);
+    if ($rk_mit_zugang) {
+        rk_log('Einstellungen gesichert - MIT Zugangsdaten der Quelle.');
+    } else {
+        rk_log('Einstellungen gesichert - ohne Zugangsdaten.');
+    }
+    if ($rk_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="raumklima_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $rk_js;
+        exit;
+    }
+    $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen.
+ *
+ * Und danach ein sofortiger Abruf: das Abbild stammt sonst aus der alten
+ * Konfiguration, und die Tabelle darueber zeigte Werte, die es nicht mehr
+ * gibt (Punkt 7 der Hausvorgabe - "nach dem Zurueckspielen den Dienst
+ * nachziehen und sagen, was mit ihm geschehen ist"). */
+if ($rk_post && isset($_POST['rk_zurueck'])) {
+    if (!isset($_FILES['rk_sicherung']) || !is_array($_FILES['rk_sicherung'])
+        || !isset($_FILES['rk_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['rk_sicherung']['tmp_name'])) {
+        $rk_fehler[] = rk_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['rk_sicherung']['size'] > 262144) {
+        $rk_fehler[] = rk_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($rk_neu, $rk_mangel, $rk_n, $rk_zug) = rk_sicherung_lesen(
+            (string) @file_get_contents($_FILES['rk_sicherung']['tmp_name']));
+        if ($rk_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $rk_fehler[] = rk_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $rk_mangel);
+        } elseif (rk_config_speichern($rk_neu)) {
+            $rk_meldungen[] = sprintf(rk_t('EINST.SICH_UEBERNOMMEN'), $rk_n);
+            /* Die Zugangsdaten wandern nach geheim.json, NICHT in die
+             * Konfiguration. Und es wird gesagt, ob welche dabei waren -
+             * beides, weil beides eine Aussage ist. */
+            if (is_array($rk_zug)) {
+                if (rk_geheim_speichern($rk_zug)) {
+                    $rk_meldungen[] = rk_t('EINST.SICH_MIT_ZUGANG');
+                    rk_log('Zugangsdaten aus der Sicherungsdatei uebernommen.');
+                } else {
+                    $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+                }
+            }
+            /* Was mit dem Abruf geschehen ist. Ohne diesen Satz sucht der
+             * Anwender auf dem zweiten LoxBerry lange nach dem Grund fuer
+             * HTTP 401. */
+            $rk_s = rk_abrufen(true);
+            $rk_meldungen[] = empty($rk_s['meldungen'])
+                ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+            $rk_g0 = rk_geheim();
+            if ($rk_g0['benutzer'] === '' && $rk_g0['passwort'] === '') {
+                $rk_meldungen[] = rk_t('EINST.SICH_OHNE_ZUGANG');
+            }
+            rk_log('Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
+                   . (int) $rk_n . ' Werte).');
+        } else {
+            $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+    $rk_tab = 'tab-settings';
+}
+
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($rk_post && isset($_POST['vorlage'])) {
     list($rk_name, $rk_inhalt) = rk_vorlage();
@@ -185,6 +312,23 @@ if ($rk_post && isset($_POST['speichern'])) {
             $rk_r['pfad_rf'] = $rk_feld('r_pfad_rf', $rk_i);
             $rk_r['pfad_co2'] = $rk_feld('r_pfad_co2', $rk_i);
             $rk_r['pfad_fenster'] = $rk_feld('r_pfad_fenster', $rk_i);
+            $rk_r['pfad_zuluft'] = $rk_feld('r_pfad_zuluft', $rk_i);
+            /* Die Ruhezeit: leer heisst "keine". Eine unleserliche Angabe
+             * wird BEANSTANDET, nicht stillschweigend geleert - sonst waere
+             * ein Tippfehler von einer bewussten Loeschung nicht zu
+             * unterscheiden, und der Fensterantrieb liefe nachts weiter. */
+            foreach (array('ruhe_von' => 'EINST.RUHE_VON',
+                           'ruhe_bis' => 'EINST.RUHE_BIS') as $rk_rz => $rk_rzb) {
+                $rk_rv = $rk_feld('r_' . $rk_rz, $rk_i);
+                if ($rk_rv === '') { $rk_r[$rk_rz] = ''; continue; }
+                if (preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $rk_rv)) {
+                    $rk_r[$rk_rz] = $rk_rv;
+                } else {
+                    $rk_fehler[] = sprintf(rk_t('FEHLER.UHRZEIT'),
+                        rk_t('EINST.RAUM') . ' ' . ($rk_i + 1) . ' / ' . rk_t($rk_rzb),
+                        $rk_rv);
+                }
+            }
 
             $rk_bez = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
             $rk_a = $rk_adresse($rk_feld('r_quelle', $rk_i), $rk_bez);
@@ -209,6 +353,15 @@ if ($rk_post && isset($_POST['speichern'])) {
             $rk_w = $rk_zahl($rk_feld('r_co2_max', $rk_i), 0, 5000,
                              $rk_bez . ' / ' . rk_t('EINST.CO2_MAX'), true);
             if ($rk_w !== null) { $rk_r['co2_max'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_wrg_eta', $rk_i), 0, 100,
+                             $rk_bez . ' / ' . rk_t('EINST.WRG_ETA'));
+            if ($rk_w !== null) { $rk_r['wrg_eta'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_wasser_g', $rk_i), 0, 20000,
+                             $rk_bez . ' / ' . rk_t('EINST.WASSER_G'));
+            if ($rk_w !== null) { $rk_r['wasser_g'] = $rk_w; }
+            $rk_w = $rk_zahl($rk_feld('r_personen', $rk_i), 0, 20,
+                             $rk_bez . ' / ' . rk_t('EINST.PERSONEN'));
+            if ($rk_w !== null) { $rk_r['personen'] = $rk_w; }
             $rk_rf = isset($_POST['r_fenster'][$rk_i]) ? (string) $_POST['r_fenster'][$rk_i] : '';
             if (in_array($rk_rf, array('kipp', 'stoss', 'quer'), true)) { $rk_r['fenster'] = $rk_rf; }
 
@@ -259,28 +412,49 @@ if ($rk_post && isset($_POST['speichern'])) {
             $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_QUELLE');
         }
 
-        $rk_w = $rk_zahl(isset($_POST['mindest']) ? $_POST['mindest'] : '', 0, 10, rk_t('EINST.MINDEST'));
-        if ($rk_w !== null) { $rk_cfg['mindest'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['t_min']) ? $_POST['t_min'] : '', -30, 30, rk_t('EINST.T_MIN'));
-        if ($rk_w !== null) { $rk_cfg['t_min'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['af_unter']) ? $_POST['af_unter'] : '', 0, 20, rk_t('EINST.AF_UNTER'));
-        if ($rk_w !== null) { $rk_cfg['af_unter'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['vorschau']) ? $_POST['vorschau'] : '', 1, 48, rk_t('EINST.VORSCHAU'), true);
-        if ($rk_w !== null) { $rk_cfg['vorschau'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['steht_min']) ? $_POST['steht_min'] : '', 0, 1440,
-                         rk_t('EINST.STEHT_MIN'), true);
-        if ($rk_w !== null) { $rk_cfg['steht_min'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['hyst']) ? $_POST['hyst'] : '', 0, 1, rk_t('EINST.HYST'));
-        if ($rk_w !== null) { $rk_cfg['hyst'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['dauer_min']) ? $_POST['dauer_min'] : '', 0, 120,
-                         rk_t('EINST.DAUER_MIN'), true);
-        if ($rk_w !== null) { $rk_cfg['dauer_min'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['regen_max']) ? $_POST['regen_max'] : '', 0, 20,
-                         rk_t('EINST.REGEN_MAX'));
-        if ($rk_w !== null) { $rk_cfg['regen_max'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['kuehl_spanne']) ? $_POST['kuehl_spanne'] : '', 0.1, 10,
-                         rk_t('EINST.KUEHL_SPANNE'));
-        if ($rk_w !== null) { $rk_cfg['kuehl_spanne'] = $rk_w; }
+        /* ---------------------------------------------------------------
+         * Die Zahlenfelder der Bewertung - durch DIESELBE Wache wie die
+         * Sicherungsdatei.
+         *
+         * Bis 0.10.1 stand die Positivliste zweimal da: einmal hier als
+         * Grenzen im Aufruf, einmal gar nicht (die Sicherung uebernahm
+         * jeden Wert ungeprueft). Jetzt kommt beides aus
+         * rk_wert_pruefen(); die Grenzen stehen an genau einer Stelle,
+         * und wer ein Feld ergaenzt, ergaenzt sie dort.
+         * --------------------------------------------------------------- */
+        $rk_zahlfelder = array(
+            'mindest'      => 'EINST.MINDEST',
+            't_min'        => 'EINST.T_MIN',
+            'af_unter'     => 'EINST.AF_UNTER',
+            'vorschau'     => 'EINST.VORSCHAU',
+            'steht_min'    => 'EINST.STEHT_MIN',
+            'hyst'         => 'EINST.HYST',
+            'dauer_min'    => 'EINST.DAUER_MIN',
+            'regen_max'    => 'EINST.REGEN_MAX',
+            'kuehl_spanne' => 'EINST.KUEHL_SPANNE',
+            /* ---- neu in 0.11.0 ---- */
+            'wind_max'      => 'EINST.WIND_MAX',
+            'wand_abstand'  => 'EINST.WAND_ABSTAND',
+            'schwuel_x'     => 'EINST.SCHWUEL_X',
+            'co2_t_min'     => 'EINST.CO2_T_MIN',
+            'zwang_std'     => 'EINST.ZWANG_STD',
+            'vl_zuschlag'   => 'EINST.VL_ZUSCHLAG',
+            'kuehlfrei_ein' => 'EINST.KUEHLFREI_EIN',
+            'kuehlfrei_aus' => 'EINST.KUEHLFREI_AUS',
+            'heizgrenze'    => 'EINST.HEIZGRENZE',
+            'trend_min'     => 'EINST.TREND_MIN',
+            'co2_ltr'       => 'EINST.CO2_LTR',
+            'co2_aussen'    => 'EINST.CO2_AUSSEN',
+        );
+        foreach ($rk_zahlfelder as $rk_k => $rk_bez) {
+            if (!isset($_POST[$rk_k])) { continue; }
+            $rk_roh = trim((string) $_POST[$rk_k]);
+            /* Ein leer gelassenes Feld heisst "unveraendert", nicht "0". */
+            if ($rk_roh === '') { continue; }
+            list($rk_w, $rk_m) = rk_wert_pruefen($rk_k, $rk_roh);
+            if ($rk_m === '') { $rk_cfg[$rk_k] = $rk_w; }
+            else { $rk_fehler[] = sprintf(rk_t('FEHLER.FELD'), rk_t($rk_bez), $rk_roh); }
+        }
         /* Ein Haken schickt nichts mit, wenn er aus ist - das darf hier
          * gelesen werden, weil das Formular sich als zustaendig gemeldet hat. */
         $rk_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
@@ -387,54 +561,8 @@ function rk_z($v, $nach = 1, $einheit = '')
 }
 
 $rk_rahmen = class_exists('LBWeb', false);
-
-/* ---------------- Einstellungen sichern ----------------
- *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($rk_post && isset($_POST['rk_sichern'])) {
-    $rk_js = json_encode(rk_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($rk_js !== false) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="raumklima_einstellungen_'
-               . date('Ymd_His') . '.json"');
-        echo $rk_js;
-        exit;
-    }
-    $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
-}
-
-/* ---------------- Einstellungen zurueckspielen ----------------
- *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($rk_post && isset($_POST['rk_zurueck'])) {
-    if (!isset($_FILES['rk_sicherung']) || !is_array($_FILES['rk_sicherung'])
-        || !isset($_FILES['rk_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['rk_sicherung']['tmp_name'])) {
-        $rk_fehler[] = rk_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['rk_sicherung']['size'] > 262144) {
-        $rk_fehler[] = rk_t('EINST.SICH_ZU_GROSS');
-    } else {
-        list($rk_neu, $rk_mangel, $rk_n) = rk_sicherung_lesen(
-            (string) @file_get_contents($_FILES['rk_sicherung']['tmp_name']));
-        if ($rk_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $rk_fehler[] = rk_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $rk_mangel);
-        } elseif (rk_config_speichern($rk_neu)) {
-            $rk_meldungen[] = sprintf(rk_t('EINST.SICH_UEBERNOMMEN'), $rk_n);
-        } else {
-            $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
-        }
-    }
-}
-
+$rk_ft = rk_e(rk_formtoken());
+$rk_lage = rk_config_lage();
 
 if ($rk_rahmen) {
     LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
@@ -465,6 +593,17 @@ if ($rk_rahmen) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+/* Eine Tabelle mit mehr als sechs Spalten oder mit Eingabefeldern kommt in
+   einen Rollbehaelter. Ohne ihn steht die letzte Spalte AUSSERHALB und ist
+   nicht bloss unbequem, sondern unerreichbar: .sm-tbl hat width:100%, und
+   .sm-wrap hat max-width ohne Ueberlauf.
+   Im Browser gemessen am 28.08.2026, Fenster 1280 px:
+     ohne  sm-wrap clientWidth 980, scrollWidth 1130  -> 150 px Ueberstand
+     mit   sm-wrap clientWidth 980, scrollWidth  980  -> kein Ueberstand
+   Raumklima hat die breitesten Eingabetabellen des Bestands: acht und zehn
+   Spalten. Betroffen war zuletzt die Spalte CO2-Grenze. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -521,6 +660,16 @@ if ($rk_rahmen) {
 <?php } ?>
 <?php if ($rk_fehler) { ?>
 <div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_fehler)) ?></div>
+<?php } ?>
+<?php
+/* Jeder Zustand, den der Code erzeugen kann, braucht seinen Satz. Bis
+ * 0.10.1 sah eine kaputte Konfiguration aus wie eine leere - und die
+ * Oberflaeche sagte dazu nichts, waehrend im Hintergrund die Zweitschrift
+ * ueberschrieben wurde. */
+if ($rk_lage === 'kaputt') { ?>
+<div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.CFG_KAPUTT_H')) ?></b><br><?= rk_t('ALLG.CFG_KAPUTT') ?></div>
+<?php } elseif ($rk_lage === 'zweitschrift') { ?>
+<div class="sm-hinweis"><?= rk_t('ALLG.CFG_ZWEITSCHRIFT') ?></div>
 <?php } ?>
 
 <div class="sm-kacheln">
@@ -584,6 +733,7 @@ if ($rk_rahmen) {
 
 <?php if ($rk_stand && isset($rk_stand['raeume']) && $rk_stand['raeume']) { ?>
 <h3><?= rk_e(rk_t('EINST.H_TABELLE')) ?></h3>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <th><?= rk_e(rk_t('TAB.RAUM')) ?></th>
@@ -640,6 +790,7 @@ if ($rk_rahmen) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <p class="sm-hilfe"><?= rk_t('EINST.TABELLE_HINWEIS') ?></p>
 <?php } else { ?>
 <div class="sm-hinweis"><?= rk_t('EINST.NOCH_NICHTS') ?></div>
@@ -651,12 +802,14 @@ if ($rk_rahmen) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="abrufen" value="1"><?= rk_e(rk_t('EINST.K_ABRUFEN')) ?></button>
   </form>
 </div>
 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="<?= rk_e($rk_tab) ?>">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
 <!-- Sagt dem Speichern-Handler, welche Felder dieses Formular besitzt.
      Ohne diese Marke uebernahm er auch die Felder der anderen Reiter als
      leer - und loeschte sie damit. -->
@@ -671,6 +824,7 @@ if ($rk_rahmen) {
   <p class="sm-hilfe"><?= rk_t('EINST.QUELLE_HILFE') ?></p>
 </div>
 
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <th><?= rk_e(rk_t('EINST.RAUM')) ?></th>
@@ -679,6 +833,7 @@ if ($rk_rahmen) {
   <th><?= rk_e(rk_t('EINST.PFAD_RF')) ?></th>
   <th><?= rk_e(rk_t('EINST.PFAD_CO2')) ?></th>
   <th><?= rk_e(rk_t('EINST.PFAD_FENSTER')) ?></th>
+  <th><?= rk_e(rk_t('EINST.PFAD_ZULUFT')) ?></th>
   <th><?= rk_e(rk_t('EINST.EIGENE_QUELLE')) ?></th>
   <th><?= rk_e(rk_t('EINST.EINHEIT')) ?></th>
 </tr>
@@ -690,6 +845,7 @@ if ($rk_rahmen) {
   <td><input data-role="none" type="text" size="20" name="r_pfad_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_rf']) ?>"></td>
   <td><input data-role="none" type="text" size="16" name="r_pfad_co2[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_co2']) ?>"></td>
   <td><input data-role="none" type="text" size="16" name="r_pfad_fenster[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_fenster']) ?>"></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_zuluft[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_zuluft']) ?>"></td>
   <td><input data-role="none" type="text" size="18" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle']) ?>"></td>
   <td><select data-role="none" name="r_einheit_t[<?= $rk_i ?>]">
     <option value="C"<?= $rk_r['einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
@@ -702,8 +858,10 @@ if ($rk_rahmen) {
 </tr>
 <?php } ?>
 </table>
+</div>
 
 <h3><?= rk_e(rk_t('EINST.H_EIGENSCHAFTEN')) ?></h3>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <th><?= rk_e(rk_t('EINST.RAUM')) ?></th>
@@ -716,6 +874,11 @@ if ($rk_rahmen) {
   <th><?= rk_e(rk_t('EINST.FENSTERART')) ?></th>
   <th><?= rk_e(rk_t('EINST.T_SOLL')) ?></th>
   <th><?= rk_e(rk_t('EINST.CO2_MAX')) ?></th>
+  <th><?= rk_e(rk_t('EINST.WRG_ETA')) ?></th>
+  <th><?= rk_e(rk_t('EINST.WASSER_G')) ?></th>
+  <th><?= rk_e(rk_t('EINST.RUHE_VON')) ?></th>
+  <th><?= rk_e(rk_t('EINST.RUHE_BIS')) ?></th>
+  <th><?= rk_e(rk_t('EINST.PERSONEN')) ?></th>
 </tr>
 <?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
 <tr>
@@ -737,9 +900,15 @@ if ($rk_rahmen) {
   </select></td>
   <td><input data-role="none" type="text" size="4" name="r_t_soll[<?= $rk_i ?>]" value="<?= rk_e($rk_r['t_soll']) ?>"></td>
   <td><input data-role="none" type="text" size="5" name="r_co2_max[<?= $rk_i ?>]" value="<?= rk_e($rk_r['co2_max']) ?>"></td>
+  <td><input data-role="none" type="text" size="4" name="r_wrg_eta[<?= $rk_i ?>]" value="<?= rk_e($rk_r['wrg_eta']) ?>"></td>
+  <td><input data-role="none" type="text" size="5" name="r_wasser_g[<?= $rk_i ?>]" value="<?= rk_e($rk_r['wasser_g']) ?>"></td>
+  <td><input data-role="none" type="text" size="5" name="r_ruhe_von[<?= $rk_i ?>]" value="<?= rk_e($rk_r['ruhe_von']) ?>" placeholder="22:00"></td>
+  <td><input data-role="none" type="text" size="5" name="r_ruhe_bis[<?= $rk_i ?>]" value="<?= rk_e($rk_r['ruhe_bis']) ?>" placeholder="06:00"></td>
+  <td><input data-role="none" type="text" size="3" name="r_personen[<?= $rk_i ?>]" value="<?= rk_e($rk_r['personen']) ?>"></td>
 </tr>
 <?php } ?>
 </table>
+</div>
 <p class="sm-hilfe"><?= rk_t('EINST.TABELLE_FELDER') ?></p>
 <p class="sm-hilfe"><?= rk_t('EINST.ART_HILFE') ?></p>
 <p class="sm-hilfe"><?= rk_t('EINST.EINHEIT_HILFE') ?></p>
@@ -842,6 +1011,60 @@ if ($rk_rahmen) {
   <p class="sm-hilfe"><?= rk_t('EINST.KUEHL_SPANNE_HILFE') ?></p>
 </div>
 <div class="sm-feld">
+  <label for="rk_wind"><?= rk_e(rk_t('EINST.WIND_MAX')) ?></label>
+  <input data-role="none" type="text" id="rk_wind" name="wind_max" value="<?= rk_e($rk_cfg['wind_max']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.WIND_MAX_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_wabs"><?= rk_e(rk_t('EINST.WAND_ABSTAND')) ?></label>
+  <input data-role="none" type="text" id="rk_wabs" name="wand_abstand" value="<?= rk_e($rk_cfg['wand_abstand']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.WAND_ABSTAND_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_co2t"><?= rk_e(rk_t('EINST.CO2_T_MIN')) ?></label>
+  <input data-role="none" type="text" id="rk_co2t" name="co2_t_min" value="<?= rk_e($rk_cfg['co2_t_min']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.CO2_T_MIN_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_zwang"><?= rk_e(rk_t('EINST.ZWANG_STD')) ?></label>
+  <input data-role="none" type="text" id="rk_zwang" name="zwang_std" value="<?= rk_e($rk_cfg['zwang_std']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.ZWANG_STD_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_schw"><?= rk_e(rk_t('EINST.SCHWUEL_X')) ?></label>
+  <input data-role="none" type="text" id="rk_schw" name="schwuel_x" value="<?= rk_e($rk_cfg['schwuel_x']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.SCHWUEL_X_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_vlz"><?= rk_e(rk_t('EINST.VL_ZUSCHLAG')) ?></label>
+  <input data-role="none" type="text" id="rk_vlz" name="vl_zuschlag" value="<?= rk_e($rk_cfg['vl_zuschlag']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.VL_ZUSCHLAG_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_kfe"><?= rk_e(rk_t('EINST.KUEHLFREI_EIN')) ?></label>
+  <input data-role="none" type="text" id="rk_kfe" name="kuehlfrei_ein" value="<?= rk_e($rk_cfg['kuehlfrei_ein']) ?>">
+  <label for="rk_kfa"><?= rk_e(rk_t('EINST.KUEHLFREI_AUS')) ?></label>
+  <input data-role="none" type="text" id="rk_kfa" name="kuehlfrei_aus" value="<?= rk_e($rk_cfg['kuehlfrei_aus']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.KUEHLFREI_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_heiz"><?= rk_e(rk_t('EINST.HEIZGRENZE')) ?></label>
+  <input data-role="none" type="text" id="rk_heiz" name="heizgrenze" value="<?= rk_e($rk_cfg['heizgrenze']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.HEIZGRENZE_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_trend"><?= rk_e(rk_t('EINST.TREND_MIN')) ?></label>
+  <input data-role="none" type="text" id="rk_trend" name="trend_min" value="<?= rk_e($rk_cfg['trend_min']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.TREND_MIN_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_cltr"><?= rk_e(rk_t('EINST.CO2_LTR')) ?></label>
+  <input data-role="none" type="text" id="rk_cltr" name="co2_ltr" value="<?= rk_e($rk_cfg['co2_ltr']) ?>">
+  <label for="rk_causs"><?= rk_e(rk_t('EINST.CO2_AUSSEN')) ?></label>
+  <input data-role="none" type="text" id="rk_causs" name="co2_aussen" value="<?= rk_e($rk_cfg['co2_aussen']) ?>">
+  <p class="sm-hilfe"><?= rk_t('EINST.CO2_LTR_HILFE') ?></p>
+</div>
+<div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= $rk_cfg['verlauf_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('EINST.VERLAUF')) ?></label>
   <p class="sm-hilfe"><?= rk_t('EINST.VERLAUF_HILFE') ?></p>
 </div>
@@ -874,10 +1097,13 @@ if ($rk_rahmen) {
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <label><input data-role="none" type="checkbox" name="sich_zugang" value="1"> <?= rk_e(rk_t('EINST.SICH_ZUGANG_HAKEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="rk_sichern" value="1"><?= rk_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <input data-role="none" type="file" name="rk_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="rk_zurueck" value="1"><?= rk_t('EINST.K_ZURUECK') ?></button>
   </form>
@@ -898,29 +1124,43 @@ if ($rk_rahmen) {
 <?php } ?>
 
 <h3><?= rk_e(rk_t('MQTT.H_ABO')) ?></h3>
-<p class="sm-hilfe"><?= rk_t('MQTT.ABO_HILFE') ?></p>
+<?php
+/* ALLES, was ueber das Abo gesagt wird, haengt an der gemessenen Fassung -
+ * und zwar an EINER Stelle, rk_abo_text().
+ *
+ * Bis 0.10.1 verzweigte nur der Kasten unten. Der erklaerende Satz darueber
+ * (MQTT.ABO_HILFE, "Der Eintrag steht in LoxBerry unter System, MQTT
+ * Gateway") und die Tabelle zum Abschreiben standen UNBEDINGT da. Unter
+ * Gateway V2 gibt es diesen Eintrag nicht - der Kern schaltet die Knoepfe
+ * auf der Abonnement-Seite ab -, und auf der Seite standen beide Aussagen
+ * untereinander. Gemessen an der gerenderten Seite, drei Laeufe, beide
+ * PHP-Fassungen: ABO_HILFE war in allen dreien da.
+ *
+ * Das ist woertlich der Befund, den MGiSmart am 25.08.2026 gefunden hat -
+ * an einer Stelle verzweigt, an der zweiten weiter behauptet. */
+$rk_gwf = (int) $rk_mqtt['fassung'];
+?>
+<?php if ($rk_gwf >= 2) { ?>
+<div class="sm-hinweis"><?= rk_abo_text() ?></div>
+<?php } elseif ($rk_gwf === 1) { ?>
+<div class="sm-warnung"><?= rk_abo_text() ?></div>
 <table class="sm-tbl">
 <tr><th><?= rk_e(rk_t('MQTT.SP_ABO')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
 <tr><td><span class="sm-mono"><?= rk_e($rk_thema . '/#') ?></span></td>
     <td><?= rk_e(rk_t('MQTT.ABO_ALLES')) ?></td></tr>
 </table>
-<?php
-/* Der Satz haengt an der Fassung des Gateways, nicht an einer Behauptung.
- * Ist sie nicht lesbar, stehen BEIDE da - einen von beiden zu behaupten
- * waere fuer die Haelfte der Anlagen falsch. */
-$rk_gwf = (int) $rk_mqtt['fassung'];
-?>
-<?php if ($rk_gwf >= 2) { ?>
-<div class="sm-hinweis"><?= rk_t('MQTT.ABO_V2') ?></div>
-<?php } elseif ($rk_gwf === 1) { ?>
-<div class="sm-warnung"><?= rk_t('MQTT.ABO_PFLICHT') ?></div>
 <?php } else { ?>
-<div class="sm-warnung"><?= rk_t('MQTT.ABO_PFLICHT') ?></div>
-<div class="sm-hilfe"><?= rk_t('MQTT.ABO_V2') ?></div>
+<div class="sm-warnung"><?= rk_abo_text() ?></div>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('MQTT.SP_ABO')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= rk_e($rk_thema . '/#') ?></span></td>
+    <td><?= rk_e(rk_t('MQTT.ABO_ALLES')) ?></td></tr>
+</table>
 <?php } ?>
 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
 <input data-role="none" type="hidden" name="feld_mqtt" value="1">
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $rk_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('MQTT.EIN')) ?></label>
@@ -985,10 +1225,12 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= rk_e(rk_t('LOX.K_VI')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= rk_e(rk_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
@@ -1066,35 +1308,109 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="quellen"><?= rk_e(rk_t('TEST.K_QUELLEN')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="pfade"><?= rk_e(rk_t('TEST.K_PFADE')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="meteo"><?= rk_e(rk_t('TEST.K_METEO')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="selbsttest"><?= rk_e(rk_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="endpunkt"><?= rk_e(rk_t('TEST.K_ENDPUNKT')) ?></button>
   </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="sicherung"><?= rk_e(rk_t('TEST.K_SICHERUNG')) ?></button>
+  </form>
 </div>
+
+<h3><?= rk_e(rk_t('TEST.H_PRUEFUNG')) ?></h3>
+<div class="sm-step"><?= rk_t('TEST.PRUEFUNG_HINWEIS') ?></div>
+<?php
+/* ------------------------------------------------------------------
+ * Die Selbstpruefung - acht Zeilen aus dem Hausstandard
+ *
+ * Bis 0.10.1 gab es sie ueberhaupt nicht: von den acht Zeilen der Tabelle
+ * in REGELN_2 war genau eine vorhanden (der Endpunktaufruf). Die dritte
+ * ist die teuerste - haette es sie gegeben, waere der Befund "eine kaputte
+ * Konfiguration reisst die Zweitschrift mit" beim ersten Klick
+ * aufgefallen. Die sechste haette gemeldet, dass die Formulare kein
+ * Merkmal tragen.
+ *
+ * ok = 1 Haken, 0 Kreuz, 2 Strich ("nicht feststellbar"). Ein Strich ist
+ * ausdruecklich KEIN Haken. Und die Zusammenfassung darf nicht besser
+ * aussehen als ihr schlechtester Punkt.
+ * ------------------------------------------------------------------ */
+/* Eine Selbstpruefung, die etwas KOSTET, laeuft nur im geoeffneten Reiter.
+ * Diese hier ruft den eigenen Endpunkt auf; stuende sie unbedingt hier,
+ * liefe bei JEDEM Seitenaufbau ein Netzaufruf mit - auch beim Speichern im
+ * Reiter Einstellungen, denn die Seite rendert alle Reiter mit. Der Aufruf
+ * ist zusaetzlich fuenf Minuten zwischengespeichert. */
+$rk_pruef = ($rk_tab === 'tab-test') ? rk_selbstpruefung() : null;
+if ($rk_pruef === null) { ?>
+<div class="sm-hinweis"><?= rk_e(rk_t('TEST.PRUEFUNG_ZU')) ?></div>
+<?php } else {
+$rk_pz = array(1 => 0, 0 => 0, 2 => 0);
+foreach ($rk_pruef as $rk_p1) { $rk_pz[(int) $rk_p1['ok']]++; }
+?>
+<?php
+/* Beide Klassen AUSGESCHRIEBEN, nicht zusammengesetzt: hausstandard_pruefen.py
+ * findet nur literale Klassenattribute; ein Klassenattribut, das erst zur
+ * Laufzeit aus zwei Teilen entsteht, macht seine Spalte blind. Das steht
+ * seit dem 17.08.2026 in REGELN_2.
+ *
+ * Und der Wortlaut dieses Kommentars nennt die gesuchte Form ABSICHTLICH
+ * nicht im Original - sonst schlaegt das Werkzeug auf die Erklaerung an.
+ * Genau das ist am 16.08. und am 17.08.2026 je einmal passiert. */
+if ($rk_pz[0] > 0) { ?>
+<div class="sm-warnung">
+<?= sprintf(rk_e(rk_t('TEST.PRUEFUNG_BILANZ')), $rk_pz[1], count($rk_pruef), $rk_pz[0], $rk_pz[2]) ?>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis">
+<?= sprintf(rk_e(rk_t('TEST.PRUEFUNG_BILANZ')), $rk_pz[1], count($rk_pruef), $rk_pz[0], $rk_pz[2]) ?>
+</div>
+<?php } ?>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('TEST.SP_ZEILE')) ?></th><th><?= rk_e(rk_t('TEST.SP_ERGEBNIS')) ?></th>
+    <th><?= rk_e(rk_t('TEST.SP_MESSWERT')) ?></th></tr>
+<?php foreach ($rk_pruef as $rk_p1) { ?>
+<tr>
+  <td><?= rk_e(rk_t($rk_p1['bez'])) ?></td>
+  <td><?php if ((int) $rk_p1['ok'] === 1) { ?><span class="sm-an">&#10003;</span><?php }
+           elseif ((int) $rk_p1['ok'] === 0) { ?><span class="sm-aus">&#10007;</span><?php }
+           else { ?><span>&ndash;</span><?php } ?></td>
+  <td><?= rk_e($rk_p1['text']) ?></td>
+</tr>
+<?php } ?>
+</table>
+<?php } ?>
 
 <h3><?= rk_e(rk_t('TEST.H_SCHALTEN')) ?></h3>
 <div class="sm-step"><?= rk_t('TEST.SCHALTEN_HINWEIS') ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="rechnung"><?= rk_e(rk_t('TEST.K_RECHNUNG')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="mqtt"><?= rk_e(rk_t('TEST.K_MQTT')) ?></button>
   </form>
 </div>
@@ -1119,6 +1435,7 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= rk_e(rk_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>

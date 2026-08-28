@@ -7,15 +7,66 @@
 # enthielt so eine Datei die MAC-Adressen und Namen aller ueberwachten
 # Personen. Hier stehen Raumnamen und die Adressen im Heimnetz drin; es gibt
 # keinen Grund, sie liegen zu lassen.
+#
+# BIS 0.10.1 WAR DIE SCHLUSSMELDUNG EINE FALSCHAUSSAGE. Geloescht wurde nur
+# <ordner>.backup.json; die beiden Namen, die der angehaengte Block von
+# preupgrade.sh anlegt, waren hier nicht bekannt. Am 28.08.2026
+# durchgespielt - danach lag noch da:
+#
+#   raumklima.backup.geheim.json    {"benutzer":"loxadmin","passwort":"..."}
+#   raumklima.backup.raumklima.json {"raeume":[...],"quelle":"http://..."}
+#   log/plugins/raumklima
+#
+# und das Skript meldete "Sicherungsdatei und Zugangsdaten geloescht".
+#
+# Jetzt werden alle Namen entfernt - auch der dritte aus 0.10.x, den es in
+# 0.11.0 nicht mehr gibt, denn deinstalliert wird von einem Stand, der
+# beliebig alt sein kann. Und GEZAEHLT wird, was wirklich weg ist: eine
+# Schlussmeldung, die mehr behauptet als geschehen ist, ist schlimmer als
+# gar keine.
 SELF=$(cd "$(dirname "$0")" && pwd)
 PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
 BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
 
-rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
-# Die Datei mit den Zugangsdaten liegt im Ordner und geht mit ihm; zur
-# Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
-rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"
-rm -rf "$BASE/data/plugins/$PFOLDER"
+WEG=0
+for F in \
+    "$BASE/config/plugins/$PFOLDER.backup.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.raumklima.json" \
+    "$BASE/config/plugins/$PFOLDER/geheim.json"
+do
+    if [ -e "$F" ]; then
+        rm -f "$F" && WEG=$((WEG + 1))
+    fi
+done
+# Die beiseitegelegten kaputten Konfigurationen (raumklima.json.kaputt.*)
+# tragen dieselben Raumnamen und Adressen wie die heile Datei.
+for F in "$BASE/config/plugins/$PFOLDER"/raumklima.json.kaputt.*; do
+    [ -e "$F" ] || continue
+    rm -f "$F" && WEG=$((WEG + 1))
+done
 
-echo "<OK> Raumklima-Plugin entfernt, Sicherungsdatei und Zugangsdaten geloescht."
+for D in "$BASE/data/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER"; do
+    if [ -d "$D" ]; then
+        rm -rf "$D" && WEG=$((WEG + 1))
+    fi
+done
+
+# Fail closed: liegt danach noch etwas da, wird es gesagt statt beschwiegen.
+REST=0
+for F in \
+    "$BASE/config/plugins/$PFOLDER.backup.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.raumklima.json"
+do
+    [ -e "$F" ] && { echo "<WARNING> Nicht entfernt: $F"; REST=$((REST + 1)); }
+done
+
+if [ "$REST" -gt 0 ]; then
+    echo "<WARNING> Raumklima-Plugin entfernt, aber $REST Datei(en) blieben liegen."
+    echo "<WARNING> Sie enthalten Raumnamen, Heimnetzadressen und Zugangsdaten."
+    exit 0
+fi
+echo "<OK> Raumklima-Plugin entfernt, $WEG Datei(en) und Ordner geloescht -"
+echo "<OK> darunter Zweitschriften, Zugangsdaten und Protokolle."
 exit 0

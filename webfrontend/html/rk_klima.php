@@ -57,7 +57,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('RK_KERN', '1.2.0');
+define('RK_KERN', '1.3.0');
 
 /* ==================================================================
  * Grundgroessen
@@ -164,6 +164,14 @@ function rk_dampfdruck($t, $rf)
  * Taupunkt in Grad Celsius.
  * Rueckgabe null, wenn die Eingabe unbrauchbar ist - nicht 0. Eine Null
  * waere ein plausibler Taupunkt und damit eine stille Falschaussage.
+ *
+ * Seit 0.11.0 wird auch das ERGEBNIS gegen den Gueltigkeitsbereich gehalten,
+ * nicht nur die Eingabe. Gemessen am 28.08.2026: ein Fuehler am unteren
+ * Anschlag meldet 0,1 % statt 0 %; die Eingabe kommt damit durch, und heraus
+ * kommt ein Taupunkt von -57,89 Grad. Aus ihm wird VLMIN = -56,89 - und das
+ * geht als "kleinste Vorlauftemperatur" nach Loxone. Der Bereich, in dem die
+ * Magnus-Formel laut Dateikopf gilt, endet bei -60; eine Zahl 30 Kelvin
+ * darunter ist keine Aussage mehr, sondern eine gefaehrliche.
  */
 function rk_taupunkt($t, $rf)
 {
@@ -175,7 +183,8 @@ function rk_taupunkt($t, $rf)
     $l = log($e / 6.112);
     $n = 17.62 - $l;
     if (abs($n) < 1e-9) { return null; }
-    return round(243.12 * $l / $n, 2);
+    $td = round(243.12 * $l / $n, 2);
+    return rk_t_gueltig($td) ? $td : null;
 }
 
 /** Absolute Feuchte in g/m3. Rueckgabe null bei unbrauchbarer Eingabe. */
@@ -308,7 +317,8 @@ function rk_rf_oberflaeche($t_innen, $rf_innen, $t_aussen, $frsi,
 }
 
 /**
- * Die Schimmelampel: 0 unbedenklich, 1 beobachten, 2 Gefahr, 3 Tauwasser.
+ * Die Schimmelampel: -1 keine Aussage, 0 unbedenklich, 1 beobachten,
+ * 2 Gefahr, 3 Tauwasser.
  *
  * Das eine Bit bei genau 80 % springt auf Messrauschen an - 79,8 und 80,1
  * sind dieselbe Wand. Vier Stufen sagen mehr und flattern weniger:
@@ -317,10 +327,18 @@ function rk_rf_oberflaeche($t_innen, $rf_innen, $t_aussen, $frsi,
  *     70 bis 80    beobachten - hier faengt es an, wenn es so bleibt
  *     80 bis 95    Schimmelgefahr (die Schwelle der Bauphysik)
  *     ab 95        praktisch Tauwasser
+ *
+ * Bis 0.10.1 stand hier eine 0, wenn sich die Oberflaechenfeuchte nicht
+ * berechnen liess. Gemessen am 28.08.2026: bei stummer Aussenquelle und bei
+ * der Raumart 'innen' meldete das Plugin damit dieselbe 0 wie bei einer
+ * gemessenen, unbedenklichen Wand. Ein Waechter in Loxone konnte "keine
+ * Gefahr" nicht von "keine Daten" unterscheiden - dieselbe stille
+ * Falschaussage, die der Sammelwert OK eine Ebene hoeher laengst vermeidet.
+ * -1 reiht sich in nass24, alter und best_in ein, die alle so verfahren.
  */
 function rk_ampel($ober_rf)
 {
-    if ($ober_rf === null || !is_numeric($ober_rf)) { return 0; }
+    if ($ober_rf === null || !is_numeric($ober_rf)) { return -1; }
     $r = (float) $ober_rf;
     if ($r >= 95.0) { return 3; }
     if ($r >= 80.0) { return 2; }
@@ -347,24 +365,80 @@ function rk_ampel($ober_rf)
  *      Winter ist zu trockene Luft das haeufigere Problem, und dagegen
  *      hilft Lueften nicht, sondern es macht es schlimmer.
  *
- * Rueckgabe: array('lohnt' => 0/1, 'gewinn' => g/m3, 'grund' => Kuerzel)
+ * ------------------------------------------------------------------
+ * Die HARTEN SPERREN stehen seit 0.11.0 VORN - und sie tragen ein eigenes
+ * Merkmal, keine Zeichenkette
+ * ------------------------------------------------------------------
+ *
+ * Bis 0.10.1 war die Regenpruefung die dritte von dreien, und der Aufrufer
+ * las die Sperre aus dem Feld 'grund' ab (`if ($l['grund'] === 'regen')`).
+ * Griff vorher schon 'zu_kalt' oder 'zu_trocken', wurde 'grund' nie auf
+ * 'regen' gesetzt - und die Sperre, die auch CO2 und Kuehlen abfangen soll,
+ * lief ins Leere. Gemessen am 28.08.2026:
+ *
+ *     Schnee, -6 C, 3 mm, CO2 1400   ->  lueften=1 grund=co2
+ *     Regen,  -4 C, 3 mm, CO2 1400   ->  lueften=0 grund=regen
+ *
+ * Bei Schneefall und sechs Grad unter null oeffnete der Fensterantrieb.
+ * Ein Zustand, den man aus einer Zeichenkette liest, ist eine zweite Stelle,
+ * die man mitpflegen muss; deshalb gibt es jetzt 'sperre'.
+ *
+ * Drei harte Sperren, alle vor jeder Abwaegung:
+ *
+ *   regen           Starkregen - ein Fensterantrieb macht dann nicht auf
+ *   wind            Sturm. Fuer einen Antrieb der wichtigere der beiden
+ *                   Schalter; die Boe schlaegt den Fluegel, der Regen nicht.
+ *   wand_tauwasser  Der Taupunkt der AUSSENluft liegt ueber der kaeltesten
+ *                   Flaeche im Raum. Dann faellt genau dort Wasser aus,
+ *                   auch wenn die Aussenluft absolut trockener ist.
+ *                   Gemessen: Keller 20 C/72 %, Wand 13 C, aussen 25 C/51 % -
+ *                   Gewinn +0,70 g/m3, also "lohnt", und der Taupunkt der
+ *                   Aussenluft liegt mit 14,16 C um 1,2 K UEBER der Wand.
+ *                   An der Wand waeren es danach 100 %. Der Kopfkommentar zu
+ *                   rk_oberflaeche() begruendet die Raumart 'keller'
+ *                   ausdruecklich mit diesem Sommerschimmel; die Ampel
+ *                   behandelte ihn richtig, die Empfehlung nicht.
+ *
+ * Rueckgabe: array('lohnt' => 0/1, 'gewinn' => g/m3, 'grund' => Kuerzel,
+ *                  'sperre' => 0/1)
  */
 function rk_lueften($af_innen, $t_aussen, $rf_aussen, $mindest, $t_min, $af_unter,
-                    $lief = false, $hyst = 0.5, $regen = null, $regen_max = 0.0)
+                    $lief = false, $hyst = 0.5, $regen = null, $regen_max = 0.0,
+                    $wind = null, $wind_max = 0.0, $wand_t = null,
+                    $wand_abstand = 1.0)
 {
     $af_aussen = rk_absolut($t_aussen, $rf_aussen);
-    $leer = array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'keine_daten');
+    $leer = array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'keine_daten',
+                  'sperre' => 0);
     if ($af_innen === null || $af_aussen === null) { return $leer; }
 
     $gewinn = round($af_innen - $af_aussen, 3);
+    $aus = function ($grund, $sperre = 0) use ($gewinn) {
+        return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => $grund,
+                     'sperre' => $sperre);
+    };
+
+    /* ---- Die harten Sperren, vor jeder Abwaegung ---- */
+    if ((float) $regen_max > 0.0 && $regen !== null && (float) $regen > (float) $regen_max) {
+        return $aus('regen', 1);
+    }
+    if ((float) $wind_max > 0.0 && $wind !== null && (float) $wind > (float) $wind_max) {
+        return $aus('wind', 1);
+    }
+    if (rk_t_gueltig($wand_t)) {
+        $td_aussen = rk_taupunkt($t_aussen, $rf_aussen);
+        if ($td_aussen !== null
+            && (float) $td_aussen > (float) $wand_t - (float) $wand_abstand) {
+            return $aus('wand_tauwasser', 1);
+        }
+    }
+
+    /* ---- Danach die Abwaegung ---- */
     if ($af_unter !== null && $af_innen < $af_unter) {
-        return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'zu_trocken');
+        return $aus('zu_trocken');
     }
     if ((float) $t_aussen < (float) $t_min) {
-        return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'zu_kalt');
-    }
-    if ((float) $regen_max > 0.0 && $regen !== null && (float) $regen > (float) $regen_max) {
-        return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'regen');
+        return $aus('zu_kalt');
     }
     /* Hysterese: einschalten bei $mindest, ausschalten erst darunter.
      *
@@ -374,9 +448,10 @@ function rk_lueften($af_innen, $t_aussen, $rf_aussen, $mindest, $t_min, $af_unte
     $schwelle = $lief ? (float) $mindest * max(0.0, min(1.0, (float) $hyst))
                       : (float) $mindest;
     if ($gewinn < $schwelle) {
-        return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'aussen_feuchter');
+        return $aus('aussen_feuchter');
     }
-    return array('lohnt' => 1, 'gewinn' => $gewinn, 'grund' => 'lohnt');
+    return array('lohnt' => 1, 'gewinn' => $gewinn, 'grund' => 'lohnt',
+                 'sperre' => 0);
 }
 
 /**
@@ -390,9 +465,20 @@ function rk_lueften($af_innen, $t_aussen, $rf_aussen, $mindest, $t_min, $af_unte
  * Bedingungen: der Raum ist ueber seiner Zieltemperatur, draussen ist es
  * mindestens $spanne kaelter, und die Aussenluft bringt nicht mehr Feuchte
  * herein, als $af_zusatz erlaubt.
+ *
+ * Seit 0.11.0 mit derselben Hysterese wie die Feuchteseite. Bis 0.10.1 hatte
+ * diese Funktion keinen $lief-Parameter, und gemessen am 28.08.2026 kippte
+ * die Empfehlung an 0,05 Kelvin Messrauschen im Fuenfminutentakt:
+ *
+ *     aussen 24.90 (Spanne 1.10 K) -> kuehlen=1
+ *     aussen 25.02 (Spanne 0.98 K) -> kuehlen=0
+ *     aussen 24.96 (Spanne 1.04 K) -> kuehlen=1
+ *
+ * Genau das Verhalten, das der Kommentar bei der Mindestdauer verhindern
+ * will - nur auf der anderen Haelfte.
  */
 function rk_kuehlen($t_innen, $rf_innen, $t_aussen, $rf_aussen, $t_soll,
-                    $spanne = 1.0, $af_zusatz = 1.0)
+                    $spanne = 1.0, $af_zusatz = 1.0, $lief = false, $hyst = 0.5)
 {
     $leer = array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'keine_daten');
     if (!rk_t_gueltig($t_innen) || !rk_t_gueltig($t_aussen)) { return $leer; }
@@ -404,7 +490,9 @@ function rk_kuehlen($t_innen, $rf_innen, $t_aussen, $rf_aussen, $t_soll,
     if ($t_innen <= (float) $t_soll) {
         return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'ziel_erreicht');
     }
-    if ($gewinn < (float) $spanne) {
+    $schwelle = $lief ? (float) $spanne * max(0.0, min(1.0, (float) $hyst))
+                      : (float) $spanne;
+    if ($gewinn < $schwelle) {
         return array('lohnt' => 0, 'gewinn' => $gewinn, 'grund' => 'aussen_waermer');
     }
     $af_i = rk_absolut($t_innen, $rf_innen);
@@ -469,6 +557,246 @@ function rk_lueftkosten($volumen, $t_innen, $t_aussen)
     return round((float) $volumen * 1.2 * 1.006 * $dt / 3.6, 1);
 }
 
+/* ==================================================================
+ * Neu in 0.11.0 - alles aus Groessen gerechnet, die das Plugin schon hat
+ * ================================================================== */
+
+/**
+ * Schwuel oder nicht - am Mischungsverhaeltnis, nicht an der relativen
+ * Feuchte.
+ *
+ * Die relative Feuchte taugt fuer diese Frage nicht: 60 % bei 20 Grad und
+ * 60 % bei 28 Grad sind zwei voellig verschiedene Luftmengen. Massgeblich
+ * ist, wie viel Wasser die Luft traegt - und dafuer steht rk_mischung()
+ * schon da; es wurde bisher nur fuer die Enthalpie gebraucht.
+ *
+ * 11,5 g/kg ist die uebliche Behaglichkeitsgrenze. Das ist eine
+ * EINSTELLUNG, keine Messung - sie steht deshalb in der Oberflaeche.
+ *
+ * Rueckgabe: 1 schwuel, 0 nicht, null wenn nicht zu rechnen.
+ */
+function rk_schwuel($t, $rf, $grenze = 11.5)
+{
+    $x = rk_mischung($t, $rf);
+    if ($x === null || !is_numeric($grenze) || (float) $grenze <= 0) { return null; }
+    return $x >= (float) $grenze ? 1 : 0;
+}
+
+/**
+ * Wie viel Wasser traegt das Lueften je Stunde aus dem Raum? In Gramm.
+ *
+ *     m = n * V * (AF_innen - AF_aussen)
+ *
+ * n ist der Luftwechsel je Stunde (rk_luftwechsel), V das Raumvolumen,
+ * die beiden Feuchten kommen aus rk_absolut(). Alle drei Groessen liegen
+ * vor - es fehlte nur das Produkt.
+ *
+ * Das ist die Antwort auf "wie lange braucht die Waesche": eine Ladung
+ * traegt rund 2 bis 2,5 kg Wasser.
+ *
+ * Rueckgabe null ohne Volumen - eine Zahl ohne Raumgroesse waere geraten.
+ */
+function rk_trocknen($art, $dt, $wind, $volumen, $af_innen, $af_aussen)
+{
+    if (!is_numeric($volumen) || (float) $volumen <= 0) { return null; }
+    if ($af_innen === null || $af_aussen === null) { return null; }
+    $n = rk_luftwechsel($art, $dt, $wind);
+    if ($n <= 0) { return null; }
+    $g = $n * (float) $volumen * ((float) $af_innen - (float) $af_aussen);
+    return round($g, 1);
+}
+
+/**
+ * Wie viele Stunden bei dieser Leistung, bis die Wassermenge heraus ist?
+ * Rueckgabe null, wenn nichts herausgeht - lieber keine Zahl als eine
+ * Restzeit, die nie ablaeuft.
+ */
+function rk_trockenrest($leistung_g_h, $wasser_g)
+{
+    if (!is_numeric($leistung_g_h) || (float) $leistung_g_h <= 0) { return null; }
+    if (!is_numeric($wasser_g) || (float) $wasser_g <= 0) { return null; }
+    return round((float) $wasser_g / (float) $leistung_g_h, 1);
+}
+
+/**
+ * Rueckwaermzahl einer Lueftungsanlage aus drei Temperaturen.
+ *
+ *     eta = (t_zuluft - t_aussen) / (t_innen - t_aussen)
+ *
+ * Der Nenner wird gesperrt, sobald innen und aussen nahe beieinander
+ * liegen: dann steht im Zaehler wie im Nenner fast nur Messrauschen, und
+ * heraus kaeme eine Zahl, die zwischen 0 und 5 springt. Drei Kelvin sind
+ * die uebliche Grenze.
+ *
+ * Rueckgabe in Prozent, auf 0 bis 100 begrenzt, oder null.
+ */
+function rk_wrg($t_innen, $t_aussen, $t_zuluft, $mindest_dt = 3.0)
+{
+    if (!rk_t_gueltig($t_innen) || !rk_t_gueltig($t_aussen)
+        || !rk_t_gueltig($t_zuluft)) { return null; }
+    $nenner = (float) $t_innen - (float) $t_aussen;
+    if (abs($nenner) < (float) $mindest_dt) { return null; }
+    $eta = ((float) $t_zuluft - (float) $t_aussen) / $nenner;
+    return round(max(0.0, min(100.0, $eta * 100.0)), 1);
+}
+
+/**
+ * Fortlufttemperatur einer Lueftungsanlage - und damit die Frage, ob der
+ * Waermetauscher vereist.
+ *
+ *     t_fort = t_innen - eta * (t_innen - t_aussen)
+ *
+ * Unter null Grad friert das Kondensat im Tauscher. Die Rueckwaermzahl ist
+ * eine ANGABE des Anlagenherstellers, keine Messung dieses Plugins - sie
+ * steht deshalb je Raum in der Oberflaeche und ist ab Werk 0, also aus.
+ */
+function rk_fortluft($t_innen, $t_aussen, $eta_proz)
+{
+    if (!rk_t_gueltig($t_innen) || !rk_t_gueltig($t_aussen)) { return null; }
+    if (!is_numeric($eta_proz) || (float) $eta_proz <= 0) { return null; }
+    $eta = max(0.0, min(100.0, (float) $eta_proz)) / 100.0;
+    $tf = (float) $t_innen - $eta * ((float) $t_innen - (float) $t_aussen);
+    return rk_t_gueltig($tf) ? round($tf, 2) : null;
+}
+
+/**
+ * Liegt der Zeitpunkt in der Ruhezeit dieses Raums?
+ *
+ * Die Angaben sind "HH:MM"; ein leeres Feld heisst "keine Ruhezeit". Ueber
+ * Mitternacht hinweg wird richtig gerechnet - 22:00 bis 06:00 ist ein
+ * Fenster, keine leere Menge.
+ *
+ * Rueckgabe 1, 0 - oder -1, wenn keine Ruhezeit eingestellt ist. Eine 0
+ * hiesse "ist gerade nicht Ruhezeit" und waere eine Aussage; -1 heisst
+ * "es gibt keine".
+ */
+function rk_ruhe_aktiv($von, $bis, $jetzt)
+{
+    $lies = function ($s) {
+        $s = trim((string) $s);
+        if (!preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/', $s, $m)) { return null; }
+        return (int) $m[1] * 60 + (int) $m[2];
+    };
+    $a = $lies($von);
+    $b = $lies($bis);
+    if ($a === null || $b === null || $a === $b) { return -1; }
+    $jetzt = (int) $jetzt;
+    $min = (int) date('G', $jetzt) * 60 + (int) date('i', $jetzt);
+    if ($a < $b) { return ($min >= $a && $min < $b) ? 1 : 0; }
+    // ueber Mitternacht
+    return ($min >= $a || $min < $b) ? 1 : 0;
+}
+
+/* ==================================================================
+ * CO2 und die Personenzahl
+ *
+ * Bis 0.11.0 fehlte die Voraussetzung: ohne die Zahl der Personen im Raum
+ * liess sich der CO2-Verlauf nicht rechnen, und eine geratene Zahl waere
+ * schlimmer als keine gewesen. Sie ist jetzt ein Feld je Raum und ab Werk 0,
+ * also aus.
+ *
+ * Die Rechnung ist die klassische Massenbilanz. Ein Mensch atmet CO2 aus;
+ * wie viel, haengt an seiner Taetigkeit:
+ *
+ *     schlafend       rund 13 l/h
+ *     sitzend, ruhig  rund 17 l/h     <- Vorgabe
+ *     leichte Arbeit  rund 25 l/h
+ *
+ * DIESE ZAHL IST EINE EINSTELLUNG, KEINE MESSUNG. Sie steht deshalb in der
+ * Oberflaeche und nicht fest im Code - genau wie fRsi und der Luftwechsel.
+ * ================================================================== */
+
+/**
+ * Erwarteter CO2-Anstieg in ppm je Stunde, aus Personenzahl und Volumen.
+ *
+ *     dC/dt = E * 1e6 / V        E in m3/h, V in m3
+ *
+ * OHNE Luftwechsel gerechnet, also die obere Schranke: mit Infiltration
+ * steigt es langsamer. Fuer eine Warnung ist das die richtige Richtung -
+ * sie kommt eher zu frueh als zu spaet.
+ *
+ * Rueckgabe null ohne Personen oder ohne Volumen. Eine Null hiesse "es
+ * steigt nicht", und das waere eine Aussage.
+ */
+function rk_co2_anstieg_erwartet($personen, $volumen, $liter_je_stunde = 17.0)
+{
+    if (!is_numeric($personen) || (float) $personen <= 0) { return null; }
+    if (!is_numeric($volumen) || (float) $volumen <= 0) { return null; }
+    if (!is_numeric($liter_je_stunde) || (float) $liter_je_stunde <= 0) { return null; }
+    $e = (float) $personen * (float) $liter_je_stunde / 1000.0;   // m3/h
+    return round($e * 1000000.0 / (float) $volumen, 0);
+}
+
+/**
+ * Welcher Luftwechsel haelt die Grenze?
+ *
+ *     n = E * 1e6 / (V * (C_grenze - C_aussen))
+ *
+ * Die Zahl ist zum Vergleichen da: rk_luftwechsel() sagt, was gekipptes,
+ * ganz geoeffnetes und quer gelueftetes Fenster leisten (rund 1, 10 und 25
+ * je Stunde). Liegt der erforderliche Wert ueber 1, reicht Kippen nicht.
+ *
+ * Rueckgabe null, wenn die Grenze nicht ueber der Aussenluft liegt - dann
+ * ist sie mit Lueften ueberhaupt nicht zu halten, und eine Zahl waere
+ * irrefuehrend.
+ */
+function rk_co2_luftwechsel($personen, $volumen, $grenze, $aussen = 420.0,
+                            $liter_je_stunde = 17.0)
+{
+    if (!is_numeric($personen) || (float) $personen <= 0) { return null; }
+    if (!is_numeric($volumen) || (float) $volumen <= 0) { return null; }
+    if (!is_numeric($grenze) || !is_numeric($aussen)) { return null; }
+    $spanne = (float) $grenze - (float) $aussen;
+    if ($spanne <= 0) { return null; }
+    $e = (float) $personen * (float) $liter_je_stunde / 1000.0;
+    return round($e * 1000000.0 / ((float) $volumen * $spanne), 2);
+}
+
+/**
+ * Minuten, bis die CO2-Grenze erreicht ist.
+ *
+ * Gerechnet wird mit dem GEMESSENEN Anstieg aus dem Verlaufsspeicher, nicht
+ * mit dem erwarteten: der gemessene enthaelt die Undichtigkeiten des Raums
+ * und die tatsaechliche Zahl der Anwesenden. Der erwartete steht daneben und
+ * dient dem Vergleich - wer beide sieht, erkennt einen Fuehler, der driftet,
+ * und ein Fenster, das gekippt steht.
+ *
+ * Rueckgabe -1, wenn nichts zu sagen ist: kein Anstieg, fallende Werte, oder
+ * die Grenze ist schon ueberschritten. Die Ueberschreitung selbst meldet
+ * co2_hoch - zwei Namen fuer eine Sache waeren einer zu viel.
+ */
+function rk_co2_voll($co2_jetzt, $grenze, $anstieg_ppm_h)
+{
+    if (!is_numeric($co2_jetzt) || !is_numeric($grenze) || (float) $grenze <= 0) { return -1; }
+    if ($anstieg_ppm_h === null || !is_numeric($anstieg_ppm_h)) { return -1; }
+    $rest = (float) $grenze - (float) $co2_jetzt;
+    if ($rest <= 0) { return -1; }
+    /* Unter 10 ppm je Stunde ist der Anstieg Messrauschen; daraus eine
+     * Restzeit zu rechnen ergaebe Tage und sieht aus wie eine Aussage. */
+    if ((float) $anstieg_ppm_h < 10.0) { return -1; }
+    return (int) min(2880, round($rest / (float) $anstieg_ppm_h * 60.0));
+}
+
+/**
+ * Heizfall oder Kuehlfall - am gleitenden Aussenmittel, nicht an der
+ * Momentantemperatur.
+ *
+ * Ein einzelner kuehler Augustabend macht keinen Heizfall, und ein warmer
+ * Februartag keinen Kuehlfall. Massgeblich ist das gleitende Mittel der
+ * letzten Tage; die Heizgrenze liegt ueblicherweise um 15 Grad und ist
+ * eine EINSTELLUNG.
+ *
+ * Rueckgabe 1 Heizfall, 0 Kuehlfall, -1 noch keine Aussage. Die -1 ist
+ * wichtig: der Aussenspeicher braucht ein paar Tage, bis er traegt, und in
+ * dieser Zeit waere jede der beiden Zahlen geraten.
+ */
+function rk_heizfall($aussen_mittel, $grenze = 15.0)
+{
+    if ($aussen_mittel === null || !is_numeric($aussen_mittel)) { return -1; }
+    if (!is_numeric($grenze)) { return -1; }
+    return ((float) $aussen_mittel < (float) $grenze) ? 1 : 0;
+}
+
 /**
  * Der beste Zeitpunkt in den naechsten Stunden.
  *
@@ -479,35 +807,102 @@ function rk_lueftkosten($volumen, $t_innen, $t_aussen)
  * $vorhersage ist array(ts => array('t' => Grad, 'rf' => Prozent)),
  * aufsteigend. Gesucht wird die Scheibe mit dem groessten Gewinn.
  *
+ * ------------------------------------------------------------------
+ * Die LAUFENDE Stunde zaehlt mit - seit 0.11.0
+ * ------------------------------------------------------------------
+ *
+ * Die Vorhersage ist auf volle Stunden gerastert, der Cron laeuft es nicht.
+ * Bis 0.10.1 filterte diese Funktion mit `$ts < $jetzt` und warf damit bei
+ * JEDEM realen Lauf die laufende Stunde heraus. Gemessen am 28.08.2026 an
+ * derselben Vorhersage, nur der Aufrufzeitpunkt wandert:
+ *
+ *      0 s nach der vollen Stunde -> in=  0  gewinn=6.150
+ *     60 s nach der vollen Stunde -> in=119  gewinn=2.136
+ *   3540 s nach der vollen Stunde -> in= 61  gewinn=2.136
+ *
+ * Die beste Stunde war die laufende, und sie kam nur zum Zuge, wenn der
+ * Cron die Sekunde traf. rk_meteo_jetzt() rundet fuer denselben Datensatz
+ * ausdruecklich auf die Stunde ab - die beiden Funktionen widersprachen
+ * sich also innerhalb derselben Datei.
+ *
+ * Gefiltert wird jetzt ab dem BEGINN der laufenden Stunde. Damit wird 'in'
+ * rechnerisch negativ, wenn die laufende Stunde gewinnt; es wird auf 0
+ * geklemmt, denn "vor fuenf Minuten" ist als Empfehlung unbrauchbar.
+ *
+ * $kuehl ist array('t_innen','rf_innen','t_soll','spanne') oder null. Ist
+ * es gesetzt, wird zusaetzlich die beste Stunde zum KUEHLEN gesucht. Bis
+ * 0.10.1 sah diese Funktion nur die Feuchte, und ein Raum konnte in
+ * derselben Ausgabe "jetzt kuehlen" und "beste Stunde in fuenf Stunden"
+ * melden - zweierlei aus einem Abbild.
+ *
  * Rueckgabe: array('jetzt'=>0/1, 'ts'=>Zeitstempel|null, 'in'=>Minuten|-1,
- *                  'gewinn'=>g/m3, 'grund'=>Kuerzel)
+ *                  'gewinn'=>g/m3, 'grund'=>Kuerzel,
+ *                  'kuehl_in'=>Minuten|-1, 'kuehl_std'=>Stunde|-1,
+ *                  'kuehl_gewinn'=>Kelvin)
  */
 function rk_bester_zeitpunkt($af_innen, $vorhersage, $jetzt, $mindest, $t_min,
-                             $af_unter, $stunden = 12, $regen_max = 0.0)
+                             $af_unter, $stunden = 12, $regen_max = 0.0,
+                             $wind_max = 0.0, $wand_t = null,
+                             $wand_abstand = 1.0, $kuehl = null)
 {
     $erg = array('jetzt' => 0, 'ts' => null, 'in' => -1, 'gewinn' => 0.0,
-                 'grund' => 'keine_vorhersage');
-    if (!is_array($vorhersage) || !$vorhersage || $af_innen === null) { return $erg; }
-    $ende = (int) $jetzt + max(1, (int) $stunden) * 3600;
+                 'grund' => 'keine_vorhersage',
+                 'kuehl_in' => -1, 'kuehl_std' => -1, 'kuehl_gewinn' => 0.0);
+    if (!is_array($vorhersage) || !$vorhersage) { return $erg; }
+
+    /* Der Beginn der laufenden Stunde, nicht der Augenblick. */
+    $jetzt = (int) $jetzt;
+    $ab = $jetzt - ($jetzt % 3600);
+    $ende = $ab + max(1, (int) $stunden) * 3600;
+
     $best = null;
+    $bestk = null;
     foreach ($vorhersage as $ts => $w) {
         $ts = (int) $ts;
-        if ($ts < (int) $jetzt || $ts >= $ende) { continue; }
+        if ($ts < $ab || $ts >= $ende) { continue; }
         if (!is_array($w) || !isset($w['t'], $w['rf'])) { continue; }
-        /* Eine Stunde mit Starkregen ist kein guenstiger Zeitpunkt, auch
-         * wenn die Luft dann trocken waere. */
-        $l = rk_lueften($af_innen, $w['t'], $w['rf'], $mindest, $t_min, $af_unter,
-                        false, 0.5, isset($w['regen']) ? $w['regen'] : null, $regen_max);
-        if (!$l['lohnt']) { continue; }
-        if ($best === null || $l['gewinn'] > $best[1]) { $best = array($ts, $l['gewinn']); }
+        $regen = isset($w['regen']) ? $w['regen'] : null;
+        $wind  = isset($w['wind']) ? $w['wind'] : null;
+
+        if ($af_innen !== null) {
+            /* Eine Stunde mit Starkregen oder Sturm ist kein guenstiger
+             * Zeitpunkt, auch wenn die Luft dann trocken waere - und eine,
+             * deren Taupunkt ueber der kalten Flaeche liegt, erst recht
+             * nicht. Dieselben Sperren wie im Augenblicksfall. */
+            $l = rk_lueften($af_innen, $w['t'], $w['rf'], $mindest, $t_min,
+                            $af_unter, false, 0.5, $regen, $regen_max,
+                            $wind, $wind_max, $wand_t, $wand_abstand);
+            if ($l['lohnt'] && ($best === null || $l['gewinn'] > $best[1])) {
+                $best = array($ts, $l['gewinn']);
+            }
+        }
+
+        if (is_array($kuehl)) {
+            if ((float) $regen_max > 0.0 && $regen !== null
+                && (float) $regen > (float) $regen_max) { continue; }
+            if ((float) $wind_max > 0.0 && $wind !== null
+                && (float) $wind > (float) $wind_max) { continue; }
+            $k = rk_kuehlen($kuehl['t_innen'], $kuehl['rf_innen'], $w['t'],
+                            $w['rf'], $kuehl['t_soll'], $kuehl['spanne']);
+            if ($k['lohnt'] && ($bestk === null || $k['gewinn'] > $bestk[1])) {
+                $bestk = array($ts, $k['gewinn']);
+            }
+        }
     }
+
+    if ($bestk !== null) {
+        $erg['kuehl_in'] = (int) max(0, round(($bestk[0] - $jetzt) / 60));
+        $erg['kuehl_std'] = (int) date('G', $bestk[0]);
+        $erg['kuehl_gewinn'] = round($bestk[1], 2);
+    }
+
     if ($best === null) {
-        $erg['grund'] = 'kein_fenster';
+        $erg['grund'] = ($af_innen === null) ? 'keine_daten' : 'kein_fenster';
         return $erg;
     }
     $erg['ts'] = $best[0];
     $erg['gewinn'] = round($best[1], 3);
-    $erg['in'] = (int) round(($best[0] - (int) $jetzt) / 60);
+    $erg['in'] = (int) max(0, round(($best[0] - $jetzt) / 60));
     $erg['jetzt'] = $erg['in'] < 60 ? 1 : 0;
     $erg['grund'] = 'gefunden';
     return $erg;
@@ -554,15 +949,21 @@ function rk_ausfall_fortschreiben(&$e, $letzt, $jetzt, $steht_min)
 /**
  * $raum    array('name','t','rf','frsi','soll_min','soll_max','art','erd_t',
  *                'einheit_t','einheit_rf','co2','fenster_offen','volumen',
- *                'fenster','t_soll','co2_max')
+ *                'fenster','t_soll','co2_max',
+ *                'zuluft','wrg_eta','wasser_g','ruhe_von','ruhe_bis',
+ *                'personen')
  * $aussen  array('t','rf','regen','wind','druck') - die Messwerte von jetzt
  * $vorher  array(ts => array('t','rf')) - die Vorhersage, oder leer
  * $cfg     array('mindest','t_min','af_unter','vorschau','steht_min','hyst',
- *                'dauer_min','regen_max','kuehl_spanne')
+ *                'dauer_min','regen_max','kuehl_spanne',
+ *                'wind_max','wand_abstand','schwuel_x','co2_t_min',
+ *                'zwang_std','vl_zuschlag','kuehlfrei_ein','kuehlfrei_aus',
+ *                'co2_ltr','co2_aussen')
  * $letzt   der Eintrag desselben Raums aus dem vorigen Abruf, oder null
- * $verlauf array('nass24','nass7t','erfolg','erfolg_n','eintrag') aus dem
- *          Verlaufsspeicher - hier nur durchgereicht, damit der Kern ohne
- *          Dateien auskommt und pruefbar bleibt
+ * $verlauf array('nass24','nass7t','erfolg','eintrag','trend','dusche',
+ *                'ohne_std','co2_anstieg') aus dem Verlaufsspeicher - hier nur
+ *          durchgereicht, damit der Kern ohne Dateien auskommt und pruefbar
+ *          bleibt
  *
  * Rueckgabe: ein Feld mit allen Werten, die nach Loxone gehen.
  */
@@ -629,6 +1030,30 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         'letzt_ts'  => 0,
         'seit_ts'   => (int) $jetzt,
         'lueften_seit' => 0,
+        /* ---- Neu in 0.11.0. NEUE FELDER HAENGEN HINTEN AN.
+         * Weiter oben eingefuegt verschoeben sie die Reihenfolge in der
+         * Statuszeile, und jede beim Anwender eingetragene Befehlserkennung
+         * zeigte danach auf einen anderen Wert. ---- */
+        'schwuel'   => -1,
+        'trocknen'  => null,
+        'trockenrest' => null,
+        'zuluft'    => null,
+        'wrg'       => null,
+        'fortluft'  => null,
+        'vereist'   => 0,
+        'ruhe'      => -1,
+        'zwang'     => 0,
+        'trend'     => null,
+        'dusche'    => 0,
+        'kuehlfrei' => -1,
+        'kbest_in'  => -1,
+        'kbest_std' => -1,
+        'sperre'    => 0,
+        /* ---- CO2 mit Personenzahl, neu am 28.08.2026 ---- */
+        'co2_anstieg'  => null,   // gemessen, ppm/h
+        'co2_erwartet' => null,   // erwartet aus Personen und Volumen, ppm/h
+        'co2_voll'     => -1,     // Minuten bis zur Grenze, aus dem GEMESSENEN
+        'co2_lw'       => null,   // erforderlicher Luftwechsel, 1/h
     );
     $e['ok'] = ($e['absolut'] !== null) ? 1 : 0;
     rk_ausfall_fortschreiben($e, $letzt, $jetzt,
@@ -649,7 +1074,77 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
             }
         }
     }
-    if (!$e['ok']) { return $e; }
+
+    /* Die Ruhezeit haengt an der Uhr, nicht an einem Messwert - sie gilt auch
+     * bei stummem Fuehler. -1 heisst "keine eingestellt". */
+    $e['ruhe'] = rk_ruhe_aktiv(isset($raum['ruhe_von']) ? $raum['ruhe_von'] : '',
+                               isset($raum['ruhe_bis']) ? $raum['ruhe_bis'] : '',
+                               $jetzt);
+
+    /* Die harten Sperren brauchen NUR Aussenwerte. Sie gelten deshalb auch
+     * dann, wenn der Raumfuehler schweigt - und genau darum geht es: bei
+     * Starkregen soll ein offenes Fenster zugehen, auch wenn niemand mehr
+     * sagen kann, wie feucht es drinnen ist. */
+    $ta_h = isset($aussen['t']) ? $aussen['t'] : null;
+    $ra_h = isset($aussen['rf']) ? $aussen['rf'] : null;
+    $regen_h = isset($aussen['regen']) ? $aussen['regen'] : null;
+    $wind_h = isset($aussen['wind']) ? $aussen['wind'] : null;
+    $regen_max_h = isset($cfg['regen_max']) ? (float) $cfg['regen_max'] : 0.0;
+    $wind_max_h = isset($cfg['wind_max']) ? (float) $cfg['wind_max'] : 0.0;
+    if ($regen_max_h > 0.0 && $regen_h !== null && (float) $regen_h > $regen_max_h) {
+        $e['sperre'] = 1;
+    }
+    if ($wind_max_h > 0.0 && $wind_h !== null && (float) $wind_h > $wind_max_h) {
+        $e['sperre'] = 1;
+    }
+
+    if (!$e['ok']) {
+        /* ------------------------------------------------------------------
+         * Der Ausfall-Zweig - bis 0.10.1 kehrte er hier sofort zurueck
+         * ------------------------------------------------------------------
+         *
+         * Zwei Dinge gingen dabei verloren, beide am 28.08.2026 gemessen:
+         *
+         * 1. KEIN SCHLIESSBEFEHL. Der Fensterkontakt wurde ausgewertet, das
+         *    daraus abgeleitete 'fenster_zu' aber nicht mehr erreicht:
+         *
+         *        Fuehler antwortet : fenster=1 lueften=0 fenster_zu=1
+         *        Fuehler stumm     : fenster=1 lueften=0 fenster_zu=0
+         *
+         *    Ein Fensterantrieb, der beim Ausfall des Klimafuehlers offen
+         *    steht, blieb bei 9 mm/h Regen offen.
+         *
+         *    Geschlossen wird jetzt nur mit einem BELEGTEN Grund - Regen oder
+         *    Sturm aus der Aussenquelle. Ohne Grund bleibt es, wie es ist:
+         *    ein Antrieb, der bei jedem Funkaussetzer zufaehrt, waere die
+         *    naechste stille Falschaussage.
+         *
+         * 2. HYSTERESE UND NACHLAUF wurden geloescht. 'lueften' und
+         *    'lueften_seit' blieben auf ihren Startwerten, und ein einziger
+         *    ausgefallener Abruf kippte die Empfehlung:
+         *
+         *        Lauf 1 lief schon    : lueften=1
+         *        Lauf 2 als Ausfall   : lueften=0, lueften_seit=0
+         *        Lauf 3 nach der Luecke: lueften=0
+         *
+         *    Bei einem funkgestoerten Fuehler und Fuenfminutentakt flatterte
+         *    der Antrieb dadurch. Der Nachlauf traegt jetzt ueber die Luecke -
+         *    aber nur, solange die Mindestdauer laeuft, und nie gegen eine
+         *    harte Sperre.
+         * ------------------------------------------------------------------ */
+        if ($e['fenster'] === 1 && $e['sperre']) { $e['fenster_zu'] = 1; }
+
+        $dauer_a = isset($cfg['dauer_min']) ? (int) $cfg['dauer_min'] : 0;
+        $seit_a = (is_array($letzt) && !empty($letzt['lueften_seit']))
+            ? (int) $letzt['lueften_seit'] : 0;
+        if (!$e['sperre'] && !empty($letzt['lueften']) && $dauer_a > 0 && $seit_a > 0
+            && ((int) $jetzt - $seit_a) < $dauer_a * 60) {
+            $e['lueften'] = 1;
+            $e['lueften_seit'] = $seit_a;
+            $e['grund'] = 'nachlauf';
+        }
+        return $e;
+    }
 
     // Zielkorridor der Raumfeuchte
     $min = isset($raum['soll_min']) ? (float) $raum['soll_min'] : 0;
@@ -670,18 +1165,83 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
     if ($e['ober_t'] !== null && $e['taupunkt'] !== null) {
         $e['spread'] = round($e['ober_t'] - $e['taupunkt'], 2);
     }
+    /* Der Sicherheitszuschlag auf die Vorlauftemperatur ist eine EINSTELLUNG,
+     * keine Naturkonstante. Bis 0.10.1 stand hier fest +1,0 - wer eine
+     * Kuehldecke traegerer regelt, braucht mehr Abstand. */
     if ($e['taupunkt'] !== null) {
-        $e['vlmin'] = round($e['taupunkt'] + 1.0, 2);
+        $zu = isset($cfg['vl_zuschlag']) ? (float) $cfg['vl_zuschlag'] : 1.0;
+        $e['vlmin'] = round($e['taupunkt'] + $zu, 2);
     }
 
-    /* Aus dem Verlaufsspeicher - Stunden, Quote, Gramm je Stunde. */
+    /* Freigabe fuer eine Flaechenkuehlung, mit getrennten Schaltpunkten.
+     * Der Taupunktabstand wurde bis 0.10.1 nur ausgegeben; ein einzelner
+     * Schwellwert daran flatterte an derselben Stelle wie jede andere
+     * Ein-Bit-Entscheidung. -1 heisst "kein Abstand zu rechnen". */
+    if ($e['spread'] !== null) {
+        $ein = isset($cfg['kuehlfrei_ein']) ? (float) $cfg['kuehlfrei_ein'] : 3.0;
+        $aus = isset($cfg['kuehlfrei_aus']) ? (float) $cfg['kuehlfrei_aus'] : 2.0;
+        $war = (is_array($letzt) && isset($letzt['kuehlfrei']))
+            ? (int) $letzt['kuehlfrei'] : 0;
+        if ($war === 1) { $e['kuehlfrei'] = ($e['spread'] >= $aus) ? 1 : 0; }
+        else            { $e['kuehlfrei'] = ($e['spread'] >= $ein) ? 1 : 0; }
+    }
+
+    /* Schwuel misst man am Mischungsverhaeltnis, nicht an der relativen
+     * Feuchte - siehe rk_schwuel(). */
+    $sw = rk_schwuel($t, $rf, isset($cfg['schwuel_x']) ? $cfg['schwuel_x'] : 11.5);
+    if ($sw !== null) { $e['schwuel'] = $sw; }
+
+    /* Lueftungsanlage: Zuluft messen, daraus Rueckwaermzahl und Fortluft. */
+    $e['zuluft'] = rk_temp_c(rk_zahl_aus(isset($raum['zuluft']) ? $raum['zuluft'] : null),
+                             isset($raum['einheit_t']) ? $raum['einheit_t'] : 'C');
+    if (!rk_t_gueltig($e['zuluft'])) { $e['zuluft'] = null; }
+    else { $e['zuluft'] = round((float) $e['zuluft'], 2); }
+    if ($e['zuluft'] !== null) {
+        $e['wrg'] = rk_wrg($t, $ta, $e['zuluft']);
+    }
+    $e['fortluft'] = rk_fortluft($t, $ta,
+        isset($raum['wrg_eta']) ? $raum['wrg_eta'] : 0);
+    if ($e['fortluft'] !== null && $e['fortluft'] < 0.0) { $e['vereist'] = 1; }
+
+    /* Aus dem Verlaufsspeicher - Stunden, Quote, Gramm je Stunde, Trend,
+     * Duschstoss und die Strecke ohne Empfehlung. */
     if (is_array($verlauf)) {
         foreach (array('nass24', 'nass7t', 'erfolg', 'eintrag') as $k) {
             if (isset($verlauf[$k]) && $verlauf[$k] !== null) { $e[$k] = $verlauf[$k]; }
         }
+        if (isset($verlauf['trend'])) { $e['trend'] = $verlauf['trend']; }
+        if (!empty($verlauf['dusche'])) { $e['dusche'] = 1; }
+        if (isset($verlauf['co2_anstieg'])) { $e['co2_anstieg'] = $verlauf['co2_anstieg']; }
     }
 
-    /* ---- Lueften: Feuchte, CO2 oder Kuehlen ---- */
+    /* ---- CO2 mit Personenzahl ----
+     * Der ERWARTETE Anstieg kommt aus Personenzahl und Volumen, der
+     * GEMESSENE aus dem Verlauf. Beide stehen nebeneinander, weil sie
+     * verschiedene Fragen beantworten: der erwartete sagt, was die
+     * Anwesenden erzeugen, der gemessene, was davon im Raum bleibt. Wer
+     * beide sieht, erkennt ein gekipptes Fenster und einen driftenden
+     * Fuehler. Ein Name fuer beides waere eine stille Falschaussage. */
+    $personen = isset($raum['personen']) ? (float) $raum['personen'] : 0.0;
+    $co2_ltr = isset($cfg['co2_ltr']) ? (float) $cfg['co2_ltr'] : 17.0;
+    $co2_aussen = isset($cfg['co2_aussen']) ? (float) $cfg['co2_aussen'] : 420.0;
+    /* KEINE zusaetzliche Abfrage auf $personen > 0 an dieser Stelle: beide
+     * Funktionen weisen ohne Personenzahl bereits selbst ab. Eine zweite
+     * Wache davor waere eine zweite Wahrheit ueber dieselbe Bedingung - und
+     * genau das ist beim Eichen aufgefallen: der Fall blieb gruen, weil die
+     * aeussere Abfrage gar nichts entschied. */
+    $e['co2_erwartet'] = rk_co2_anstieg_erwartet($personen,
+        isset($raum['volumen']) ? $raum['volumen'] : 0, $co2_ltr);
+    $e['co2_lw'] = rk_co2_luftwechsel($personen,
+        isset($raum['volumen']) ? $raum['volumen'] : 0, $co2_max, $co2_aussen, $co2_ltr);
+    /* Die Restzeit kommt aus dem gemessenen Anstieg. Steht der noch nicht zur
+     * Verfuegung - die ersten Minuten nach dem Einschalten -, bleibt sie -1
+     * statt aus dem erwarteten gerechnet zu werden: das waere eine Zahl aus
+     * einer Schaetzung, die aussaehe wie eine aus einer Messung. */
+    if ($co2 !== null && $co2_max > 0) {
+        $e['co2_voll'] = rk_co2_voll($co2, $co2_max, $e['co2_anstieg']);
+    }
+
+    /* ---- Lueften: Feuchte, CO2, Kuehlen, Duschstoss oder Zwang ---- */
     $af_unter = (isset($cfg['af_unter']) && $cfg['af_unter'] > 0) ? (float) $cfg['af_unter'] : null;
     $lief = !empty($letzt['lueften']);
     $l = rk_lueften($e['absolut'], $ta, $ra,
@@ -689,44 +1249,87 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         isset($cfg['t_min']) ? $cfg['t_min'] : -5,
         $af_unter, $lief,
         isset($cfg['hyst']) ? $cfg['hyst'] : 0.5,
-        $regen, isset($cfg['regen_max']) ? $cfg['regen_max'] : 0.0);
+        $regen, isset($cfg['regen_max']) ? $cfg['regen_max'] : 0.0,
+        $wind, isset($cfg['wind_max']) ? $cfg['wind_max'] : 0.0,
+        $e['ober_t'], isset($cfg['wand_abstand']) ? $cfg['wand_abstand'] : 1.0);
     $e['gewinn'] = $l['gewinn'];
     $e['grund'] = $l['grund'];
+    if ($l['sperre']) { $e['sperre'] = 1; }
 
     $k = rk_kuehlen($t, $rf, $ta, $ra, isset($raum['t_soll']) ? $raum['t_soll'] : 0,
-                    isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0);
+                    isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0, 1.0,
+                    !empty($letzt['kuehlen']),
+                    isset($cfg['hyst']) ? $cfg['hyst'] : 0.5);
     $e['kuehlen'] = $k['lohnt'];
     $e['kuehlgewinn'] = $k['gewinn'];
 
-    if ($co2 !== null && $co2_max > 0 && $co2 >= $co2_max) { $e['co2_hoch'] = 1; }
-
-    $e['lueften'] = ($l['lohnt'] || $e['co2_hoch'] || $k['lohnt']) ? 1 : 0;
-    if (!$l['lohnt']) {
-        if ($e['co2_hoch']) { $e['grund'] = 'co2'; }
-        elseif ($k['lohnt']) { $e['grund'] = 'kuehlen'; }
+    /* CO2 hat eine eigene, mildere Frostgrenze. Gemessen am 28.08.2026:
+     * bei -18 Grad aussen und t_min = -5 oeffnete CO2 das Fenster trotzdem,
+     * weil dieser Grund an der Kaeltepruefung vorbeilief. Die Grenze ist
+     * eine Einstellung - wer im Schlafzimmer Frischluft ueber alles stellt,
+     * setzt sie herunter. */
+    if ($co2 !== null && $co2_max > 0 && $co2 >= $co2_max) {
+        $co2_t_min = isset($cfg['co2_t_min']) ? (float) $cfg['co2_t_min'] : -15.0;
+        $e['co2_hoch'] = (rk_t_gueltig($ta) && (float) $ta < $co2_t_min) ? 0 : 1;
     }
-    /* Regen sperrt auch die beiden anderen Gruende - ein Fensterantrieb
-     * soll nicht bei Starkregen aufmachen, nur weil CO2 hoch ist. */
-    if ($l['grund'] === 'regen') { $e['lueften'] = 0; $e['grund'] = 'regen'; }
+
+    /* Zwangslueftung: N Stunden ohne jede Empfehlung. Der Feuchteschutz
+     * haengt nicht davon ab, dass gerade eine Bilanz aufgeht. 0 = aus. */
+    $zwang_std = isset($cfg['zwang_std']) ? (int) $cfg['zwang_std'] : 0;
+    if ($zwang_std > 0 && is_array($verlauf) && isset($verlauf['ohne_std'])
+        && $verlauf['ohne_std'] >= 0 && $verlauf['ohne_std'] >= $zwang_std) {
+        $e['zwang'] = 1;
+    }
+
+    $e['lueften'] = ($l['lohnt'] || $e['co2_hoch'] || $k['lohnt']
+                     || $e['dusche'] || $e['zwang']) ? 1 : 0;
+    if (!$l['lohnt']) {
+        if ($e['dusche'])        { $e['grund'] = 'dusche'; }
+        elseif ($e['co2_hoch'])  { $e['grund'] = 'co2'; }
+        elseif ($k['lohnt'])     { $e['grund'] = 'kuehlen'; }
+        elseif ($e['zwang'])     { $e['grund'] = 'zwang'; }
+    }
+
+    /* Eine harte Sperre schlaegt JEDEN Grund - Regen, Sturm, Tauwasser an
+     * der Wand. Bis 0.10.1 wurde dafuer die Zeichenkette 'grund' abgefragt,
+     * und die trug die Sperre nur, wenn nicht vorher schon ein anderer
+     * Zweig gegriffen hatte. Jetzt entscheidet ein Merkmal. */
+    if ($e['sperre']) { $e['lueften'] = 0; $e['grund'] = $l['grund']; }
+
+    /* Die Ruhezeit sperrt das Fenster - ausser bei CO2. Wer nachts nicht
+     * geweckt werden will, will trotzdem keine verbrauchte Luft. */
+    if ($e['ruhe'] === 1 && !$e['co2_hoch'] && $e['lueften']) {
+        $e['lueften'] = 0;
+        $e['grund'] = 'ruhezeit';
+    }
 
     /* Mindestdauer: einmal empfohlen, bleibt die Empfehlung eine Weile
      * stehen. Sonst schaltet ein Fensterantrieb im Fuenfminutentakt. */
     $dauer_min = isset($cfg['dauer_min']) ? (int) $cfg['dauer_min'] : 0;
     $seit = ($lief && !empty($letzt['lueften_seit'])) ? (int) $letzt['lueften_seit'] : (int) $jetzt;
     if (!$e['lueften'] && $lief && $dauer_min > 0
-        && ((int) $jetzt - $seit) < $dauer_min * 60 && $l['grund'] !== 'regen') {
+        && ((int) $jetzt - $seit) < $dauer_min * 60
+        && !$e['sperre'] && $e['ruhe'] !== 1) {
         $e['lueften'] = 1;
         $e['grund'] = 'nachlauf';
     }
     $e['lueften_seit'] = $e['lueften'] ? $seit : 0;
 
-    /* ---- Wie lange, und was kostet es ---- */
+    /* ---- Wie lange, was kostet es, und was traegt es aus ---- */
     if ($e['lueften'] && rk_t_gueltig($ta)) {
         $e['dauer'] = rk_lueftdauer(isset($raum['fenster']) ? $raum['fenster'] : 'stoss',
                                     $t - (float) $ta, $wind);
         $kw = rk_lueftkosten(isset($raum['volumen']) ? $raum['volumen'] : 0, $t, $ta);
         if ($kw !== null) { $e['kosten'] = $kw; }
     }
+    /* Trocknungsleistung: gilt auch, wenn gerade nicht empfohlen wird - die
+     * Frage "wie lange braucht die Waesche" stellt sich vorher. */
+    $e['trocknen'] = rk_trocknen(isset($raum['fenster']) ? $raum['fenster'] : 'stoss',
+        rk_t_gueltig($ta) ? $t - (float) $ta : 0.0, $wind,
+        isset($raum['volumen']) ? $raum['volumen'] : 0,
+        $e['absolut'], rk_absolut($ta, $ra));
+    $e['trockenrest'] = rk_trockenrest($e['trocknen'],
+        isset($raum['wasser_g']) ? $raum['wasser_g'] : 0);
 
     /* ---- Fenster wieder schliessen? ---- */
     if ($e['fenster'] === 1 && !$e['lueften']) { $e['fenster_zu'] = 1; }
@@ -736,9 +1339,16 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         isset($cfg['t_min']) ? $cfg['t_min'] : -5,
         $af_unter,
         isset($cfg['vorschau']) ? $cfg['vorschau'] : 12,
-        isset($cfg['regen_max']) ? $cfg['regen_max'] : 0.0);
+        isset($cfg['regen_max']) ? $cfg['regen_max'] : 0.0,
+        isset($cfg['wind_max']) ? $cfg['wind_max'] : 0.0,
+        $e['ober_t'], isset($cfg['wand_abstand']) ? $cfg['wand_abstand'] : 1.0,
+        array('t_innen' => $t, 'rf_innen' => $rf,
+              't_soll' => isset($raum['t_soll']) ? $raum['t_soll'] : 0,
+              'spanne' => isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0));
     $e['best_in'] = $b['in'];
     $e['best_std'] = ($b['ts'] !== null) ? (int) date('G', $b['ts']) : -1;
+    $e['kbest_in'] = $b['kuehl_in'];
+    $e['kbest_std'] = $b['kuehl_std'];
     return $e;
 }
 
@@ -1112,7 +1722,10 @@ function rk_selbsttest()
     $pr('Ampel 70 bis 80 ist 1', rk_ampel(75), 1);
     $pr('Ampel 80 bis 95 ist 2', rk_ampel(85), 2);
     $pr('Ampel ab 95 ist 3', rk_ampel(97), 3);
-    $pr('Ampel ohne Wert ist 0', rk_ampel(null), 0);
+    /* Bis 0.10.1 stand hier eine 0 - und die war von "gemessen und
+     * unbedenklich" nicht zu unterscheiden. */
+    $pr('Ampel ohne Wert ist -1, nicht 0', rk_ampel(null), -1);
+    $pr('  und die 0 bleibt der gemessenen, unbedenklichen Wand', rk_ampel(65), 0);
 
     /* ---------- Hysterese ----------
      * Derselbe Gewinn, zwei Antworten - je nachdem, ob eben schon
@@ -1248,6 +1861,338 @@ function rk_selbsttest()
     $pr('Verlaufswerte kommen durch',
         array($r12['nass24'], $r12['nass7t'], $r12['erfolg'], $r12['eintrag']),
         array(6.5, 31.0, 75, 120.0));
+
+    /* ================================================================
+     * Neu in 0.11.0 - jeder Fall gehoert zu einem Befund vom 28.08.2026
+     * oder zu einer neu aufgenommenen Funktion. Jeder ist so gebaut, dass
+     * er OHNE die Korrektur rot wird; das ist an einer zurueckgebauten
+     * Kopie nachgemessen worden.
+     * ================================================================ */
+
+    /* ---------- B7: Tauwasser an der kalten Flaeche ----------
+     * Keller 20 C / 72 %, erdberuehrte Wand 13 C. Draussen 25 C / 51 % ist
+     * absolut TROCKENER (Gewinn +0,70 g/m3), aber ihr Taupunkt liegt mit
+     * 14,16 C um 1,2 K ueber der Wand. Wer so lueftet, holt Tauwasser an
+     * die Kellerwand - der Fall, den der Kopfkommentar zu rk_oberflaeche()
+     * als Sommerschimmel beschreibt. */
+    $af_kel = rk_absolut(20, 72);
+    $lk = rk_lueften($af_kel, 25, 51, 0.5, -5, null, false, 0.5, null, 0.0,
+                     null, 0.0, 13.0, 1.0);
+    $pr('Kellerwand: Aussenluft ist trockener, kondensiert aber an der Wand',
+        array($lk['lohnt'], $lk['grund'], $lk['sperre']),
+        array(0, 'wand_tauwasser', 1));
+    $pr('  ohne die Wandangabe raet dieselbe Rechnung zum Lueften',
+        rk_lueften($af_kel, 25, 51, 0.5, -5, null)['lohnt'], 1);
+    $lk2 = rk_lueften($af_kel, 22, 45, 0.5, -5, null, false, 0.5, null, 0.0,
+                      null, 0.0, 13.0, 1.0);
+    $pr('  trockenere Aussenluft (Taupunkt 9,5 C) darf weiter herein',
+        array($lk2['lohnt'], $lk2['grund']), array(1, 'lohnt'));
+    $lk3 = rk_lueften($af_kel, 25, 51, 0.5, -5, null, false, 0.5, null, 0.0,
+                      null, 0.0, 16.0, 1.0);
+    $pr('  bei waermerer Wand (16 C) ist derselbe Fall unbedenklich',
+        $lk3['lohnt'], 1);
+
+    /* ---------- B8: die harte Sperre haengt nicht mehr an einer Zeichenkette ----------
+     * Bei -6 C und 3 mm Niederschlag griff bis 0.10.1 zuerst 'zu_kalt';
+     * 'grund' wurde nie 'regen', und die Sperre fuer CO2 lief ins Leere. */
+    $lr = rk_lueften(rk_absolut(20, 45), -6, 90, 0.5, -5, null, false, 0.5, 3.0, 1.0);
+    $pr('Schneefall unter der Kaeltegrenze: Sperre greift trotzdem',
+        array($lr['grund'], $lr['sperre']), array('regen', 1));
+    $lt = rk_lueften(rk_absolut(20, 30), 8, 60, 0.5, -20, 6.0, false, 0.5, 3.0, 1.0);
+    $pr('  und auch dann, wenn die Raumluft zu trocken waere',
+        array($lt['grund'], $lt['sperre']), array('regen', 1));
+    $ln = rk_lueften(rk_absolut(20, 60), 8, 60, 0.5, -5, null, false, 0.5, 0.2, 1.0);
+    $pr('  Nieselregen unter der Grenze sperrt nicht',
+        array($ln['lohnt'], $ln['sperre']), array(1, 0));
+
+    /* ---------- V12: Windsperre ---------- */
+    $lw = rk_lueften(rk_absolut(20, 60), 8, 60, 0.5, -5, null, false, 0.5,
+                     null, 0.0, 65.0, 40.0);
+    $pr('Sturm sperrt das Fenster', array($lw['lohnt'], $lw['grund'], $lw['sperre']),
+        array(0, 'wind', 1));
+    $pr('  Grenze 0 schaltet die Windsperre ab',
+        rk_lueften(rk_absolut(20, 60), 8, 60, 0.5, -5, null, false, 0.5,
+                   null, 0.0, 65.0, 0.0)['lohnt'], 1);
+
+    /* ---------- B6: Kuehlen bekommt dieselbe Hysterese wie die Feuchte ----------
+     * 0,98 K Spanne bei Schwelle 1,0: aus bleibt aus, laufend bleibt an.
+     * Die Aussenfeuchte muss dabei niedrig genug sein, sonst greift zuerst
+     * 'kuehl_zu_feucht' und der Fall misst etwas anderes: 24,02 C bei 60 %
+     * traegt 13,04 g/m3 gegen 11,48 innen, also 1,56 mehr - ueber dem
+     * zulaessigen Zusatz von 1,0. Mit 45 % sind es 9,78 g/m3. */
+    $pr('Kuehlen knapp unter der Spanne: aus bleibt aus',
+        rk_kuehlen(25, 50, 24.02, 45, 23, 1.0, 1.0, false, 0.5)['lohnt'], 0);
+    $pr('  lief es schon, bleibt es an',
+        rk_kuehlen(25, 50, 24.02, 45, 23, 1.0, 1.0, true, 0.5)['lohnt'], 1);
+    $pr('  weit darunter geht auch das Laufende aus',
+        rk_kuehlen(25, 50, 24.9, 45, 23, 1.0, 1.0, true, 0.5)['lohnt'], 0);
+    $pr('  und die Feuchtesperre bleibt davon unberuehrt',
+        rk_kuehlen(25, 50, 24.02, 60, 23, 1.0, 1.0, true, 0.5)['grund'],
+        'kuehl_zu_feucht');
+
+    /* ---------- B12: die laufende Stunde faellt nicht mehr heraus ---------- */
+    $vz = array($t0            => array('t' => 14.0, 'rf' => 40.0),
+                $t0 + 3600     => array('t' => 12.0, 'rf' => 88.0),
+                $t0 + 2 * 3600 => array('t' => 13.0, 'rf' => 78.0));
+    $af_z = rk_absolut(21.0, 60.0);
+    $bz0 = rk_bester_zeitpunkt($af_z, $vz, $t0, 0.5, -5, null, 12);
+    $bz5 = rk_bester_zeitpunkt($af_z, $vz, $t0 + 300, 0.5, -5, null, 12);
+    $bz59 = rk_bester_zeitpunkt($af_z, $vz, $t0 + 3540, 0.5, -5, null, 12);
+    $pr('Bester Zeitpunkt auf die Sekunde genau',
+        array($bz0['in'], $bz0['gewinn']), array(0, $bz0['gewinn']));
+    $pr('  fuenf Minuten spaeter dieselbe Stunde und derselbe Gewinn',
+        array($bz5['in'], $bz5['gewinn']), array(0, $bz0['gewinn']));
+    $pr('  und 59 Minuten spaeter immer noch',
+        array($bz59['in'], $bz59['gewinn']), array(0, $bz0['gewinn']));
+    $pr('  "in" wird nie negativ', $bz59['in'] >= 0, true);
+
+    /* ---------- V11: die Vorschau kennt jetzt auch das Kuehlen ---------- */
+    $vk = array($t0            => array('t' => 26.0, 'rf' => 50.0),
+                $t0 + 3600     => array('t' => 22.0, 'rf' => 55.0),
+                $t0 + 2 * 3600 => array('t' => 19.0, 'rf' => 60.0));
+    $bk = rk_bester_zeitpunkt(rk_absolut(27, 50), $vk, $t0, 0.5, -5, null, 12,
+        0.0, 0.0, null, 1.0,
+        array('t_innen' => 27.0, 'rf_innen' => 50.0, 't_soll' => 24.0, 'spanne' => 1.0));
+    $pr('Kuehlvorschau findet die kaelteste taugliche Stunde',
+        array($bk['kuehl_in'], $bk['kuehl_std']), array(120, (int) date('G', $t0 + 2 * 3600)));
+    $bk2 = rk_bester_zeitpunkt(rk_absolut(27, 50), $vk, $t0, 0.5, -5, null, 12);
+    $pr('  ohne Kuehlangabe bleibt sie stumm', $bk2['kuehl_in'], -1);
+
+    /* ---------- V17: Schwuele am Mischungsverhaeltnis ---------- */
+    $pr('28 C / 60 % sind schwuel', rk_schwuel(28, 60, 11.5), 1);
+    $pr('20 C / 60 % nicht', rk_schwuel(20, 60, 11.5), 0);
+    $pr('  ohne Messwert keine Aussage', rk_schwuel(null, 60, 11.5), null);
+
+    /* ---------- V13: Trocknungsleistung ----------
+     * 30 m3, Stosslueftung bei 10 K, innen 10,0 aussen 5,0 g/m3:
+     * n = 10, also 10 * 30 * 5,0 = 1500 g/h. */
+    $pr('Trocknungsleistung 30 m3, 5 g/m3 Unterschied',
+        rk_trocknen('stoss', 10, null, 30, 10.0, 5.0), 1500.0, 1.0);
+    $pr('  ohne Raumvolumen keine Zahl', rk_trocknen('stoss', 10, null, 0, 10.0, 5.0), null);
+    $pr('  Restzeit fuer 2500 g bei 1500 g/h', rk_trockenrest(1500.0, 2500), 1.7, 0.05);
+    $pr('  keine Leistung, keine Restzeit', rk_trockenrest(0.0, 2500), null);
+    $pr('  keine Wassermenge, keine Restzeit', rk_trockenrest(1500.0, 0), null);
+
+    /* ---------- V21/V22: Rueckwaermzahl und Fortluft ----------
+     * innen 21, aussen 1, Zuluft 17: (17-1)/(21-1) = 0,80. */
+    $pr('Rueckwaermzahl aus drei Temperaturen', rk_wrg(21, 1, 17), 80.0, 0.1);
+    $pr('  bei kleiner Spanne gesperrt (Rauschen im Zaehler und Nenner)',
+        rk_wrg(21, 19, 20), null);
+    $pr('  ohne Zuluftwert keine Aussage', rk_wrg(21, 1, null), null);
+    /* Fortluft: 21 - 0,8 * (21-1) = 5,0 - kein Vereisen. */
+    $pr('Fortluft bei 80 % Rueckgewinn', rk_fortluft(21, 1, 80), 5.0, 0.05);
+    /* Bei -12 aussen: 21 - 0,8 * 33 = -5,4 - der Tauscher friert. */
+    $pr('  bei -12 C aussen friert der Tauscher', rk_fortluft(21, -12, 80) < 0, true);
+    $pr('  ohne Rueckwaermzahl keine Aussage', rk_fortluft(21, 1, 0), null);
+
+    /* ---------- V23: Ruhezeit, auch ueber Mitternacht ---------- */
+    $nacht = mktime(23, 30, 0, 11, 15, 2026);
+    $morgen = mktime(7, 30, 0, 11, 15, 2026);
+    $pr('Ruhezeit 22:00-06:00 gilt um 23:30', rk_ruhe_aktiv('22:00', '06:00', $nacht), 1);
+    $pr('  und nicht um 07:30', rk_ruhe_aktiv('22:00', '06:00', $morgen), 0);
+    $pr('  ohne Angabe gibt es keine Ruhezeit (-1, nicht 0)',
+        rk_ruhe_aktiv('', '', $nacht), -1);
+    $pr('  eine unleserliche Angabe ebenso',
+        rk_ruhe_aktiv('halb elf', '06:00', $nacht), -1);
+    $pr('  Fenster ohne Mitternacht: 13:00-15:00 um 23:30',
+        rk_ruhe_aktiv('13:00', '15:00', $nacht), 0);
+
+    /* ---------- V20: Heizfall am gleitenden Mittel ---------- */
+    $pr('Aussenmittel 9 Grad ist Heizfall', rk_heizfall(9.0, 15.0), 1);
+    $pr('Aussenmittel 19 Grad ist Kuehlfall', rk_heizfall(19.0, 15.0), 0);
+    $pr('  ohne Mittel keine Aussage (-1)', rk_heizfall(null, 15.0), -1);
+
+    /* ---------- B10: der Taupunkt verlaesst den Gueltigkeitsbereich nicht ----------
+     * Ein Fuehler am unteren Anschlag meldet 0,1 % statt 0 %. Daraus wurde
+     * bis 0.10.1 ein Taupunkt von -57,89 und ein VLMIN von -56,89. */
+    $pr('Fuehler am Anschlag: 0,1 % bei -60 C ergibt keinen Taupunkt',
+        rk_taupunkt(-60, 0.1), null);
+    $pr('  und auch kein VLMIN im Raum',
+        rk_raum_rechnen(array('name' => 'Anschlag', 't' => -60.0, 'rf' => 0.1,
+                              'frsi' => 0.7), array('t' => 3.0, 'rf' => 85.0),
+                        array(), array(), $t0)['vlmin'], null);
+    $pr('  ein normaler Wert bleibt unberuehrt', rk_taupunkt(20, 50), 9.26, 0.05);
+
+    /* ---------- V18: Kuehlfreigabe mit zwei Schaltpunkten ---------- */
+    $gk = array('name' => 'Decke', 't' => 24.0, 'rf' => 55.0, 'frsi' => 0.9);
+    $ck = array('kuehlfrei_ein' => 3.0, 'kuehlfrei_aus' => 2.0, 'vl_zuschlag' => 1.0);
+    $rk_frei = rk_raum_rechnen($gk, array('t' => 20.0, 'rf' => 50.0), array(), $ck, $t0);
+    $pr('Kuehlfreigabe: grosser Taupunktabstand gibt frei',
+        array($rk_frei['spread'] > 3.0, $rk_frei['kuehlfrei']), array(true, 1));
+    /* 78 % ergaeben einen Abstand von 3,68 K und damit noch die Freigabe -
+     * gemessen. Erst 88 % druecken ihn auf 1,71 K. */
+    $ge = array('name' => 'Decke', 't' => 24.0, 'rf' => 88.0, 'frsi' => 0.9);
+    $rk_zu = rk_raum_rechnen($ge, array('t' => 20.0, 'rf' => 50.0), array(), $ck, $t0);
+    $pr('  kleiner Abstand sperrt',
+        array($rk_zu['spread'] < 2.0, $rk_zu['kuehlfrei']), array(true, 0));
+    $pr('  ohne Abstand keine Aussage (-1)',
+        rk_raum_rechnen(array('name' => 'Flur', 't' => 24.0, 'rf' => 55.0,
+                              'art' => 'innen'), array('t' => 20.0, 'rf' => 50.0),
+                        array(), $ck, $t0)['kuehlfrei'], -1);
+
+    /* ---------- V19: CO2 hat eine eigene Frostgrenze ---------- */
+    $gco = array('name' => 'Schlafen', 't' => 20.0, 'rf' => 45.0, 'frsi' => 0.7,
+                 'co2' => 1400, 'co2_max' => 1000);
+    $cco = array('mindest' => 0.5, 't_min' => -5, 'co2_t_min' => -15.0);
+    $rco = rk_raum_rechnen($gco, array('t' => -18.0, 'rf' => 90.0), array(), $cco, $t0);
+    $pr('CO2 oeffnet bei -18 C nicht mehr',
+        array($rco['lueften'], $rco['co2_hoch']), array(0, 0));
+    $rco2 = rk_raum_rechnen($gco, array('t' => -8.0, 'rf' => 90.0), array(), $cco, $t0);
+    $pr('  bei -8 C aber weiterhin',
+        array($rco2['lueften'], $rco2['grund']), array(1, 'co2'));
+
+    /* ---------- B9: Schliessbefehl auch bei stummem Fuehler ---------- */
+    $ar = array('t' => 8.0, 'rf' => 95.0, 'regen' => 9.0);
+    $cr = array('regen_max' => 1.0);
+    $stumm = rk_raum_rechnen(array('name' => 'Bad', 'frsi' => 0.7,
+        'fenster_offen' => 1), $ar, array(), $cr, $t0);
+    $pr('Fuehler stumm, Fenster offen, Starkregen: Schliessbefehl kommt',
+        array($stumm['ok'], $stumm['fenster'], $stumm['fenster_zu']), array(0, 1, 1));
+    $ruhig = rk_raum_rechnen(array('name' => 'Bad', 'frsi' => 0.7,
+        'fenster_offen' => 1), array('t' => 8.0, 'rf' => 60.0), array(), $cr, $t0);
+    $pr('  ohne belegten Grund bleibt es, wie es ist',
+        array($ruhig['ok'], $ruhig['fenster_zu']), array(0, 0));
+    $zu2 = rk_raum_rechnen(array('name' => 'Bad', 'frsi' => 0.7,
+        'fenster_offen' => 0), $ar, array(), $cr, $t0);
+    $pr('  ein geschlossenes Fenster meldet nichts', $zu2['fenster_zu'], 0);
+
+    /* ---------- B13: Hysterese und Nachlauf ueberleben einen Ausfall ---------- */
+    $gn = array('name' => 'Wohnen', 't' => 20.0, 'rf' => 55.0, 'frsi' => 0.7);
+    $cn = array('mindest' => 0.5, 't_min' => -5, 'hyst' => 0.5, 'dauer_min' => 10);
+    $an = array('t' => 15.0, 'rf' => 75.0);
+    $lauf_an = rk_raum_rechnen($gn, $an, array(), $cn, $t0,
+        array('lueften' => 1, 'lueften_seit' => $t0 - 300, 't' => 20.0, 'rf' => 55.0));
+    /* Die Empfehlung begann bei t0-300; die Mindestdauer sind 600 s. Der
+     * Ausfall wird deshalb bei t0+240 gemessen (540 s seit Beginn) - bei
+     * t0+300 waeren es genau 600 s, und die Grenze ist ausschliessend. */
+    $ausfall = rk_raum_rechnen(array('name' => 'Wohnen', 'frsi' => 0.7), $an,
+        array(), $cn, $t0 + 240, $lauf_an);
+    $pr('Ein Ausfall loescht den Nachlauf nicht mehr',
+        array($ausfall['ok'], $ausfall['lueften'], $ausfall['grund']),
+        array(0, 1, 'nachlauf'));
+    $pr('  und der Beginn der Empfehlung reist mit',
+        $ausfall['lueften_seit'], $t0 - 300);
+    $spaet = rk_raum_rechnen(array('name' => 'Wohnen', 'frsi' => 0.7), $an,
+        array(), $cn, $t0 + 3600, $lauf_an);
+    $pr('  nach der Mindestdauer laeuft er aus', $spaet['lueften'], 0);
+    $csp = array('regen_max' => 1.0) + $cn;
+    $sperr = rk_raum_rechnen(array('name' => 'Wohnen', 'frsi' => 0.7),
+        array('t' => 15.0, 'rf' => 75.0, 'regen' => 9.0),
+        array(), $csp, $t0 + 240, $lauf_an);
+    $pr('  gegen eine harte Sperre traegt er nicht',
+        array($sperr['lueften'], $sperr['sperre'], $sperr['fenster_zu']),
+        array(0, 1, 0));
+
+    /* ---------- V23: die Ruhezeit sperrt, ausser bei CO2 ---------- */
+    $gru = array('name' => 'Schlafen', 't' => 20.0, 'rf' => 60.0, 'frsi' => 0.7,
+                 'ruhe_von' => '22:00', 'ruhe_bis' => '06:00');
+    $cru = array('mindest' => 0.5, 't_min' => -5);
+    $rnacht = rk_raum_rechnen($gru, array('t' => 5.0, 'rf' => 60.0), array(), $cru, $nacht);
+    $pr('Ruhezeit sperrt das Fenster',
+        array($rnacht['ruhe'], $rnacht['lueften'], $rnacht['grund']),
+        array(1, 0, 'ruhezeit'));
+    /* Damit wirklich das CO2 traegt und nicht die Feuchte, muss die
+     * Aussenluft absolut feuchter sein: 18 C / 95 % sind 14,56 g/m3 gegen
+     * 10,35 innen. Mit 5 C / 60 % traegt die Feuchte, und der Fall haette
+     * die Ruhezeit gar nicht geprueft. */
+    $gru2 = $gru; $gru2['co2'] = 1400; $gru2['co2_max'] = 1000;
+    $rnacht2 = rk_raum_rechnen($gru2, array('t' => 18.0, 'rf' => 95.0), array(), $cru, $nacht);
+    $pr('  verbrauchte Luft schlaegt die Ruhezeit',
+        array($rnacht2['lueften'], $rnacht2['grund']), array(1, 'co2'));
+    $gru3 = $gru; $gru3['co2'] = 600; $gru3['co2_max'] = 1000;
+    $rnacht3 = rk_raum_rechnen($gru3, array('t' => 5.0, 'rf' => 60.0), array(), $cru, $nacht);
+    $pr('  ohne CO2-Grund sperrt sie auch die Feuchteempfehlung',
+        array($rnacht3['lueften'], $rnacht3['grund']), array(0, 'ruhezeit'));
+    $rtag = rk_raum_rechnen($gru, array('t' => 5.0, 'rf' => 60.0), array(), $cru, $morgen);
+    $pr('  tagsueber gilt sie nicht',
+        array($rtag['ruhe'], $rtag['lueften']), array(0, 1));
+
+    /* ---------- V14/V15/V16: was aus dem Verlauf kommt ---------- */
+    $gv = array('name' => 'Bad', 't' => 22.0, 'rf' => 75.0, 'frsi' => 0.7);
+    $cv = array('mindest' => 0.5, 't_min' => -5, 'zwang_std' => 6);
+    $rd = rk_raum_rechnen($gv, array('t' => 24.0, 'rf' => 80.0), array(), $cv, $t0,
+        null, array('dusche' => 1, 'trend' => 2.4));
+    $pr('Duschstoss loest Lueften aus, auch gegen die Feuchtebilanz',
+        array($rd['lueften'], $rd['grund'], $rd['dusche']), array(1, 'dusche', 1));
+    $pr('  und der Trend wird durchgereicht', $rd['trend'], 2.4);
+    $rz = rk_raum_rechnen($gv, array('t' => 24.0, 'rf' => 80.0), array(), $cv, $t0,
+        null, array('ohne_std' => 7));
+    $pr('Sieben Stunden ohne Empfehlung loesen die Zwangslueftung aus',
+        array($rz['lueften'], $rz['grund'], $rz['zwang']), array(1, 'zwang', 1));
+    $rz2 = rk_raum_rechnen($gv, array('t' => 24.0, 'rf' => 80.0), array(), $cv, $t0,
+        null, array('ohne_std' => 3));
+    $pr('  drei Stunden noch nicht', $rz2['zwang'], 0);
+    $cv0 = $cv; $cv0['zwang_std'] = 0;
+    $rz3 = rk_raum_rechnen($gv, array('t' => 24.0, 'rf' => 80.0), array(), $cv0, $t0,
+        null, array('ohne_std' => 99));
+    $pr('  und mit 0 ist die Zwangslueftung aus', $rz3['zwang'], 0);
+
+    /* ---------- V21: die Anlage im ganzen Raum ---------- */
+    $gw = array('name' => 'Anlage', 't' => 21.0, 'rf' => 45.0, 'frsi' => 0.7,
+                'zuluft' => '17.0', 'wrg_eta' => 80);
+    $rw = rk_raum_rechnen($gw, array('t' => 1.0, 'rf' => 85.0), array(), array(), $t0);
+    $pr('Raum mit Lueftungsanlage: Zuluft, Rueckwaermzahl, Fortluft',
+        array($rw['zuluft'], $rw['wrg'], $rw['fortluft'] > 0, $rw['vereist']),
+        array(17.0, 80.0, true, 0));
+    $gw2 = $gw;
+    $rw2 = rk_raum_rechnen($gw2, array('t' => -12.0, 'rf' => 85.0), array(), array(), $t0);
+    $pr('  bei -12 C aussen meldet sie Vereisungsgefahr', $rw2['vereist'], 1);
+    $rw3 = rk_raum_rechnen(array('name' => 'Ohne', 't' => 21.0, 'rf' => 45.0,
+        'frsi' => 0.7), array('t' => 1.0, 'rf' => 85.0), array(), array(), $t0);
+    $pr('  ohne Zuluftpfad bleibt beides leer',
+        array($rw3['zuluft'], $rw3['wrg'], $rw3['fortluft']), array(null, null, null));
+
+    /* ---------- CO2 mit Personenzahl ----------
+     * Eine Person, 17 l/h, 30 m3 Schlafzimmer:
+     *   0,017 m3/h * 1e6 / 30 = 567 ppm je Stunde ohne Luftwechsel.
+     * Erforderlicher Luftwechsel, um 1000 ppm gegen 420 aussen zu halten:
+     *   0,017 * 1e6 / (30 * 580) = 0,98 je Stunde - Kippen reicht knapp. */
+    $pr('Eine Person in 30 m3 erzeugt rund 567 ppm je Stunde',
+        rk_co2_anstieg_erwartet(1, 30, 17.0), 567.0, 1.0);
+    $pr('  zwei Personen das Doppelte',
+        rk_co2_anstieg_erwartet(2, 30, 17.0), 1133.0, 2.0);
+    $pr('  im doppelt so grossen Raum die Haelfte',
+        rk_co2_anstieg_erwartet(1, 60, 17.0), 283.0, 1.0);
+    $pr('  ohne Personen keine Aussage', rk_co2_anstieg_erwartet(0, 30, 17.0), null);
+    $pr('  ohne Raumvolumen keine Aussage', rk_co2_anstieg_erwartet(1, 0, 17.0), null);
+    $pr('Erforderlicher Luftwechsel fuer 1000 ppm gegen 420 aussen',
+        rk_co2_luftwechsel(1, 30, 1000, 420, 17.0), 0.98, 0.02);
+    $pr('  ein gekipptes Fenster leistet rund 1 - reicht also knapp',
+        rk_co2_luftwechsel(1, 30, 1000, 420, 17.0) < rk_luftwechsel('kipp', 10), true);
+    $pr('  zwei Personen im selben Raum brauchen mehr, als Kippen leistet',
+        rk_co2_luftwechsel(2, 30, 1000, 420, 17.0) > rk_luftwechsel('kipp', 10), true);
+    $pr('  eine Grenze unter der Aussenluft ist nicht zu halten',
+        rk_co2_luftwechsel(1, 30, 400, 420, 17.0), null);
+
+    /* Restzeit: von 700 auf 1000 ppm bei 300 ppm je Stunde sind 60 Minuten. */
+    $pr('Restzeit bis zur Grenze aus dem gemessenen Anstieg',
+        rk_co2_voll(700, 1000, 300.0), 60);
+    $pr('  bei doppeltem Anstieg die Haelfte', rk_co2_voll(700, 1000, 600.0), 30);
+    $pr('  ueber der Grenze gibt es keine Restzeit', rk_co2_voll(1100, 1000, 300.0), -1);
+    $pr('  ohne gemessenen Anstieg auch nicht', rk_co2_voll(700, 1000, null), -1);
+    $pr('  und ein Anstieg im Messrauschen ergibt keine Tage',
+        rk_co2_voll(700, 1000, 3.0), -1);
+
+    /* Im ganzen Raum, mit gemessenem Anstieg aus dem Verlauf. */
+    $gp = array('name' => 'Schlafen', 't' => 19.0, 'rf' => 50.0, 'frsi' => 0.7,
+                'volumen' => 30, 'co2' => 700, 'co2_max' => 1000, 'personen' => 1);
+    $cp = array('mindest' => 0.5, 't_min' => -5, 'co2_ltr' => 17.0,
+                'co2_aussen' => 420.0);
+    $rp = rk_raum_rechnen($gp, array('t' => 5.0, 'rf' => 70.0), array(), $cp, $t0,
+                          null, array('co2_anstieg' => 300.0));
+    $pr('Raum mit einer Person: erwartet, gemessen, Restzeit und Luftwechsel',
+        array($rp['co2_erwartet'], $rp['co2_anstieg'], $rp['co2_voll'],
+              $rp['co2_lw'] > 0.9 && $rp['co2_lw'] < 1.0),
+        array(567.0, 300.0, 60, true));
+    $gp0 = $gp; $gp0['personen'] = 0;
+    $rp0 = rk_raum_rechnen($gp0, array('t' => 5.0, 'rf' => 70.0), array(), $cp, $t0,
+                           null, array('co2_anstieg' => 300.0));
+    $pr('  ohne Personenzahl bleibt die Schaetzung leer, die Messung nicht',
+        array($rp0['co2_erwartet'], $rp0['co2_lw'], $rp0['co2_anstieg'], $rp0['co2_voll']),
+        array(null, null, 300.0, 60));
+    $rpk = rk_raum_rechnen($gp, array('t' => 5.0, 'rf' => 70.0), array(), $cp, $t0);
+    $pr('  ohne Verlauf gibt es keine Restzeit, wohl aber die Schaetzung',
+        array($rpk['co2_voll'], $rpk['co2_erwartet']), array(-1, 567.0));
 
     array_unshift($z, sprintf('Rechenkern %s: %d Faelle geprueft, %d Fehlschlaege.',
         RK_KERN, $anzahl, $fehl), '');

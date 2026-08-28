@@ -24,35 +24,50 @@ if [ -f "$CF" ]; then
         && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
         && echo "<OK> Konfiguration gesichert."
 fi
-# Die Datei mit den Zugangsdaten wird bewusst NICHT neben den Ordner
-# gesichert: eine Sicherung daneben ueberlebt die Deinstallation, und dort
-# stuenden dann Benutzername und Passwort herrenlos herum.
 echo "<OK> preupgrade abgeschlossen."
 
-# ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
-# Zweitschrift NEBEN den Konfigurationsordner, zusaetzlich zur bisherigen
-# Sicherung. Grund: der Installer kopiert config/* aus dem Archiv ueber
-# config/plugins/<ordner> (plugininstall.pl Zeile 899, cp -r ohne -n) und
-# ueberschreibt dabei die Datei des Nutzers. Bisher haing die Rettung allein
-# an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
-# jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
-# ueberschriebenen Ordners und wird vom Installer nicht angefasst.
+# ==== NICHT MITGELIEFERTE DATEIEN - und gerade deshalb die wichtigen ====
+#
+# Das Archiv liefert geheim.json nie, also stand sie auf keiner aus dem
+# Archivinhalt abgeleiteten Liste. Geloescht wird sie vom Installer
+# trotzdem: er kopiert config/* aus dem Archiv ueber config/plugins/<ordner>
+# (plugininstall.pl, cp -r ohne -n).
+#
+# BIS 0.10.1 STAND HIER DAS GEGENTEIL. Der Kommentar sagte, die Zugangsdaten
+# wuerden "bewusst NICHT neben den Ordner gesichert", und der Block darunter
+# tat genau das. Am 28.08.2026 durchgespielt: nach Update und Deinstallation
+# lag
+#     config/plugins/raumklima.backup.geheim.json
+#     {"benutzer":"loxadmin","passwort":"SehrGeheim123"}
+# im Klartext da, und uninstall meldete "Zugangsdaten geloescht".
+#
+# Aufgeloest ist der Widerspruch jetzt in die andere Richtung: die
+# Zweitschrift WIRD angelegt, denn ohne sie verliert jedes Update die
+# Zugangsdaten - aber sie lebt nur, solange das Update laeuft.
+# postupgrade.sh raeumt sie unmittelbar danach weg, und uninstall/uninstall
+# loescht sie in jedem Fall.
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-raumklima}"
+if [ -z "$NETZ_BASE" ] || [ ! -d "$NETZ_BASE" ]; then NETZ_BASE="$BASE"; fi
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-if [ -s "$NETZ_CFG/raumklima.json" ]; then
-    cp -p "$NETZ_CFG/raumklima.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.raumklima.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.raumklima.json" 2>/dev/null
-fi
-echo "<INFO> Zweitschrift der Einstellungen angelegt."
-
-
-# NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.
-# Das Archiv liefert sie nie, also standen sie bis jetzt auf keiner Liste;
-# geloescht werden sie vom Installer trotzdem, samt Token und Zugangsdaten.
 if [ -s "$NETZ_CFG/geheim.json" ]; then
-    cp -p "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null
+    if cp -p "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null; then
+        chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null
+        echo "<INFO> Zugangsdaten fuer die Dauer des Updates zwischengelegt."
+    fi
+fi
+
+# Eine ALTE Zweitschrift aus 0.10.x aufraeumen: bis dahin gab es einen
+# dritten Namen fuer dieselbe Sache. Zwei Sicherungsverfahren sind eines zu
+# viel, drei sind zwei zu viel.
+if [ -f "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.raumklima.json" ]; then
+    if [ ! -s "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json" ]; then
+        cp -p "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.raumklima.json" \
+              "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json" 2>/dev/null
+        chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json" 2>/dev/null
+    fi
+    rm -f "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.raumklima.json"
+    echo "<INFO> Alte dritte Zweitschrift zusammengefuehrt und entfernt."
 fi
 
 exit 0
