@@ -58,20 +58,43 @@ function rk_selbstpruefung()
      * Dieses Plugin hat keinen Dauerlaeufer; an seine Stelle tritt der
      * Cron. Ein Plugin muss seinen eigenen Cron-Eintrag pruefen - sonst
      * merkt niemand, dass er beim Update verlorenging. */
-    $cronorte = array();
-    if ($p['home'] !== '') {
-        foreach (array('/system/cron/cron.05min/', '/system/cron/cron.5min/') as $c) {
-            $cronorte[] = $p['home'] . $c . $p['plugin'];
+    /* Der Ort ist am Geraet gemessen und steht in REGELN_2:
+     *     <Wurzel>/system/cron/cron.05min/<plugin>
+     * also DREI Ebenen unter der Wurzel. Und der Takt wird nicht getippt,
+     * sondern aus der eigenen Auslieferung gelesen: das Plugin liefert
+     * cron/cron.05min, der Installer legt genau diesen Namen ab. Eine
+     * getippte Zahl waere eine zweite Stelle, die man mitpflegen muss.
+     *
+     * Die erste Fassung dieser Zeile suchte zusaetzlich unter 'cron.5min'.
+     * Diesen Ordner gibt es nicht: der Bestand schreibt durchgehend
+     * zweistellig (34-mal cron.01min, 9-mal cron.05min, dazu cron.03min und
+     * cron.10min). Ein geratener Pfad, der nie trifft, macht aus einer
+     * Messung eine Behauptung ueber die Zahl der abgesuchten Orte. */
+    $takt_ordner = '';
+    foreach (array(dirname(dirname(__DIR__)) . '/cron',
+                   $p['home'] . '/bin/plugins/' . $p['plugin'] . '/../cron') as $q) {
+        if (!is_dir($q)) { continue; }
+        foreach ((array) scandir($q) as $e) {
+            if (preg_match('/^cron\.\d+min$/', $e)) { $takt_ordner = $e; break 2; }
         }
     }
-    $cron_da = '';
-    foreach ($cronorte as $c) { if (is_file($c)) { $cron_da = $c; break; } }
-    if (!$cronorte) {
-        $add('PRUEF.CRON', 2, 'LBHOMEDIR unbekannt');
-    } elseif ($cron_da !== '') {
-        $add('PRUEF.CRON', 1, basename(dirname($cron_da)) . '/' . basename($cron_da));
+    if ($p['home'] === '') {
+        $add('PRUEF.CRON', 2, 'LBHOMEDIR unbekannt - hier nicht messbar');
+    } elseif ($takt_ordner === '') {
+        /* Ueber eine leere Menge wird nicht geurteilt. */
+        $add('PRUEF.CRON', 2, 'kein cron.NNmin im Plugin gefunden - nichts zu suchen');
     } else {
-        $add('PRUEF.CRON', 0, count($cronorte) . ' Orte abgesucht, keiner belegt');
+        $ziel = $p['home'] . '/system/cron/' . $takt_ordner . '/' . $p['plugin'];
+        if (is_file($ziel)) {
+            $add('PRUEF.CRON', 1, 'system/cron/' . $takt_ordner . '/' . $p['plugin']);
+        } elseif (is_dir($ziel)) {
+            /* Ein VERZEICHNIS an dieser Stelle heisst: der Eintrag laeuft
+             * nie. LoxBerry fuehrt in diesen Ordnern nur Dateien aus. */
+            $add('PRUEF.CRON', 0, 'dort liegt ein VERZEICHNIS, keine Datei - '
+                 . 'der Cron laeuft nicht');
+        } else {
+            $add('PRUEF.CRON', 0, 'fehlt: system/cron/' . $takt_ordner . '/' . $p['plugin']);
+        }
     }
 
     /* ---- 2. Arbeitet der Abruf noch? ----
@@ -156,6 +179,41 @@ function rk_selbstpruefung()
              $x !== false ? sprintf('%s, %d Eingaenge', $vn, $cmds)
                           : (count($fehler) ? trim($fehler[0]->message) : 'nicht lesbar'));
     }
+
+    /* ---- 9. Liest der Assistent den Messwert aus der richtigen Zeile? ----
+     * Diese Zeile braucht KEINEN Miniserver. Sie fuehrt rk_wert_pfad() vier
+     * erfundene Antworten vor - genau darum steht die Funktion seit 0.11.1
+     * fuer sich und nicht mehr in rk_ms_probe(): dort waere sie am Geraet
+     * nur mit laufendem Miniserver messbar gewesen, also gar nicht.
+     *
+     * Die beiden Gegenfaelle sind die eigentliche Ware. Ein Statuscode ist
+     * eine tadellose Zahl, ein Funkpegel auch - beide sind keine
+     * Raumtemperatur. Nimmt der Assistent sie, traegt er einen Pfad ein,
+     * der jahrelang plausibel falsche Werte liefert. */
+    $ff = array(
+        array('LL.value', array('LL' => array('control' => 'dev/sps/io/x/all',
+              'value' => '21.4 Grad', 'Code' => '200')), 1),
+        array('daten.zustand.aktuell', array('daten' => array('zustand' =>
+              array('aktuell' => '21.4', 'code' => '200'))), 1),
+        array('', array('LL' => array('value' => 'keine Verbindung',
+              'Code' => '200')), 0),
+        array('', array('LL' => array('value' => 'keine Verbindung',
+              'signal' => '-67', 'battery' => '87', 'Code' => '200')), 0),
+        /* Der fuenfte Fall traegt GAR KEIN value - sonst entscheidet immer
+         * schon die value-Regel, und die Namensliste (code, control, uuid,
+         * ...) wird nie befragt. Genau daran blieb die Eichung dieser Zeile
+         * am 29.08.2026 zunaechst gruen: vier Faelle, und keiner betrat die
+         * Stelle, die er pruefen sollte. */
+        array('', array('LL' => array('Code' => '200',
+              'control' => 'dev/sps/io/x/all')), 0),
+    );
+    $fehl = 0;
+    foreach ($ff as $f) {
+        list($sok, $spfad, $swert) = rk_wert_pfad($f[1]);
+        if ((int) $sok !== (int) $f[2] || $spfad !== $f[0]) { $fehl++; }
+    }
+    $add('PRUEF.WERTPFAD', $fehl === 0 ? 1 : 0,
+         sprintf('%d von %d Antworten richtig gelesen', count($ff) - $fehl, count($ff)));
 
     return $z;
 }

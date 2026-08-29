@@ -210,6 +210,127 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
     $rk_tab = 'tab-settings';
 }
 
+/* ---------------- Der Einrichtungs-Assistent ----------------
+ *
+ * Zwei Schritte, und der erste schreibt NICHTS. Erst wird gezeigt, was
+ * gefunden wurde und was daraus wuerde; uebernommen wird nur auf einen
+ * zweiten Knopfdruck. Ein Assistent, der beim Hinsehen schon schreibt,
+ * nimmt dem Anwender die Entscheidung ab, die ihm gehoert.
+ *
+ * Der PFAD in die Antwort wird an der eigenen Anlage GEMESSEN, nicht
+ * angenommen: rk_ms_probe() holt einen Baustein wirklich und sucht darin
+ * selbst die Stelle, an der eine lesbare Zahl steht. Was der Assistent
+ * eintraegt, ist damit abgelesen. */
+$rk_ass = null;
+if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen']))) {
+    $rk_tab = 'tab-settings';
+    $rk_cfg0 = rk_config();
+    $rk_ms = rk_miniserver_gewaehlt($rk_cfg0);
+    if ($rk_ms === null) {
+        $rk_fehler[] = rk_t('MELD.MS_KEINER');
+    } else {
+        list($rk_ok, $rk_meld, $rk_msr, $rk_bau) = rk_struktur_holen($rk_ms);
+        if (!$rk_ok) {
+            $rk_fehler[] = sprintf(rk_t('EINST.MS_FEHLER'),
+                rk_e($rk_ms['name'] . ' (' . $rk_ms['adresse'] . ')'), rk_t($rk_meld));
+        } else {
+            $rk_kat = isset($_POST['ms_kategorie']) ? rk_text_saeubern($_POST['ms_kategorie']) : '';
+            $rk_vor = rk_fuehler_vorschlag($rk_bau, $rk_kat);
+            /* Nur Raeume, in denen BEIDE Groessen gefunden wurden. Ein Raum
+             * mit nur einer Haelfte ergaebe ok=0 und stuende danach als
+             * Ausfall da - das waere kein Vorschlag, sondern eine Falle. */
+            $rk_voll = array();
+            foreach ($rk_vor as $v) {
+                if ($v['t'] !== null && $v['rf'] !== null) { $rk_voll[] = $v; }
+            }
+            $rk_ass = array('ms' => $rk_ms, 'raeume' => count($rk_msr),
+                            'bausteine' => count($rk_bau), 'vorschlag' => $rk_vor,
+                            'voll' => $rk_voll, 'kategorie' => $rk_kat,
+                            'probe' => null, 'geschrieben' => 0);
+
+            /* EINE Probe, am ersten gefundenen Temperaturbaustein. Sie
+             * beantwortet zweierlei: kommt man an die Werte heran, und wie
+             * heisst der Pfad in der Antwort wirklich. */
+            if ($rk_voll) {
+                list($rk_pok, $rk_pmeld, $rk_pfad, $rk_prohw, $rk_pzahl)
+                    = rk_ms_probe($rk_ms, $rk_voll[0]['t']['uuid']);
+                $rk_ass['probe'] = array('ok' => $rk_pok, 'meld' => $rk_pmeld,
+                    'pfad' => $rk_pfad, 'roh' => $rk_prohw, 'zahl' => $rk_pzahl,
+                    'name' => $rk_voll[0]['t']['name']);
+                if (!$rk_pok) {
+                    $rk_fehler[] = sprintf(rk_t('EINST.MS_PROBE_FEHL'), rk_t($rk_pmeld));
+                }
+            }
+
+            /* ---- Zweiter Schritt: uebernehmen ---- */
+            if (isset($_POST['ms_uebernehmen']) && $rk_voll
+                && !empty($rk_ass['probe']['ok'])) {
+                $rk_pfad = $rk_ass['probe']['pfad'];
+                $rk_neu2 = $rk_cfg0['raeume'];
+                $rk_frei = array();
+                /* Belegte Plaetze bleiben belegt. Ein Assistent, der einen
+                 * eingerichteten Raum ueberschreibt, loescht Arbeit - und
+                 * die Nummer eines Raums ist sein Platz in der Tabelle, an
+                 * dem in Loxone jeder Suchtext haengt. */
+                for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
+                    $rk_b = $rk_cfg0['raeume'][$rk_i];
+                    if (trim((string) $rk_b['name']) === ''
+                        && trim((string) $rk_b['pfad_t']) === ''
+                        && trim((string) $rk_b['pfad_rf']) === '') {
+                        $rk_frei[] = $rk_i;
+                    }
+                }
+                $rk_n2 = 0;
+                foreach ($rk_voll as $rk_v) {
+                    if (!$rk_frei) { break; }
+                    /* Ein Raum, der schon eingetragen ist, wird nicht ein
+                     * zweites Mal angelegt. */
+                    $rk_schon = false;
+                    foreach ($rk_neu2 as $rk_b) {
+                        if (trim((string) $rk_b['name']) === $rk_v['raum']) { $rk_schon = true; break; }
+                    }
+                    if ($rk_schon) { continue; }
+                    $rk_i = array_shift($rk_frei);
+                    $rk_neu2[$rk_i]['name'] = $rk_v['raum'];
+                    $rk_neu2[$rk_i]['quelle'] = rk_ms_url($rk_ms,
+                        'jdev/sps/io/' . rawurlencode($rk_v['t']['uuid']) . '/all');
+                    $rk_neu2[$rk_i]['quelle_rf'] = rk_ms_url($rk_ms,
+                        'jdev/sps/io/' . rawurlencode($rk_v['rf']['uuid']) . '/all');
+                    $rk_neu2[$rk_i]['pfad_t'] = $rk_pfad;
+                    $rk_neu2[$rk_i]['pfad_rf'] = $rk_pfad;
+                    $rk_n2++;
+                }
+                if ($rk_n2 === 0) {
+                    $rk_meldungen[] = rk_t('EINST.MS_NICHTS_NEU');
+                } else {
+                    $rk_cfg0['raeume'] = $rk_neu2;
+                    if (rk_config_speichern($rk_cfg0)) {
+                        $rk_ass['geschrieben'] = $rk_n2;
+                        $rk_meldungen[] = sprintf(rk_t('EINST.MS_UEBERNOMMEN'), $rk_n2);
+                        /* Die Zugangsdaten des Miniservers gehoeren in die
+                         * Geheimnisdatei - rk_holen() schickt sie beim Abruf
+                         * als Basic-Auth mit. Ohne sie antwortet der
+                         * Miniserver mit 401, und der Anwender suchte lange. */
+                        $rk_g2 = rk_geheim();
+                        if ($rk_g2['benutzer'] === '' && $rk_ms['user'] !== '') {
+                            rk_geheim_speichern(array('benutzer' => $rk_ms['user'],
+                                                      'passwort' => $rk_ms['pass']));
+                            $rk_meldungen[] = rk_t('EINST.MS_ZUGANG_GESETZT');
+                        }
+                        rk_log('Einrichtungs-Assistent: ' . $rk_n2 . ' Raum/Raeume vom '
+                               . 'Miniserver uebernommen (Pfad ' . $rk_pfad . ').');
+                        $rk_s2 = rk_abrufen(true);
+                        $rk_meldungen[] = empty($rk_s2['meldungen'])
+                            ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+                    } else {
+                        $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($rk_post && isset($_POST['vorlage'])) {
     list($rk_name, $rk_inhalt) = rk_vorlage();
@@ -333,6 +454,9 @@ if ($rk_post && isset($_POST['speichern'])) {
             $rk_bez = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
             $rk_a = $rk_adresse($rk_feld('r_quelle', $rk_i), $rk_bez);
             if ($rk_a !== null) { $rk_r['quelle'] = $rk_a; }
+            $rk_a = $rk_adresse($rk_feld('r_quelle_rf', $rk_i),
+                                $rk_bez . ' / ' . rk_t('EINST.QUELLE_RF'));
+            if ($rk_a !== null) { $rk_r['quelle_rf'] = $rk_a; }
 
             $rk_leer = ($rk_r['name'] === '' && $rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '');
 
@@ -807,6 +931,86 @@ if ($rk_lage === 'kaputt') { ?>
   </form>
 </div>
 
+<h2><?= rk_e(rk_t('EINST.H_ASSISTENT')) ?></h2>
+<div class="sm-step"><?= rk_t('EINST.ASSISTENT_ERKLAERUNG') ?></div>
+<?php $rk_mslist = rk_miniserver(); ?>
+<?php if (!$rk_mslist) { ?>
+<div class="sm-warnung"><?= rk_t('EINST.MS_KEINER_LANG') ?></div>
+<?php } else { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= rk_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+<div class="sm-feld">
+  <label for="rk_mskat"><?= rk_e(rk_t('EINST.MS_KATEGORIE')) ?></label>
+  <input data-role="none" type="text" id="rk_mskat" name="ms_kategorie"
+         value="<?= rk_e($rk_ass !== null ? $rk_ass['kategorie'] : '') ?>"
+         placeholder="Feuchte">
+  <p class="sm-hilfe"><?= rk_t('EINST.MS_KATEGORIE_HILFE') ?></p>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ms_suchen" value="1"><?= rk_e(rk_t('EINST.K_MS_SUCHEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+
+<?php if ($rk_ass !== null) { ?>
+<div class="sm-hinweis">
+<?= sprintf(rk_e(rk_t('EINST.MS_GEFUNDEN')), rk_e($rk_ass['ms']['name']),
+            rk_e($rk_ass['ms']['adresse']), (int) $rk_ass['raeume'],
+            (int) $rk_ass['bausteine'], count($rk_ass['voll'])) ?>
+</div>
+<?php if ($rk_ass['probe'] !== null && $rk_ass['probe']['ok']) { ?>
+<div class="sm-hinweis"><?= sprintf(rk_t('EINST.MS_PROBE_OK'),
+    rk_e($rk_ass['probe']['name']), rk_e($rk_ass['probe']['roh']),
+    rk_e((string) $rk_ass['probe']['zahl']), rk_e($rk_ass['probe']['pfad'])) ?></div>
+<?php } ?>
+<?php if ($rk_ass['vorschlag']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_RAUM')) ?></th>
+    <th><?= rk_e(rk_t('EINST.PFAD_T')) ?></th>
+    <th><?= rk_e(rk_t('EINST.PFAD_RF')) ?></th>
+    <th><?= rk_e(rk_t('EINST.MS_SP_LAGE')) ?></th></tr>
+<?php foreach ($rk_ass['vorschlag'] as $rk_v) {
+    $rk_beide = ($rk_v['t'] !== null && $rk_v['rf'] !== null);
+    $rk_da = false;
+    foreach ($rk_cfg['raeume'] as $rk_b) {
+        if (trim((string) $rk_b['name']) === $rk_v['raum']) { $rk_da = true; break; }
+    } ?>
+<tr>
+  <td><b><?= rk_e($rk_v['raum']) ?></b></td>
+  <td><?= $rk_v['t'] !== null ? rk_e($rk_v['t']['name']) : '<span class="sm-aus">&ndash;</span>' ?>
+      <?= $rk_v['t_mehr'] > 0 ? '<br><span class="sm-hilfe">' . sprintf(rk_e(rk_t('EINST.MS_MEHRERE')), (int) $rk_v['t_mehr'] + 1) . '</span>' : '' ?></td>
+  <td><?= $rk_v['rf'] !== null ? rk_e($rk_v['rf']['name']) : '<span class="sm-aus">&ndash;</span>' ?>
+      <?= $rk_v['rf_mehr'] > 0 ? '<br><span class="sm-hilfe">' . sprintf(rk_e(rk_t('EINST.MS_MEHRERE')), (int) $rk_v['rf_mehr'] + 1) . '</span>' : '' ?></td>
+  <td><?php if ($rk_da) { ?><?= rk_e(rk_t('EINST.MS_SCHON_DA')) ?><?php }
+           elseif ($rk_beide) { ?><span class="sm-an"><?= rk_e(rk_t('EINST.MS_WIRD_ANGELEGT')) ?></span><?php }
+           else { ?><span class="sm-aus"><?= rk_e(rk_t('EINST.MS_UNVOLLSTAENDIG')) ?></span><?php } ?></td>
+</tr>
+<?php } ?>
+</table>
+</div>
+<?php if ($rk_ass['voll'] && $rk_ass['probe'] !== null && $rk_ass['probe']['ok']
+          && !$rk_ass['geschrieben']) { ?>
+<div class="sm-warnung"><?= rk_t('EINST.MS_VOR_UEBERNAHME') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+<input data-role="none" type="hidden" name="ms_kategorie" value="<?= rk_e($rk_ass['kategorie']) ?>">
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ms_uebernehmen" value="1"><?= rk_e(rk_t('EINST.K_MS_UEBERNEHMEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+<?php } else { ?>
+<div class="sm-warnung"><?= rk_t('EINST.MS_NICHTS_GEFUNDEN') ?></div>
+<?php } ?>
+<?php } ?>
+
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="<?= rk_e($rk_tab) ?>">
 <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
@@ -835,6 +1039,7 @@ if ($rk_lage === 'kaputt') { ?>
   <th><?= rk_e(rk_t('EINST.PFAD_FENSTER')) ?></th>
   <th><?= rk_e(rk_t('EINST.PFAD_ZULUFT')) ?></th>
   <th><?= rk_e(rk_t('EINST.EIGENE_QUELLE')) ?></th>
+  <th><?= rk_e(rk_t('EINST.QUELLE_RF')) ?></th>
   <th><?= rk_e(rk_t('EINST.EINHEIT')) ?></th>
 </tr>
 <?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
@@ -847,6 +1052,7 @@ if ($rk_lage === 'kaputt') { ?>
   <td><input data-role="none" type="text" size="16" name="r_pfad_fenster[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_fenster']) ?>"></td>
   <td><input data-role="none" type="text" size="16" name="r_pfad_zuluft[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_zuluft']) ?>"></td>
   <td><input data-role="none" type="text" size="18" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle']) ?>"></td>
+  <td><input data-role="none" type="text" size="18" name="r_quelle_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle_rf']) ?>"></td>
   <td><select data-role="none" name="r_einheit_t[<?= $rk_i ?>]">
     <option value="C"<?= $rk_r['einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
     <option value="F"<?= $rk_r['einheit_t'] === 'F' ? ' selected' : '' ?>>&deg;F</option>

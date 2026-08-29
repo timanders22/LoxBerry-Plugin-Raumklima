@@ -21,6 +21,42 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# ---------- Eine Altlast von 0.11.0 wegraeumen ----------
+#
+# Bis 0.11.0 lag im Archiv ein VERZEICHNIS dpkg/apt/ mit php-curl.list darin.
+# plugininstall.pl oeffnet aber $tempfolder/dpkg/apt als DATEI; bei einem
+# Verzeichnis scheitert das. Gemessen am 29.08.2026 in einem echten
+# Installationsprotokoll:
+#
+#   <INFO> Installing additional software packages.
+#   <ERROR> Cannot open APT file.
+#   ...
+#   0 upgraded, 0 newly installed, 0 to remove
+#   <OK> Packages  successfully installed      <- die Liste kam LEER an
+#
+# php-curl wurde also nie ueber diesen Weg installiert. Seit 0.11.1 ist
+# dpkg/apt eine Datei. Auf einer Anlage, die 0.11.0 gesehen hat, steht unter
+# data/system/install/<ordner>/dpkg/apt aber noch das alte VERZEICHNIS - und
+# ein cp der neuen Datei dorthin legte sie INNEN ab (dpkg/apt/apt), statt sie
+# zu ersetzen. Der Fehler bliebe damit ueber das Update hinweg bestehen.
+#
+# Die Reihenfolge traegt: der Installer sichert die dpkg-Dateien NACH
+# postinstall (im Protokoll 38.262 gegen 38.749). Hier ist also der letzte
+# Zeitpunkt, an dem der Platz noch frei geraeumt werden kann.
+#
+# Dieselbe Klasse wie cron/cron.XXmin: LoxBerry erwartet an dieser Stelle
+# eine Datei, und ein Verzeichnis macht daraus einen stillen Ausfall.
+ALT_APT="$BASE/data/system/install/$PFOLDER/dpkg/apt"
+if [ -d "$ALT_APT" ]; then
+    if rm -rf "$ALT_APT"; then
+        echo "<OK> Altes dpkg/apt-Verzeichnis aus 0.11.0 entfernt - die"
+        echo "<OK> Paketliste kommt ab jetzt an."
+    else
+        echo "<WARNING> Das alte Verzeichnis $ALT_APT liess sich nicht entfernen."
+        echo "<WARNING> php-curl wird dann weiterhin nicht ueber apt nachinstalliert."
+    fi
+fi
+
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"

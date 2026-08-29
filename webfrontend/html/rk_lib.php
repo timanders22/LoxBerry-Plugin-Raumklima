@@ -134,6 +134,16 @@ function rk_raum_vorgabe()
     return array(
         'name'     => '',
         'quelle'   => '',    // leer = die gemeinsame Adresse benutzen
+        /* Eine ZWEITE Adresse, nur fuer die Feuchte.
+         *
+         * Bis 0.11.1 hatte ein Raum genau eine Adresse, und beide Pfade
+         * gingen in dieselbe Antwort. Beim Miniserver geht das nicht: dort
+         * ist jeder Baustein eine eigene Adresse
+         * (jdev/sps/io/<uuid>/all), und Temperatur und Feuchte sind zwei
+         * Bausteine. Leer heisst weiterhin "dieselbe wie fuer die
+         * Temperatur" - fuer jede Quelle, die alles in einer Antwort
+         * liefert, aendert sich damit nichts. */
+        'quelle_rf' => '',
         'pfad_t'   => '',
         'pfad_rf'  => '',
         'frsi'     => 0.70,  // Temperaturfaktor der kaeltesten Stelle
@@ -217,6 +227,10 @@ function rk_vorgaben()
          * 420 ppm ist der heutige Wert der freien Atmosphaere. */
         'co2_ltr'     => 17.0,
         'co2_aussen'  => 420.0,
+        /* Welchen Miniserver der Einrichtungs-Assistent fragt. Leer = den
+         * ersten, den LoxBerry kennt. Adresse und Zugangsdaten stehen in
+         * dessen general.json; niemand traegt sie ein zweites Mal ein. */
+        'ms_nr'       => '',
         // MQTT und Endpunkt
         'mqtt_ein'    => 1,
         'mqtt_topic'  => 'raumklima',
@@ -300,6 +314,7 @@ function rk_wert_pruefen($schluessel, $wert)
             'aktionstoken'  => array('token'),
             'raeume'        => array('raeume'),
             'zugang'        => array('zugang'),
+            'ms_nr'         => array('text'),
         );
     }
     if (!isset($regeln[$schluessel])) {
@@ -568,7 +583,7 @@ function rk_config($heilen = true)
             }
         }
         foreach (array('pfad_t', 'pfad_rf', 'pfad_co2', 'pfad_fenster',
-                       'pfad_zuluft', 'quelle') as $pf) {
+                       'pfad_zuluft', 'quelle', 'quelle_rf') as $pf) {
             if (!is_string($r[$pf])) { $r[$pf] = ''; }
         }
         $cfg['raeume'][$i] = $r;
@@ -824,6 +839,7 @@ function rk_log($text)
     if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
     /* log/plugins liegt auf einer Ramdisk - eine unbegrenzt wachsende
      * Logdatei frisst Arbeitsspeicher, nicht Plattenplatz. */
+    clearstatcache(true, $p['log']);
     if (is_file($p['log']) && filesize($p['log']) > 512000) {
         $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
@@ -960,6 +976,325 @@ function rk_holen($url, $mit_zugang = false)
         return array(null, 'KEIN_JSON');
     }
     return array($d, '');
+}
+
+/* ==================================================================
+ * Der Miniserver als Quelle
+ *
+ * ------------------------------------------------------------------
+ * Warum dieser Weg, und warum nicht die Fuehler selbst
+ * ------------------------------------------------------------------
+ *
+ * Ein Shelly H&T Gen3 ist ein BATTERIEGERAET. Es schlaeft und meldet sich
+ * nur bei Ereignissen; es publiziert dann ueber MQTT nach
+ * `shellyhtg3-<Name>/events/rpc`, und das LoxBerry-Gateway fuellt daraus
+ * virtuelle Eingaenge. Ein HTTP-Abruf auf seine Adresse laeuft in die
+ * Zeitschranke, weil dort meistens niemand horcht. Das Modell "Adresse
+ * eintragen und Pfad" kann solche Fuehler prinzipiell nicht erreichen.
+ *
+ * Im Miniserver stehen die Werte aber laengst. Am 29.08.2026 an einer
+ * Anlage mit zwoelf solcher Fuehler abgelesen:
+ *
+ *     Baustein "01) Temperatur Kueche"        ->  "27.2 °C"
+ *     Baustein "02) Luftfeuchtigkeit Kueche"  ->  "51 % - gut"
+ *
+ * Beide Formen liest rk_zahl_aus() ohne Aenderung; die Gegenprobe
+ * ("keine Verbindung", "--") ergibt null. Der Weg ueber den Miniserver ist
+ * damit der richtige - nicht als Notnagel, sondern weil dort die Werte
+ * aller Fuehler zusammenlaufen, gleich wie sie hereinkommen.
+ *
+ * Die Adresse und die Zugangsdaten stehen in der general.json des
+ * LoxBerry; niemand muss sie ein zweites Mal eintragen. Das Muster ist aus
+ * dem Beschattungswaechter uebernommen, der denselben Weg geht.
+ * ================================================================== */
+
+/** Die Miniserver, die LoxBerry kennt. Leeres Feld, wenn keiner da ist. */
+function rk_miniserver()
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return array(); }
+    $j = rk_json_lesen($p['home'] . '/config/system/general.json');
+    if (empty($j['Miniserver']) || !is_array($j['Miniserver'])) { return array(); }
+    $aus = array();
+    foreach ($j['Miniserver'] as $nr => $ms) {
+        if (!is_array($ms)) { continue; }
+        $adresse = '';
+        foreach (array('Ipaddress', 'IPAddress') as $k) {
+            if (!empty($ms[$k])) { $adresse = (string) $ms[$k]; break; }
+        }
+        if ($adresse === '') { continue; }
+        $aus[] = array(
+            'nr'      => (string) $nr,
+            'name'    => !empty($ms['Name']) ? (string) $ms['Name'] : ('Miniserver ' . $nr),
+            'adresse' => $adresse,
+            'port'    => !empty($ms['Port']) ? (int) $ms['Port'] : 80,
+            'user'    => !empty($ms['Admin']) ? (string) $ms['Admin']
+                         : (!empty($ms['Username']) ? (string) $ms['Username'] : ''),
+            'pass'    => !empty($ms['Pass']) ? (string) $ms['Pass']
+                         : (!empty($ms['Password']) ? (string) $ms['Password'] : ''),
+        );
+    }
+    return $aus;
+}
+
+/** Den eingestellten Miniserver auswaehlen, sonst den ersten. */
+function rk_miniserver_gewaehlt($cfg, ?array $alle = null)
+{
+    if ($alle === null) { $alle = rk_miniserver(); }
+    if (!$alle) { return null; }
+    $nr = isset($cfg['ms_nr']) ? trim((string) $cfg['ms_nr']) : '';
+    if ($nr !== '') {
+        foreach ($alle as $m) { if ($m['nr'] === $nr) { return $m; } }
+    }
+    /* reset(), nicht [0]: rk_miniserver() liefert zwar eine Liste, aber ein
+     * Aufrufer darf sie gefiltert haben - dann gibt es keinen Schluessel 0. */
+    return reset($alle);
+}
+
+/** Die Adresse eines Miniserver-Aufrufs. An EINER Stelle. */
+function rk_ms_url($ms, $pfad)
+{
+    return 'http://' . $ms['adresse'] . ':' . (int) $ms['port'] . '/'
+         . ltrim((string) $pfad, '/');
+}
+
+/**
+ * Einen Aufruf an den Miniserver. Rueckgabe: array(code, roh, fehler).
+ *
+ * Die Zugangsdaten gehen in den KOPF, nicht in die Adresse: eine Adresse
+ * landet im Protokoll jedes Webservers und in jedem Verlauf, ein Kopf
+ * nicht. Derselbe Satz steht im Beschattungswaechter.
+ */
+function rk_ms_holen($ms, $pfad, $zeit = 12)
+{
+    $url = rk_ms_url($ms, $pfad);
+    $kopf = array('Accept: application/json', 'User-Agent: LoxBerry-Raumklima');
+    if ($ms['user'] !== '') {
+        $kopf[] = 'Authorization: Basic '
+                . base64_encode($ms['user'] . ':' . $ms['pass']);
+    }
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
+        curl_setopt($ch, CURLOPT_TIMEOUT, (int) $zeit);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, min(8, (int) $zeit));
+        $roh = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $fehler = curl_error($ch);
+        curl_close($ch);
+        if ($roh === false) { return array(0, '', $fehler !== '' ? $fehler : 'keine Antwort'); }
+        return array($code, (string) $roh, '');
+    }
+    /* follow_location = 0 aus demselben Grund wie in rk_holen(): der Kopf
+     * mit den Zugangsdaten darf keiner fremden Weiterleitung folgen. */
+    $ctx = stream_context_create(array('http' => array(
+        'timeout' => (int) $zeit, 'header' => implode("\r\n", $kopf),
+        'ignore_errors' => true, 'follow_location' => 0, 'max_redirects' => 1)));
+    $roh = @file_get_contents($url, false, $ctx);
+    if ($roh === false) { return array(0, '', 'keine Antwort'); }
+    $code = 0;
+    if (isset($http_response_header)) {
+        foreach ($http_response_header as $z) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
+        }
+    }
+    return array($code, (string) $roh, '');
+}
+
+/**
+ * Die Strukturdatei holen und in Raeume und Bausteine zerlegen.
+ *
+ * Rueckgabe: array(ok, Meldungsschluessel, Raeume, Bausteine)
+ *   Raeume    uuid => Name
+ *   Bausteine Liste aus array(uuid, name, raum, kategorie, typ)
+ */
+function rk_struktur_holen($ms, $zeit = 30)
+{
+    if (!is_array($ms)) { return array(0, 'MELD.MS_KEINER', array(), array()); }
+    list($code, $roh, $fehler) = rk_ms_holen($ms, 'data/LoxAPP3.json', $zeit);
+    if ($code === 0)   { return array(0, 'MELD.MS_STUMM', array(), array()); }
+    if ($code === 401) { return array(0, 'MELD.MS_401', array(), array()); }
+    if ($code !== 200) { return array(0, 'MELD.MS_HTTP', array(), array()); }
+    $j = json_decode($roh, true);
+    if (!is_array($j) || empty($j['controls'])) {
+        return array(0, 'MELD.MS_KEIN_JSON', array(), array());
+    }
+    $raeume = array();
+    foreach ((array) (isset($j['rooms']) ? $j['rooms'] : array()) as $u => $r) {
+        if (is_array($r) && isset($r['name'])) { $raeume[(string) $u] = (string) $r['name']; }
+    }
+    $kat = array();
+    foreach ((array) (isset($j['cats']) ? $j['cats'] : array()) as $u => $c) {
+        if (is_array($c) && isset($c['name'])) { $kat[(string) $u] = (string) $c['name']; }
+    }
+    $bausteine = array();
+    foreach ($j['controls'] as $u => $c) {
+        if (!is_array($c) || !isset($c['name'])) { continue; }
+        $ru = isset($c['room']) ? (string) $c['room'] : '';
+        $cu = isset($c['cat']) ? (string) $c['cat'] : '';
+        $bausteine[] = array(
+            'uuid' => (string) $u,
+            'name' => (string) $c['name'],
+            'raum' => isset($raeume[$ru]) ? $raeume[$ru] : '',
+            'kategorie' => isset($kat[$cu]) ? $kat[$cu] : '',
+            'typ'  => isset($c['type']) ? (string) $c['type'] : '',
+        );
+    }
+    return array(1, '', $raeume, $bausteine);
+}
+
+/**
+ * Je Raum den Temperatur- und den Feuchtebaustein vorschlagen.
+ *
+ * ZUGEORDNET WIRD UEBER DEN RAUM, NICHT UEBER DEN NAMEN. An der Anlage vom
+ * 29.08.2026 heissen dieselben Kacheln je nach Raum
+ *
+ *     "01) Temperatur Kueche"      "01) Temperatur OG Leonie"
+ *     "01) Temperatur Christian"   "01) Temperatur OG Schlafzimmer"  (= Eltern)
+ *
+ * Ueber den Namen ginge die Zuordnung also schief, ueber den Raum nicht.
+ * Der Name entscheidet nur, WELCHE der beiden Groessen ein Baustein traegt.
+ *
+ * Gibt es in einem Raum mehrere Bewerber, wird der erste genommen UND die
+ * Zahl gemeldet - eine stille Auswahl unter mehreren ist eine Entscheidung,
+ * die der Anwender treffen muss, nicht das Plugin.
+ */
+function rk_fuehler_vorschlag($bausteine, $nur_kategorie = '')
+{
+    $t_wort  = array('temperatur', 'temp');
+    $rf_wort = array('luftfeuchtigkeit', 'feuchtigkeit', 'feuchte', 'humidity');
+    /* Kein Bewerber sein duerfen die abgeleiteten Merker - sie tragen
+     * dieselben Woerter und sind doch keine Messwerte. */
+    $nicht = array('schimmel', 'lueften', 'sinnvoll', 'gefahr', 'warnung',
+                   'taupunkt', 'soll', 'ziel');
+    $raeume = array();
+    foreach ($bausteine as $b) {
+        if ($b['raum'] === '') { continue; }
+        if ($nur_kategorie !== ''
+            && stripos($b['kategorie'], $nur_kategorie) === false) { continue; }
+        $n = mb_strtolower_ersatz($b['name']);
+        foreach ($nicht as $w) { if (strpos($n, $w) !== false) { continue 2; } }
+        $ist_t = false; $ist_rf = false;
+        foreach ($rf_wort as $w) { if (strpos($n, $w) !== false) { $ist_rf = true; break; } }
+        if (!$ist_rf) {
+            foreach ($t_wort as $w) { if (strpos($n, $w) !== false) { $ist_t = true; break; } }
+        }
+        if (!$ist_t && !$ist_rf) { continue; }
+        $r = $b['raum'];
+        if (!isset($raeume[$r])) {
+            $raeume[$r] = array('raum' => $r, 't' => null, 'rf' => null,
+                                't_mehr' => 0, 'rf_mehr' => 0);
+        }
+        $k = $ist_rf ? 'rf' : 't';
+        if ($raeume[$r][$k] === null) { $raeume[$r][$k] = $b; }
+        else { $raeume[$r][$k . '_mehr']++; }
+    }
+    ksort($raeume);
+    return array_values($raeume);
+}
+
+/**
+ * Kleinschreibung ohne mbstring.
+ *
+ * `mb_strtolower` ist auf einem LoxBerry nicht garantiert geladen - das
+ * steht seit der Govee-Sitzung in den Hausregeln, und es war dort die
+ * einzige mb_-Stelle im ganzen Plugin. Fuer die Woerter, nach denen hier
+ * gesucht wird, reicht ASCII plus die deutschen Umlaute.
+ */
+function mb_strtolower_ersatz($s)
+{
+    $s = strtolower((string) $s);
+    return strtr($s, array("\xc3\x84" => "\xc3\xa4", "\xc3\x96" => "\xc3\xb6",
+                           "\xc3\x9c" => "\xc3\xbc"));
+}
+
+/**
+ * Einen einzelnen Baustein am Miniserver ablesen - und den Pfad in der
+ * Antwort MESSEN, nicht annehmen.
+ *
+ * Der Umschlag von `jdev/sps/io/<uuid>/all` ist dokumentiert als
+ * `{"LL":{"control":…,"value":…,"Code":"200"}}`. Dokumentiert ist aber
+ * nicht gemessen: welche Felder wirklich kommen, sagt nur die Anlage. Diese
+ * Funktion holt die Antwort und sucht darin selbst den Pfad, unter dem eine
+ * lesbare Zahl steht. Was der Assistent danach eintraegt, ist damit an der
+ * eigenen Anlage abgelesen.
+ *
+ * Rueckgabe: array(ok, Meldung, Pfad, Rohwert, Zahl)
+ */
+function rk_ms_probe($ms, $uuid, $zeit = 12)
+{
+    list($code, $roh, $fehler) = rk_ms_holen($ms, 'jdev/sps/io/' . rawurlencode($uuid) . '/all', $zeit);
+    if ($code === 0)   { return array(0, 'MELD.MS_STUMM', '', '', null); }
+    if ($code === 401) { return array(0, 'MELD.MS_401', '', '', null); }
+    if ($code !== 200) { return array(0, 'MELD.MS_HTTP', '', '', null); }
+    $j = json_decode($roh, true);
+    if (!is_array($j)) { return array(0, 'MELD.MS_KEIN_JSON', '', substr($roh, 0, 60), null); }
+    list($pok, $pfad, $wert) = rk_wert_pfad($j);
+    if (!$pok) {
+        return array(0, 'MELD.MS_KEINE_ZAHL', '',
+                     $wert !== '' ? $wert : substr($roh, 0, 80), null);
+    }
+    return array(1, '', $pfad, $wert, rk_zahl_aus($wert));
+}
+
+/**
+ * Aus einer Miniserver-Antwort den Pfad heraussuchen, unter dem der
+ * MESSWERT steht. Rueckgabe: array(ok, pfad, rohwert).
+ *
+ * Eigene Funktion, damit sie sich OHNE Miniserver pruefen laesst - die
+ * Selbstpruefung im Reiter Test fuehrt sie am Geraet mit erfundenen
+ * Antworten vor. Solange sie in rk_ms_probe() steckte, war sie nur mit
+ * einem laufenden Miniserver messbar, und damit am Geraet gar nicht.
+ *
+ * ZWEI FALLEN, beide am 29.08.2026 vom Gegenfall des Pruefstands gefunden -
+ * der Code hatte sie, das Lesen hatte sie nicht gezeigt:
+ *
+ * 1. `Code` IST EINE ZAHL. Antwortet der Miniserver mit
+ *    {"LL":{"value":"keine Verbindung","Code":"200"}}, dann trug die erste
+ *    Fassung dieser Funktion den Pfad LL.Code ein - und danach haette jeder
+ *    Raum 200 Grad gemessen. Ein Statuscode ist nie ein Messwert; solche
+ *    Namen kommen gar nicht erst in die Auswahl.
+ *
+ * 2. GIBT ES EINEN value-PFAD, DANN ENTSCHEIDET NUR ER. Steht dort keine
+ *    Zahl, ist das ein Fehlschlag und kein Grund, ein anderes Feld zu
+ *    nehmen. Sonst waehlt der Assistent ein Feld, das gerade zufaellig eine
+ *    Zahl traegt, und der Anwender sucht spaeter lange - der Funkpegel
+ *    eines Shelly ist eine tadellose Zahl und keine Raumtemperatur.
+ */
+function rk_wert_pfad($j)
+{
+    $treffer = array();
+    rk_blaetter($j, '', $treffer, 0);
+    $nie = array('code', 'control', 'uuid', 'id', 'ts', 'timestamp');
+    $wert_pfad = '';
+    $best = '';
+    foreach ($treffer as $pfad => $wert) {
+        $letzt = strtolower(substr($pfad, (int) strrpos('.' . $pfad, '.')));
+        if (in_array($letzt, $nie, true)) { continue; }
+        if ($letzt === 'value' && $wert_pfad === '') { $wert_pfad = $pfad; }
+        if ($best === '' && rk_zahl_aus($wert) !== null) { $best = $pfad; }
+    }
+    if ($wert_pfad !== '') {
+        /* Es gibt ein value - dann gilt es, und nur es. */
+        if (rk_zahl_aus($treffer[$wert_pfad]) === null) {
+            return array(0, '', (string) $treffer[$wert_pfad]);
+        }
+        $best = $wert_pfad;
+    }
+    if ($best === '') { return array(0, '', ''); }
+    return array(1, $best, (string) $treffer[$best]);
+}
+
+/** Rekursiv durch eine Antwort - nur Blaetter, mit vollem Punktpfad. */
+function rk_blaetter($daten, $praefix, &$treffer, $tiefe)
+{
+    if ($tiefe > 8 || count($treffer) > 200 || !is_array($daten)) { return; }
+    foreach ($daten as $k => $v) {
+        $pfad = ($praefix === '') ? (string) $k : $praefix . '.' . $k;
+        if (is_array($v)) { rk_blaetter($v, $pfad, $treffer, $tiefe + 1); }
+        elseif (!is_bool($v) && $v !== null) { $treffer[$pfad] = $v; }
+    }
 }
 
 /* ==================================================================
@@ -1489,6 +1824,20 @@ function rk_abrufen($erzwingen = false)
             if ($daten === null) { $stand['meldungen']['raum' . $nr] = $m; }
         }
 
+        /* ---- Die zweite Adresse, nur fuer die Feuchte ----
+         *
+         * Beim Miniserver ist jeder Baustein eine eigene Adresse; Temperatur
+         * und Feuchte sind zwei. Leer heisst weiterhin "dieselbe Antwort wie
+         * fuer die Temperatur", und dann wird auch nichts zweites geholt -
+         * eine Quelle, die alles auf einmal liefert, wird nicht zweimal
+         * gefragt. Gleiche Adressen werden ebenfalls nur einmal geholt. */
+        $daten_rf = $daten;
+        $q_rf = trim((string) $r['quelle_rf']);
+        if ($q_rf !== '' && $q_rf !== trim((string) $quelle)) {
+            list($daten_rf, $m2) = rk_holen($q_rf, true);
+            if ($daten_rf === null) { $stand['meldungen']['raum' . $nr . '_rf'] = $m2; }
+        }
+
         $roh = array('name' => $r['name'], 't' => null, 'rf' => null,
                      'frsi' => $r['frsi'], 'soll_min' => $r['soll_min'],
                      'soll_max' => $r['soll_max'], 'art' => $r['art'],
@@ -1501,9 +1850,11 @@ function rk_abrufen($erzwingen = false)
                      'wasser_g' => $r['wasser_g'],
                      'ruhe_von' => $r['ruhe_von'], 'ruhe_bis' => $r['ruhe_bis'],
                      'personen' => $r['personen']);
+        if (is_array($daten_rf)) {
+            $roh['rf'] = rk_pfad($daten_rf, $r['pfad_rf']);
+        }
         if (is_array($daten)) {
             $roh['t'] = rk_pfad($daten, $r['pfad_t']);
-            $roh['rf'] = rk_pfad($daten, $r['pfad_rf']);
             if (trim((string) $r['pfad_co2']) !== '') {
                 $roh['co2'] = rk_pfad($daten, $r['pfad_co2']);
             }
