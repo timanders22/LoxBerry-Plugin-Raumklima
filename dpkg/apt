@@ -1,0 +1,17 @@
+# Ein Paket je Zeile, exakter Paketname wie fuer apt-get.
+# LoxBerry installiert sie selbst und als root - ein apt-get in
+# postinstall.sh koennte gar nicht greifen, das laeuft als Benutzer
+# loxberry und scheitert an /var/lib/dpkg/lock-frontend.
+#
+# php-curl  - rk_holen() holt die Quellen damit. Fehlt die Erweiterung,
+#             faellt das Plugin auf Datenstroeme zurueck und laeuft weiter;
+#             curl ist aber genauer bei Zeitueberschreitungen. Der Code
+#             sichert das mit function_exists('curl_init') ab.
+#
+# ACHTUNG: DIESER PFAD IST EINE DATEI, KEIN VERZEICHNIS.
+# Bis 0.11.0 lag hier ein Ordner dpkg/apt/ mit php-curl.list darin.
+# plugininstall.pl oeffnet $tempfolder/dpkg/apt als Datei; bei einem
+# Verzeichnis scheitert das mit <ERROR> Cannot open APT file., und die
+# Paketliste kam leer an - gemessen am 29.08.2026 in einem echten
+# Installationsprotokoll. Dieselbe Klasse wie cron/cron.XXmin.
+php-curl
