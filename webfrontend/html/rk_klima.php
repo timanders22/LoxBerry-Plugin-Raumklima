@@ -1143,6 +1143,28 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
             $e['lueften_seit'] = $seit_a;
             $e['grund'] = 'nachlauf';
         }
+
+        /* ------------------------------------------------------------------
+         * 3. DIE AMPEL STAND HIER AUF 0 - also auf "unbedenklich".
+         *
+         * Gemessen am 30.08.2026. Der Ausfallzweig kehrt zurueck, BEVOR
+         * rk_ampel() je gerufen wird; nach Loxone ging deshalb die 0 aus dem
+         * Initialisierer:
+         *
+         *     Fuehler stumm     : ok=0  AMPEL=0  SCHIMMEL=0
+         *     gemessen, harmlos : ok=1  AMPEL=0  SCHIMMEL=0
+         *
+         * Zwei Zustaende, ein Wert - genau die stille Falschaussage, fuer
+         * die 0.11.0 die -1 und MinVal=-1 eingefuehrt hat. Der Ausfallzweig
+         * wurde damals uebersehen, weil er vor der Rechnung aussteigt.
+         *
+         * Ein stummer Fuehler sagt ueber Schimmel NICHTS. Das ist etwas
+         * anderes als "kein Schimmel", und wer einen Waechter auf AMPEL=0
+         * legt, verlaesst sich sonst auf einen Fuehler, der seit Tagen
+         * schweigt.
+         * ------------------------------------------------------------------ */
+        $e['ampel'] = -1;
+        $e['schimmel'] = -1;
         return $e;
     }
 
@@ -1160,7 +1182,13 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
     $e['ober_t'] = rk_oberflaeche($t, $ta, $frsi, $art, $erd_t);
     $e['ober_rf'] = rk_rf_oberflaeche($t, $rf, $ta, $frsi, $art, $erd_t);
     $e['ampel'] = rk_ampel($e['ober_rf']);
-    $e['schimmel'] = $e['ampel'] >= 2 ? 1 : 0;
+    /* SCHIMMEL folgt der Ampel auch nach unten. Bis 0.11.1 stand hier
+     * `$e['ampel'] >= 2 ? 1 : 0` - eine Ampel auf -1 ("keine Aussage
+     * moeglich") wurde damit zu SCHIMMEL=0, also zu "kein Schimmel". Das
+     * trifft jeden Raum der Art 'innen', fuer den es keine kalte Flaeche
+     * gibt: AMPEL=-1 und SCHIMMEL=0 nebeneinander, und die 0 ist die
+     * Aussage, die der Anwender liest. */
+    $e['schimmel'] = $e['ampel'] < 0 ? -1 : ($e['ampel'] >= 2 ? 1 : 0);
 
     if ($e['ober_t'] !== null && $e['taupunkt'] !== null) {
         $e['spread'] = round($e['ober_t'] - $e['taupunkt'], 2);
@@ -1606,6 +1634,30 @@ function rk_selbsttest()
         $vor, array(), $t0);
     $pr('Raum ohne Messwerte: ok=0 statt erfundener Nullen',
         array($leer['ok'], $leer['taupunkt'], $leer['absolut']), array(0, null, null));
+
+    /* ---------- Der stumme Fuehler sagt ueber Schimmel NICHTS ----------
+     * Neu in 0.11.2. Bis 0.11.1 kehrte der Ausfallzweig zurueck, bevor
+     * rk_ampel() gerufen wurde, und nach Loxone ging die 0 aus dem
+     * Initialisierer - also "unbedenklich". Der GEGENFALL daneben ist die
+     * eigentliche Ware: ein GEMESSENER harmloser Raum muss weiterhin 0
+     * liefern, sonst hat man die eine Falschaussage gegen die andere
+     * getauscht. */
+    $pr('Stummer Fuehler: AMPEL und SCHIMMEL auf -1, nicht auf 0',
+        array($leer['ampel'], $leer['schimmel']), array(-1, -1));
+    $harmlos = rk_raum_rechnen(
+        array('name' => 'Warm und trocken', 't' => 22.0, 'rf' => 35.0, 'frsi' => 0.9),
+        array('t' => 15.0, 'rf' => 50.0), $vor, array(), $t0);
+    $pr('Gemessen und harmlos: AMPEL und SCHIMMEL bleiben 0',
+        array($harmlos['ok'], $harmlos['ampel'], $harmlos['schimmel']), array(1, 0, 0));
+    /* Raumart 'innen' kennt keine kalte Flaeche - ober_rf bleibt null, die
+     * Ampel steht auf -1, und SCHIMMEL folgt ihr seit 0.11.2 nach unten.
+     * Bis dahin stand dort AMPEL=-1 neben SCHIMMEL=0. */
+    $innen = rk_raum_rechnen(
+        array('name' => 'Innenraum', 't' => 21.0, 'rf' => 55.0, 'art' => 'innen'),
+        array('t' => 3.0, 'rf' => 85.0), $vor, array(), $t0);
+    $pr('Raumart innen: keine Aussage, also beide auf -1',
+        array($innen['ok'], $innen['ober_rf'], $innen['ampel'], $innen['schimmel']),
+        array(1, null, -1, -1));
 
     /* ---------- Zahlen, wie fremde Quellen sie wirklich liefern ----------
      * Alle sechs Schreibweisen sind am 24.08.2026 an echten Antworten
@@ -2193,6 +2245,145 @@ function rk_selbsttest()
     $rpk = rk_raum_rechnen($gp, array('t' => 5.0, 'rf' => 70.0), array(), $cp, $t0);
     $pr('  ohne Verlauf gibt es keine Restzeit, wohl aber die Schaetzung',
         array($rpk['co2_voll'], $rpk['co2_erwartet']), array(-1, 567.0));
+
+    /* ================================================================
+     * Neu in 0.11.2 - die Teile, die in rk_lib.php stehen.
+     *
+     * Diese Datei ist der reine Rechenkern und kommt ohne rk_lib.php aus;
+     * darum steht sie fuer sich und laesst sich einzeln pruefen. Beim
+     * Aufruf ueber bin/raumklima_abruf.php oder ueber den Reiter Test ist
+     * rk_lib.php aber geladen, und dann gehoeren diese Faelle dazu.
+     *
+     * DER ANLASS steht in der Eichung vom 30.08.2026: zehn Verbiegungen
+     * wurden zurueckgenommen, NEUN blieben gruen. Der Selbsttest mass
+     * ausschliesslich rk_klima.php - Verlaufsspeicher, Zugangsdaten,
+     * Raumvergleich und freier Platz waren gar nicht abgedeckt. Ein
+     * Selbsttest, der die halbe Bibliothek nicht betritt, sagt ueber sie
+     * nichts, und man liest ihn trotzdem als "alles in Ordnung".
+     *
+     * Die Wache: ohne rk_lib.php werden diese Faelle nicht gezaehlt - sonst
+     * meldete ein Aufruf des Rechenkerns allein Fehlschlaege, die keine
+     * sind.
+     * ================================================================ */
+    if (function_exists('rk_verlauf_raum')) {
+
+        /* ---- Der Korb zaehlt "keine Aussage" NICHT als trocken ---- */
+        $st = 1798000000 - (1798000000 % 3600);   /* volle Stunde */
+        $mach = function ($ober_rf) {
+            return array('ok' => 1, 't' => 21.0, 'rf' => 50.0, 'absolut' => 9.2,
+                         'ober_rf' => $ober_rf, 'co2' => null, 'lueften' => 0);
+        };
+        $vr = array();
+        for ($i = 0; $i < 12; $i++) {
+            rk_verlauf_raum($vr, $mach(null), $st + $i * 300, 300);
+        }
+        $w = rk_verlauf_werte($vr, $st + 12 * 300);
+        $pr('Zwoelf Messungen ohne Aussenwert: nass24 bleibt -1, nicht 0',
+            $w['nass24'], -1);
+        $vr2 = array();
+        for ($i = 0; $i < 12; $i++) {
+            rk_verlauf_raum($vr2, $mach(88.0), $st + $i * 300, 300);
+        }
+        $w2 = rk_verlauf_werte($vr2, $st + 12 * 300);
+        $pr('  dieselbe Reihe mit 88 % an der Flaeche ergibt eine volle Stunde',
+            $w2['nass24'], 1.0);
+
+        /* Der Korb wird erst beim STUNDENWECHSEL abgelegt. Die beiden Faelle
+         * oben messen nur den offenen Korb - der abgelegte Stundeneintrag
+         * ist ein zweiter Weg, und ohne einen Fall, der die Stundengrenze
+         * ueberschreitet, blieb er ungemessen. Genau daran blieb die Eichung
+         * am 30.08.2026 zunaechst gruen. */
+        $vr4 = array();
+        for ($i = 0; $i < 12; $i++) {          /* erste Stunde: keine Aussage */
+            rk_verlauf_raum($vr4, $mach(null), $st + $i * 300, 300);
+        }
+        for ($i = 0; $i < 3; $i++) {           /* zweite Stunde: nass */
+            rk_verlauf_raum($vr4, $mach(88.0), $st + 3600 + $i * 300, 300);
+        }
+        $abgelegt = isset($vr4['stunden'][0][4]) ? $vr4['stunden'][0][4] : null;
+        $pr('Abgelegte Stunde ganz ohne Aussage traegt -1, nicht 0,0',
+            $abgelegt, -1.0);
+        /* 3 nasse Messungen zu 300 s sind 900 s = 0,25 h, gerundet 0,3.
+         * Die zwoelf Messungen der ersten Stunde gehen NICHT als trockene
+         * Stunde ein - sonst stuende hier weiterhin 0,3, aber ueber einen
+         * Nenner von zwei Stunden, und der Anwender laese "in zwei Stunden
+         * war es fast nie nass" statt "ueber eine Stunde ist nichts
+         * bekannt". */
+        $w4 = rk_verlauf_werte($vr4, $st + 3600 + 3 * 300);
+        $pr('  und sie zaehlt beim Summieren nicht als trockene Stunde',
+            $w4['nass24'], 0.3);
+
+        /* ---- Ein Punkt je Takt, nicht je Aufruf ---- */
+        $vr3 = array();
+        for ($i = 0; $i < 12; $i++) {
+            rk_verlauf_raum($vr3, $mach(88.0), $st + $i * 300, 300);
+            /* Zwei Handabrufe unmittelbar danach - sie duerfen die Reihe
+             * nicht verlaengern und die Nassstunden nicht anheben. */
+            rk_verlauf_raum($vr3, $mach(88.0), $st + $i * 300 + 20, 300);
+            rk_verlauf_raum($vr3, $mach(88.0), $st + $i * 300 + 40, 300);
+        }
+        $pr('Handabrufe verlaengern die Feinreihe nicht', count($vr3['fein']), 12);
+        $pr('  und heben die Nassstunden nicht an',
+            rk_verlauf_werte($vr3, $st + 12 * 300)['nass24'], 1.0);
+
+        /* ---- Raumnamen vergleichen ---- */
+        $pr('Raumname mit Randleerzeichen ist derselbe Raum',
+            rk_raum_gleich('Dachboden ', 'Dachboden'), true);
+        $pr('  und Gross-/Kleinschreibung auch',
+            rk_raum_gleich("K\u{00fc}che", "k\u{00fc}CHE"), true);
+        $pr('  ein leerer Name ist nie derselbe Raum',
+            array(rk_raum_gleich(' ', ''), rk_raum_gleich('', 'Bad')),
+            array(false, false));
+        $pr('  verschiedene Raeume bleiben verschieden',
+            rk_raum_gleich('Bad', 'Bad OG'), false);
+
+        /* ---- Wann ist ein Platz frei? ---- */
+        $vorg = rk_raum_vorgabe();
+        $pr('Unberuehrter Platz ist frei', rk_platz_frei($vorg), true);
+        foreach (array('name', 'quelle', 'quelle_rf', 'pfad_t', 'pfad_rf',
+                       'pfad_co2', 'pfad_fenster', 'pfad_zuluft') as $feld) {
+            $belegt = $vorg;
+            $belegt[$feld] = 'x';
+            $pr('  ' . $feld . ' belegt den Platz', rk_platz_frei($belegt), false);
+        }
+
+        /* ---- Zugangsdaten gehen nur an bekannte Wirte ----
+         * Die Adresse ist die Dokumentationsadresse aus RFC 5737
+         * (TEST-NET-1). Sie darf im Netz nirgends vorkommen - anders als eine
+         * echte Adresse aus dem eigenen Haus, die hier nichts zu suchen hat
+         * und in der Gegenprobe unten auch nicht steht (fremder-rechner.example
+         * ist die Dokumentationsdomaene aus RFC 2606). Fuer die Pruefung zaehlt
+         * allein, dass BEIDE Adressen denselben Wirt nennen. */
+        $zcfg = array('raeume' => array(
+            array('quelle' => 'http://192.0.2.66/rpc/Shelly.GetStatus',
+                  'quelle_rf' => ''),
+        ), 'quelle' => '', 'ms_nr' => '');
+        $pr('Zugangsdaten an den Wirt der Raumquelle: ja',
+            rk_zugang_erlaubt('http://192.0.2.66/status', $zcfg), true);
+        $pr('  an eine fremde Adresse: nein',
+            rk_zugang_erlaubt('http://fremder-rechner.example/wetter', $zcfg), false);
+        $pr('  an eine Adresse ohne Wirt: nein',
+            rk_zugang_erlaubt('nicht-einmal-eine-adresse', $zcfg), false);
+
+        /* ---- Das Schema kommt aus der general.json ---- */
+        $pr('Miniserver ohne HTTPS: http und der einfache Port',
+            rk_ms_url(array('adresse' => '10.0.0.5', 'port' => 80, 'https' => 0), 'a/b'),
+            'http://10.0.0.5:80/a/b');
+        $pr('  mit Preferhttps: https und der TLS-Port',
+            rk_ms_url(array('adresse' => '10.0.0.5', 'port' => 443, 'https' => 1), 'a/b'),
+            'https://10.0.0.5:443/a/b');
+
+        /* ---- Der Umlaut im Ausschlusswort ---- */
+        $bs = array(
+            array('uuid' => 'u1', 'name' => '01) Temperatur Flur', 'raum' => 'Flur',
+                  'kategorie' => 'k', 'typ' => 'TextState'),
+            array('uuid' => 'u2', 'name' => "L\u{00fc}ften Feuchte Flur", 'raum' => 'Flur',
+                  'kategorie' => 'k', 'typ' => 'InfoOnlyDigital'),
+        );
+        $vv = rk_fuehler_vorschlag($bs);
+        $pr('Ein Merker namens "Lueften Feuchte" ist keine Feuchtequelle',
+            $vv[0]['rf'], null);
+    }
 
     array_unshift($z, sprintf('Rechenkern %s: %d Faelle geprueft, %d Fehlschlaege.',
         RK_KERN, $anzahl, $fehl), '');

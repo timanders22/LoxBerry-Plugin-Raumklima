@@ -46,6 +46,13 @@ require_once __DIR__ . '/rk_klima.php';
 /** Wie viele Raeume die Oberflaeche fuehrt. */
 define('RK_RAEUME', 12);
 
+/* Groesste Antwort, die eine Quelle liefern darf. Ein Fuehler antwortet mit
+ * einigen hundert Byte, der groesste bekannte Umschlag (Shelly.GetStatus)
+ * mit knapp 8 kB. Zwei Megabyte sind das Hundertfache davon und bleiben
+ * weit unter jedem memory_limit; was darueber kommt, ist kein Messwert
+ * mehr. Siehe die Begruendung in rk_holen(). */
+define('RK_ANTWORT_MAX', 2 * 1024 * 1024);
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -381,8 +388,14 @@ function rk_wert_pruefen($schluessel, $wert)
             if (!is_array($wert)) { return array(null, 'FEHLER.RAEUME'); }
             $vorg = rk_raum_vorgabe();
             $out = array();
+            /* Mehr Raeume als Plaetze sind eine BEANSTANDUNG, kein stiller
+             * Verlust. Bis 0.11.1 stand hier ein blosses `break`: eine
+             * Sicherung mit 99 Raeumen wurde "uebernommen", uebrig blieben
+             * zwoelf, und niemand erfuhr es. Das widerspricht der eigenen
+             * Vorgabe, die zwei Zeilen weiter unten fuer unbekannte
+             * Schluessel gilt. */
+            if (count($wert) > RK_RAEUME) { return array(null, 'FEHLER.RAEUME_ZUVIEL'); }
             foreach (array_values($wert) as $i => $r2) {
-                if ($i >= RK_RAEUME) { break; }
                 if (!is_array($r2)) { return array(null, 'FEHLER.RAEUME'); }
                 foreach ($r2 as $k2 => $v2) {
                     if (!array_key_exists($k2, $vorg)) { return array(null, 'FEHLER.RAEUME'); }
@@ -521,7 +534,24 @@ function rk_config($heilen = true)
         if ($heilen) {
             /* Beiseitelegen, nicht ueberschreiben - und die Zweitschrift
              * bleibt unberuehrt, sie ist der einzige Rueckweg. */
-            $ziel = $p['config'] . '.kaputt.' . date('Ymd_His');
+            /* ------------------------------------------------------------
+             * EINE Kopie je Tag, nicht je Sekunde.
+             *
+             * Der Name trug bis 0.11.1 `date('Ymd_His')` und wechselte damit
+             * jede Sekunde; das `is_file()` davor konnte nie greifen.
+             * Gebremst war nur der Protokolleintrag (900 s), das `copy()`
+             * nicht. Gemessen am 30.08.2026: drei Aufrufe in drei Sekunden
+             * ergaben drei Kopien. Solange raumklima.json unlesbar ist, legt
+             * jeder Cron-Lauf eine weitere an - 288 Dateien je Tag, jede mit
+             * Raumnamen und Heimnetzadressen, unbegrenzt.
+             *
+             * Der Tag im Namen reicht: was beiseitegelegt werden soll, ist
+             * der kaputte Stand, und der aendert sich nicht dadurch, dass
+             * man ihn oefter kopiert. Wird die Datei am selben Tag erneut
+             * kaputt geschrieben, bleibt die erste Kopie - sie ist die
+             * aeltere und damit die naeher am letzten guten Stand.
+             * ------------------------------------------------------------ */
+            $ziel = $p['config'] . '.kaputt.' . date('Ymd');
             if (!is_file($ziel)) { @copy($p['config'], $ziel); @chmod($ziel, 0600); }
             rk_log_gebremst('cfg_kaputt', 'Die Konfiguration ist unlesbar. Sie liegt als '
                 . basename($ziel) . ' daneben; die Zweitschrift wurde NICHT angefasst.'
@@ -554,7 +584,37 @@ function rk_config($heilen = true)
     if (!is_array($cfg['raeume'])) { $cfg['raeume'] = array(); }
     for ($i = 0; $i < RK_RAEUME; $i++) {
         $r = isset($cfg['raeume'][$i]) && is_array($cfg['raeume'][$i]) ? $cfg['raeume'][$i] : array();
-        $r += rk_raum_vorgabe();
+        /* ------------------------------------------------------------
+         * Unbekannte Raumschluessel werden ABGELEGT, nicht mitgeschleppt.
+         *
+         * Bis 0.11.1 stand hier nur `$r += rk_raum_vorgabe();`. Das ergaenzt
+         * fehlende Schluessel und laesst fremde stehen - und genau daran
+         * zerbrach der eigene Rueckspielweg. rk_wert_pruefen('raeume') weist
+         * die GANZE Datei ab, sobald ein Raum einen Schluessel traegt, der
+         * nicht in rk_raum_vorgabe() steht. Gemessen am 30.08.2026 mit einem
+         * Rest aus einer aelteren Fassung:
+         *
+         *     rk_config haelt alt_feld:             JA
+         *     eigene Sicherung wieder einlesbar:    NEIN
+         *
+         * Die vom Plugin zwei Zeilen vorher erzeugte Sicherung wurde von der
+         * eigenen Bibliothek abgelehnt - der Befund, den der Kopfkommentar
+         * zu rk_sicherung_bauen() unter Berufung auf den WiFi-Scanner
+         * ausdruecklich vermeiden will. Der Speichern-Handler baut den Raum
+         * aus dem gespeicherten Stand auf und schleppte den Schluessel mit;
+         * es heilte also auch nicht von selbst.
+         * ------------------------------------------------------------ */
+        $vorg_r = rk_raum_vorgabe();
+        $fremd = array_diff_key($r, $vorg_r);
+        if ($fremd) {
+            rk_log_gebremst('raum_fremdschluessel',
+                'Raum ' . ($i + 1) . ': unbekannte Felder abgelegt ('
+                . implode(', ', array_slice(array_keys($fremd), 0, 6))
+                . '). Sie stammen aus einer anderen Fassung und haetten die '
+                . 'eigene Sicherung unlesbar gemacht.', 86400);
+            $r = array_intersect_key($r, $vorg_r);
+        }
+        $r += $vorg_r;
         $r['name'] = trim((string) $r['name']);
         $r['frsi'] = max(0.05, min(1.0, (float) $r['frsi']));
         $r['soll_min'] = max(0, min(100, (int) $r['soll_min']));
@@ -914,6 +974,74 @@ function rk_pfad($daten, $pfad)
  * Quelle stumm blieb, laesst die Oberflaeche alte Zahlen als aktuelle
  * zeigen.
  */
+/**
+ * Der Wirt einer Adresse, klein geschrieben und ohne Port. Leer, wenn sich
+ * keiner lesen laesst - und ein leerer Wirt darf nie zu jemandem passen.
+ */
+function rk_wirt($url)
+{
+    $h = parse_url(trim((string) $url), PHP_URL_HOST);
+    return is_string($h) ? strtolower($h) : '';
+}
+
+/**
+ * Darf diese Adresse die Zugangsdaten aus geheim.json bekommen?
+ *
+ * ------------------------------------------------------------------------
+ * Der Befund vom 30.08.2026. `geheim.json` traegt EINEN Satz Zugangsdaten,
+ * und `rk_holen($url, true)` haengte ihn an JEDE Adresse - gleich wem sie
+ * gehoert. Seit 0.11.1 legt der Einrichtungs-Assistent dort die
+ * ADMINISTRATORDATEN DES MINISERVERS ab; vorher stand dort meist ein
+ * Shelly-Zugang.
+ *
+ * Gemessen mit einem Horcher an einer frei eingetragenen Aussenquelle:
+ *
+ *     [Authorization] => Basic bG94YWRtaW46U2VockdlaGVpbTEyMw==
+ *     entschluesselt:    loxadmin:SehrGeheim123
+ *
+ * 288 Cron-Laeufe am Tag, bei http:// im Klartext. Der Kommentar in
+ * rk_holen() begruendet ausfuehrlich, warum keiner WEITERLEITUNG gefolgt
+ * wird - dass die Daten an eine unmittelbar eingetragene Fremdadresse
+ * gehen, war nicht bedacht.
+ *
+ * Erlaubt ist ein Wirt, der in dieser Anlage ohnehin die Zugangsdaten
+ * kennt: einer der Raumquellen, oder der Miniserver aus der general.json.
+ * Wer seine Aussenwerte vom selben Geraet holt, merkt nichts; wer eine
+ * fremde Adresse eintraegt, verschickt nichts mehr.
+ * ------------------------------------------------------------------------
+ */
+function rk_zugang_erlaubt($url, $cfg = null)
+{
+    $wirt = rk_wirt($url);
+    if ($wirt === '') { return false; }
+    if (!is_array($cfg)) { $cfg = rk_config(); }
+
+    $bekannt = array();
+    foreach ((array) (isset($cfg['raeume']) ? $cfg['raeume'] : array()) as $r) {
+        if (!is_array($r)) { continue; }
+        foreach (array('quelle', 'quelle_rf') as $k) {
+            $w = isset($r[$k]) ? rk_wirt($r[$k]) : '';
+            if ($w !== '') { $bekannt[$w] = 1; }
+        }
+    }
+    $w = isset($cfg['quelle']) ? rk_wirt($cfg['quelle']) : '';
+    if ($w !== '') { $bekannt[$w] = 1; }
+    $ms = rk_miniserver_gewaehlt($cfg);
+    if (is_array($ms) && $ms['adresse'] !== '') {
+        $bekannt[strtolower($ms['adresse'])] = 1;
+    }
+
+    if (isset($bekannt[$wirt])) { return true; }
+    $g = rk_geheim();
+    if ($g['benutzer'] !== '') {
+        rk_log_gebremst('zugang_fremd_' . $wirt,
+            'Zugangsdaten NICHT mitgeschickt: ' . $wirt . ' traegt keinen '
+            . 'Fuehler dieser Anlage. Sie gehen nur an die Wirte der '
+            . 'Raumquellen und an den Miniserver.', 3600);
+    }
+    return false;
+}
+
 function rk_holen($url, $mit_zugang = false)
 {
     $url = trim((string) $url);
@@ -933,16 +1061,49 @@ function rk_holen($url, $mit_zugang = false)
     }
 
     if (function_exists('curl_init')) {
+        /* ------------------------------------------------------------------
+         * Obergrenze fuer die Antwort. Bis 0.11.1 gab es nur eine Zeitschranke
+         * von 12 Sekunden - und ein LAN-Geraet schafft darin sehr viel.
+         * Gemessen am 30.08.2026 gegen eine Quelle, die 40 MB lieferte, bei
+         * memory_limit=128M: Speicherspitze 84 MB. Ein Gateway, das statt
+         * JSON sein Protokoll ausliefert, bringt damit den Cron-Lauf mit
+         * einem Fatal error zu Fall - und ueber ?aktion=abrufen den
+         * Webarbeiter gleich mit.
+         *
+         * CURLOPT_MAXFILESIZE allein reicht nicht: es greift nur, wenn der
+         * Server eine Laenge ANKUENDIGT. Deshalb zusaetzlich eine eigene
+         * Schreibfunktion, die abbricht, sobald das Empfangene zu gross wird.
+         * ------------------------------------------------------------------ */
+        $grenze = RK_ANTWORT_MAX;
+        $text = '';
+        $zuviel = false;
         $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
         curl_setopt($ch, CURLOPT_TIMEOUT, 12);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 6);
-        $text = curl_exec($ch);
+        curl_setopt($ch, CURLOPT_MAXFILESIZE, $grenze);
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION,
+            function ($ch2, $stueck) use (&$text, &$zuviel, $grenze) {
+                $n = strlen($stueck);
+                if (strlen($text) + $n > $grenze) {
+                    $zuviel = true;
+                    return 0;   /* 0 heisst: abbrechen */
+                }
+                $text .= $stueck;
+                return $n;
+            });
+        $ok = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
         curl_close($ch);
-        if ($text === false) { return array(null, 'NICHT_ERREICHBAR'); }
+        if ($zuviel) {
+            rk_log_gebremst('antwort_zu_gross_' . rk_wirt($url),
+                'Antwort von ' . rk_wirt($url) . ' ueberschreitet '
+                . $grenze . ' Byte - abgebrochen. Liefert die Quelle wirklich '
+                . 'JSON?', 3600);
+            return array(null, 'ANTWORT_ZU_GROSS');
+        }
+        if ($ok === false && $text === '') { return array(null, 'NICHT_ERREICHBAR'); }
     } else {
         /* follow_location=0 ist kein Schoenheitsfehler, sondern gleicht die
          * beiden Wege an. Oben wird CURLOPT_FOLLOWLOCATION nicht gesetzt,
@@ -956,7 +1117,18 @@ function rk_holen($url, $mit_zugang = false)
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 12, 'header' => implode("\r\n", $kopf), 'ignore_errors' => true,
             'follow_location' => 0, 'max_redirects' => 1)));
-        $text = @file_get_contents($url, false, $ctx);
+        /* Dieselbe Obergrenze wie im curl-Zweig - sonst haengt es davon ab,
+         * ob php-curl geladen ist, ob eine Quelle den Lauf umbringen kann.
+         * Ein Byte mehr als die Grenze wird geholt, damit sich "genau voll"
+         * von "abgeschnitten" unterscheiden laesst. */
+        $text = @file_get_contents($url, false, $ctx, 0, RK_ANTWORT_MAX + 1);
+        if (is_string($text) && strlen($text) > RK_ANTWORT_MAX) {
+            rk_log_gebremst('antwort_zu_gross_' . rk_wirt($url),
+                'Antwort von ' . rk_wirt($url) . ' ueberschreitet '
+                . RK_ANTWORT_MAX . ' Byte - abgebrochen. Liefert die Quelle '
+                . 'wirklich JSON?', 3600);
+            return array(null, 'ANTWORT_ZU_GROSS');
+        }
         $code = 0;
         if (isset($http_response_header)) {
             foreach ($http_response_header as $z) {
@@ -1023,11 +1195,37 @@ function rk_miniserver()
             if (!empty($ms[$k])) { $adresse = (string) $ms[$k]; break; }
         }
         if ($adresse === '') { continue; }
+        /* ------------------------------------------------------------
+         * HTTPS wird GELESEN, nicht angenommen.
+         *
+         * Bis 0.11.1 las rk_miniserver() nur `Port` und rk_ms_url() baute
+         * fest 'http://'. Die general.json von LoxBerry fuehrt aber
+         * `Porthttps` und `Preferhttps`; steht das zweite auf 1, redet das
+         * Plugin Klartext gegen einen Port, der TLS erwartet. Gemessen am
+         * 30.08.2026 mit Preferhttps=1: MELD.MS_STUMM, obwohl der Server
+         * antwortete - und der Anwender hat kein Feld, um das zu
+         * berichtigen. Selbst wenn die Suche gelaenge, stuende in
+         * quelle/quelle_rf eine http://-Adresse, die bei jedem Cron-Lauf
+         * scheitert.
+         * ------------------------------------------------------------ */
+        $https = false;
+        foreach (array('Preferhttps', 'PreferHttps', 'preferhttps') as $k) {
+            if (isset($ms[$k])) {
+                $https = in_array((string) $ms[$k], array('1', 'true'), true);
+                break;
+            }
+        }
+        $port_https = 443;
+        foreach (array('Porthttps', 'PortHttps', 'porthttps') as $k) {
+            if (!empty($ms[$k])) { $port_https = (int) $ms[$k]; break; }
+        }
         $aus[] = array(
             'nr'      => (string) $nr,
             'name'    => !empty($ms['Name']) ? (string) $ms['Name'] : ('Miniserver ' . $nr),
             'adresse' => $adresse,
-            'port'    => !empty($ms['Port']) ? (int) $ms['Port'] : 80,
+            'https'   => $https ? 1 : 0,
+            'port'    => $https ? $port_https
+                         : (!empty($ms['Port']) ? (int) $ms['Port'] : 80),
             'user'    => !empty($ms['Admin']) ? (string) $ms['Admin']
                          : (!empty($ms['Username']) ? (string) $ms['Username'] : ''),
             'pass'    => !empty($ms['Pass']) ? (string) $ms['Pass']
@@ -1054,7 +1252,11 @@ function rk_miniserver_gewaehlt($cfg, ?array $alle = null)
 /** Die Adresse eines Miniserver-Aufrufs. An EINER Stelle. */
 function rk_ms_url($ms, $pfad)
 {
-    return 'http://' . $ms['adresse'] . ':' . (int) $ms['port'] . '/'
+    /* Das Schema kommt aus der general.json, nicht aus einer Annahme -
+     * siehe rk_miniserver(). Aeltere Aufrufer, die kein 'https' im Feld
+     * haben, bekommen wie bisher http. */
+    $schema = !empty($ms['https']) ? 'https://' : 'http://';
+    return $schema . $ms['adresse'] . ':' . (int) $ms['port'] . '/'
          . ltrim((string) $pfad, '/');
 }
 
@@ -1166,8 +1368,15 @@ function rk_fuehler_vorschlag($bausteine, $nur_kategorie = '')
     $rf_wort = array('luftfeuchtigkeit', 'feuchtigkeit', 'feuchte', 'humidity');
     /* Kein Bewerber sein duerfen die abgeleiteten Merker - sie tragen
      * dieselben Woerter und sind doch keine Messwerte. */
-    $nicht = array('schimmel', 'lueften', 'sinnvoll', 'gefahr', 'warnung',
-                   'taupunkt', 'soll', 'ziel');
+    /* 'lueften' UND 'lüften': mb_strtolower_ersatz() bildet Ü auf ü ab, aus
+     * `Lüften` wird also `lüften` und nie `lueften`. Das Ausschlusswort
+     * konnte damit nie greifen. An der Anlage vom 30.08.2026 fiel es nicht
+     * auf, weil die Kacheln `Lüften sinnvoll (außen trockener)` heissen und
+     * schon `sinnvoll` sie ausschliesst - ein Merker namens `Lüften Feuchte`
+     * waere dagegen als Feuchtequelle eingetragen worden, und der Raum
+     * haette dauerhaft 1 % relative Feuchte gemeldet. */
+    $nicht = array('schimmel', 'lueften', "l\xc3\xbcften", 'sinnvoll', 'gefahr',
+                   'warnung', 'taupunkt', 'soll', 'ziel');
     $raeume = array();
     foreach ($bausteine as $b) {
         if ($b['raum'] === '') { continue; }
@@ -1236,6 +1445,110 @@ function rk_ms_probe($ms, $uuid, $zeit = 12)
                      $wert !== '' ? $wert : substr($roh, 0, 80), null);
     }
     return array(1, '', $pfad, $wert, rk_zahl_aus($wert));
+}
+
+/**
+ * Ist dieser Raumplatz wirklich frei?
+ *
+ * ------------------------------------------------------------------------
+ * Bis 0.11.1 stand die Bedingung im Assistenten und sah nur auf drei
+ * Felder: `name`, `pfad_t`, `pfad_rf`. Ein Platz, in den jemand von Hand
+ * eine Adresse eingetragen hatte, aber noch keinen Namen, galt damit als
+ * frei. Gemessen am 30.08.2026 mit `quelle = http://192.0.2.66/rpc/
+ * Shelly.GetStatus` und sonst leerem Platz: nach der Uebernahme stand dort
+ * der Miniserver, die von Hand eingetragene Shelly-Adresse war weg.
+ * (Die Adresse ist fuer diese Aufzeichnung durch die Dokumentationsadresse
+ * aus RFC 5737 ersetzt; gemessen wurde an einem echten Shelly.)
+ *
+ * Frei ist ein Platz, in dem NICHTS steht, was jemand eingetragen haben
+ * koennte. Die Zahlenfelder zaehlen nicht mit - sie tragen Vorgabewerte,
+ * und ein Platz, an dem nur die Vorgabe steht, ist unberuehrt.
+ * ------------------------------------------------------------------------
+ */
+function rk_platz_frei($r)
+{
+    if (!is_array($r)) { return true; }
+    foreach (array('name', 'quelle', 'quelle_rf', 'pfad_t', 'pfad_rf',
+                   'pfad_co2', 'pfad_fenster', 'pfad_zuluft') as $k) {
+        if (isset($r[$k]) && trim((string) $r[$k]) !== '') { return false; }
+    }
+    return true;
+}
+
+/**
+ * Zwei Raumnamen vergleichen - so, wie sie nach dem Speichern dastehen.
+ *
+ * ------------------------------------------------------------------------
+ * Der Assistent verglich bis 0.11.1 `trim($eintrag) === $loxone_name` und
+ * schrieb danach den UNGETRIMMTEN Loxone-Namen. rk_config() trimmt beim
+ * naechsten Lesen - der Waechter "Raum steht schon" fand seinen eigenen
+ * Eintrag also nie wieder. Gemessen mit einem Loxone-Raum `'Dachboden '`:
+ *
+ *     vorher : ['Dachboden ', 'EG Gast', ..., 'EG Wohnzimmer', ...]
+ *     nachher: ['Dachboden',  'EG Gast', ..., 'Dachboden ',    ...]
+ *
+ * `Dachboden` stand zweimal, `EG Wohnzimmer` war weg - und der Suchtext in
+ * Loxone zeigte danach auf den falschen Raum.
+ *
+ * Verglichen wird getrimmt und ohne Ruecksicht auf Gross- und
+ * Kleinschreibung: `Küche` und `küche` sind derselbe Raum, und zwei Zeilen
+ * dafuer anzulegen waere nie das, was jemand wollte.
+ * ------------------------------------------------------------------------
+ */
+function rk_raum_gleich($a, $b)
+{
+    $a = trim((string) $a);
+    $b = trim((string) $b);
+    if ($a === '' || $b === '') { return false; }
+    return mb_strtolower_ersatz($a) === mb_strtolower_ersatz($b);
+}
+
+/**
+ * Je BAUSTEINART eine Probe - fuer Temperatur und Feuchte getrennt.
+ *
+ * ------------------------------------------------------------------------
+ * Der Befund vom 30.08.2026. Bis 0.11.1 machte der Assistent GENAU EINE
+ * Probe, am ersten Temperaturbaustein, und trug deren Pfad in `pfad_t` UND
+ * `pfad_rf` ein - fuer alle zwoelf Raeume. Auf der Seite stand dazu "an
+ * deiner Anlage abgelesen, nicht angenommen". Fuer die Feuchte war genau
+ * das nicht wahr. Gemessen mit einem Feuchtebaustein anderer Bauart:
+ *
+ *     Probe T : ok=1 pfad=LL.value               roh=19.7 °C
+ *     Probe RF: ok=1 pfad=daten.zustand.aktuell  roh=45 % - gut
+ *     eingetragen wurde aber pfad_rf = LL.value  ->  ergibt NULL
+ *
+ * Der Raum bekaeme nie einen Feuchtewert - keine Schimmelbewertung, kein
+ * Taupunkt, keine Lueftungsempfehlung. Das ist der Kern des Plugins.
+ *
+ * Alle 24 Bausteine zu proben waere ehrlich, aber zu langsam: 24 Abrufe zu
+ * je 12 Sekunden Zeitschranke sind im schlimmsten Fall fuenf Minuten, und
+ * so lange wartet kein Webarbeiter. Geprobt wird deshalb EIN Vertreter je
+ * (Groesse, Loxone-Bauart). An der eigenen Anlage sind alle Fuehler
+ * `TextState`, das sind zwei Abrufe; eine gemischte Anlage kostet ein paar
+ * mehr. Die Zahl der Proben ist damit durch die Zahl der Bauarten begrenzt
+ * und nicht durch die Zahl der Raeume.
+ *
+ * Rueckgabe: array('t' => array(typ => probe, ...), 'rf' => ...), wobei
+ * eine Probe array(ok, meld, pfad, roh, zahl, name) ist.
+ * ------------------------------------------------------------------------
+ */
+function rk_ms_proben($ms, $voll, $zeit = 12)
+{
+    $aus = array('t' => array(), 'rf' => array());
+    foreach (array('t', 'rf') as $g) {
+        foreach ($voll as $v) {
+            if (empty($v[$g]) || !is_array($v[$g])) { continue; }
+            $typ = (string) $v[$g]['typ'];
+            if (isset($aus[$g][$typ])) { continue; }
+            list($ok, $meld, $pfad, $roh, $zahl)
+                = rk_ms_probe($ms, $v[$g]['uuid'], $zeit);
+            $aus[$g][$typ] = array('ok' => $ok, 'meld' => $meld, 'pfad' => $pfad,
+                                   'roh' => $roh, 'zahl' => $zahl,
+                                   'name' => (string) $v[$g]['name'],
+                                   'typ' => $typ, 'raum' => (string) $v['raum']);
+        }
+    }
+    return $aus;
 }
 
 /**
@@ -1320,7 +1633,34 @@ define('RK_EREIGNIS_MAX', 20);
 
 function rk_verlauf_lesen()
 {
-    $v = rk_json_lesen(rk_paths()['datadir'] . '/verlauf.json');
+    /* ------------------------------------------------------------------
+     * Eine KAPUTTE Verlaufsdatei ist etwas anderes als eine fehlende.
+     *
+     * Bis 0.11.1 stand hier rk_json_lesen(), und das liefert bei
+     * ungueltigem JSON dasselbe leere Feld wie bei "noch keine Datei". Der
+     * naechste Schreibvorgang ueberschrieb sie dann - dreissig Tage
+     * Stundenreihe, Aussenmittel, Erfolgsquote und die Strecke ohne
+     * Empfehlung waren weg, NASS24/NASS7T/ERFOLG sprangen auf -1,
+     * HEIZFALL ebenfalls, und im Protokoll stand kein Wort.
+     *
+     * rk_config() behandelt genau denselben Fall fuer raumklima.json seit
+     * 0.10.1 vorbildlich: beiseitelegen und melden. Der Verlauf hatte diese
+     * Behandlung nie bekommen. Er ist weniger wichtig als die
+     * Konfiguration - aber "weniger wichtig" ist kein Grund, ihn WORTLOS zu
+     * verlieren. Wer im Protokoll liest, warum NASS24 auf -1 steht, findet
+     * die Antwort jetzt dort.
+     * ------------------------------------------------------------------ */
+    $pfad = rk_paths()['datadir'] . '/verlauf.json';
+    list($v, $lage) = rk_json_lage($pfad);
+    if ($lage === 'kaputt') {
+        $ziel = $pfad . '.kaputt.' . date('Ymd');
+        if (!is_file($ziel)) { @copy($pfad, $ziel); @chmod($ziel, 0600); }
+        rk_log_gebremst('verlauf_kaputt',
+            'Der Verlaufsspeicher war unlesbar und liegt als '
+            . basename($ziel) . ' daneben. Die Reihen beginnen von vorn; '
+            . 'NASS24, NASS7T und ERFOLG stehen bis dahin auf -1.', 900);
+        $v = array();
+    }
     if (!isset($v['raeume']) || !is_array($v['raeume'])) { $v['raeume'] = array(); }
     return $v;
 }
@@ -1369,6 +1709,37 @@ function rk_verlauf_raum(&$vr, $e, $jetzt, $takt = 300)
 
     $takt = max(60, min(3600, (int) $takt));
 
+    /* ------------------------------------------------------------------
+     * EIN PUNKT JE TAKT - auch wenn oefter gemessen wird.
+     *
+     * Der Stundenkorb rechnet jede Messung als takt/3600 Stunden. Das gilt,
+     * solange ausschliesslich der Cron misst. Jeder Druck auf "Jetzt
+     * abrufen" und jedes ?aktion=abrufen haengt aber einen weiteren Punkt
+     * an. Gemessen am 30.08.2026, eine Stunde mit zwoelf regulaeren
+     * Messungen (sechs davon nass) plus sechs Handabrufen im nassen
+     * Abschnitt:
+     *
+     *     wahr: 0,5 h nass   -   gemeldet: nass24 = 1,0
+     *     Feinreihe traegt 18 Punkte statt 12
+     *
+     * Zweierlei ging schief. Die Nassstunden liefen nach oben - wieder die
+     * Richtung Fehlalarm. Und die Feinreihe (144 Punkte fest) deckte statt
+     * zwoelf nur noch acht Stunden ab; wer den Endpunkt mit aktion=abrufen
+     * statt aktion=status abfragt, verkuerzt das Fenster beliebig weit.
+     *
+     * Der Messwert selbst geht dadurch nicht verloren - er steht in
+     * stand.json und geht nach Loxone. Nur der VERLAUF nimmt ihn nicht auf,
+     * und genau der lebt davon, dass seine Punkte gleich viel wiegen.
+     *
+     * 0,8 statt 1,0: ein Cron laeuft nie auf die Sekunde genau, und ein
+     * Lauf, der drei Sekunden zu frueh kommt, ist der regulaere.
+     * ------------------------------------------------------------------ */
+    $letzter = !empty($vr['fein']) ? (int) $vr['fein'][count($vr['fein']) - 1][0] : 0;
+    if ($letzter > 0 && (int) $jetzt >= $letzter
+        && ((int) $jetzt - $letzter) < (int) round($takt * 0.8)) {
+        return;
+    }
+
     $vr['fein'][] = array((int) $jetzt, $e['t'], $e['rf'], $e['absolut'],
                           $e['ober_rf'], $e['co2'], (int) $e['lueften']);
     if (count($vr['fein']) > RK_FEIN_MAX) {
@@ -1409,9 +1780,32 @@ function rk_verlauf_raum(&$vr, $e, $jetzt, $takt = 300)
         if ($korb_gut && (int) $vr['korb'][1] > 0) {
             $k = $vr['korb'];
             $n = (int) $k[1];
+            /* ------------------------------------------------------------
+             * Feld 7: wie viele Messungen dieser Stunde ueberhaupt eine
+             * Aussage ueber die kalte Flaeche trugen.
+             *
+             * Bis 0.11.1 stand hier nur die Zahl der NASSEN Messungen, und
+             * `ober_rf === null` fiel in denselben Zweig wie "gemessen und
+             * trocken". Gemessen am 30.08.2026, zwoelf Stunden im
+             * Fuenfminutentakt:
+             *
+             *     ohne Aussenwerte (ober_rf null) -> nass24 = 0,0
+             *     dieselbe Reihe mit ober_rf 88 % -> nass24 = 12,0
+             *
+             * Ein tagelanger Ausfall der Aussenquelle erschien damit als
+             * lueckenlos TROCKENE Wand. Das ist die gefaehrliche Richtung:
+             * nicht ein Fehlalarm, sondern ein unterdrueckter.
+             *
+             * Eine Stunde ganz ohne Aussage bekommt jetzt -1 statt 0,0 und
+             * wird beim Summieren uebersprungen. Aeltere Stundeneintraege
+             * tragen nie eine -1, sie rechnen unveraendert weiter.
+             * ------------------------------------------------------------ */
+            $gemessen = isset($k[7]) ? (int) $k[7] : $n;
+            $nassstd = $gemessen > 0
+                ? round(min(1.0, $k[5] * $k[6] / 3600.0), 3)
+                : -1.0;
             $eintrag = array((int) $k[0], round($k[2] / $n, 2), round($k[3] / $n, 1),
-                             round($k[4] / $n, 3),
-                             round(min(1.0, $k[5] * $k[6] / 3600.0), 3));
+                             round($k[4] / $n, 3), $nassstd);
             $ersetzt = false;
             foreach ($vr['stunden'] as $i => $alt) {
                 if ((int) $alt[0] === (int) $k[0]) {
@@ -1428,13 +1822,19 @@ function rk_verlauf_raum(&$vr, $e, $jetzt, $takt = 300)
         /* Feld 6 ist die Taktzeit: die Normierung muss dieselbe sein, mit
          * der gesammelt wurde - auch wenn der Anwender den Takt inzwischen
          * verstellt hat. */
-        $vr['korb'] = array($stunde, 0, 0.0, 0.0, 0.0, 0.0, $takt);
+        $vr['korb'] = array($stunde, 0, 0.0, 0.0, 0.0, 0.0, $takt, 0);
     }
+    /* Ein Korb aus 0.11.1 traegt sieben Felder. Ihn zu verwerfen kostete
+     * eine angefangene Stunde; das Feld nachzutragen kostet nichts. */
+    if (!isset($vr['korb'][7])) { $vr['korb'][7] = 0; }
     $vr['korb'][1]++;
     $vr['korb'][2] += (float) $e['t'];
     $vr['korb'][3] += (float) $e['rf'];
     $vr['korb'][4] += (float) $e['absolut'];
-    $vr['korb'][5] += ($e['ober_rf'] !== null && $e['ober_rf'] >= 80.0) ? 1.0 : 0.0;
+    if ($e['ober_rf'] !== null) {
+        $vr['korb'][7]++;
+        $vr['korb'][5] += ($e['ober_rf'] >= 80.0) ? 1.0 : 0.0;
+    }
 
     /* Lueftungsereignis: beim Wechsel aus -> ein merken, spaeter bewerten. */
     $anzahl = count($vr['fein']);
@@ -1485,7 +1885,11 @@ function rk_verlauf_werte($vr, $jetzt, $volumen = 0, $trend_min = 60)
     $offen = 0.0;
     $hat_offen = false;
     if (isset($vr['korb']) && is_array($vr['korb']) && count($vr['korb']) >= 7
-        && (int) $vr['korb'][1] > 0) {
+        && (int) $vr['korb'][1] > 0
+        /* Der offene Korb zaehlt nur mit, wenn in dieser Stunde ueberhaupt
+         * eine Aussage ueber die kalte Flaeche gemessen wurde. Ohne diese
+         * Bedingung ginge er als 0,0 - also als "trocken" - ein. */
+        && (!isset($vr['korb'][7]) || (int) $vr['korb'][7] > 0)) {
         $offen = min(1.0, (float) $vr['korb'][5] * (float) $vr['korb'][6] / 3600.0);
         $hat_offen = true;
     }
@@ -1494,6 +1898,11 @@ function rk_verlauf_werte($vr, $jetzt, $volumen = 0, $trend_min = 60)
         $s7 = $offen;  $n7 = $n24;
         foreach ((array) $vr['stunden'] as $h) {
             if (!is_array($h) || count($h) < 5) { continue; }
+            /* Eine Stunde ohne jede Aussage traegt -1 und wird
+             * uebersprungen - nicht als 0 mitgezaehlt. Sonst waere ein
+             * Ausfall von der gemessenen Trockenheit nicht zu
+             * unterscheiden. */
+            if ((float) $h[4] < 0) { continue; }
             $alt = (int) $jetzt - (int) $h[0];
             if ($alt < 0) { continue; }
             if ($alt < 24 * 3600) { $s24 += (float) $h[4]; $n24++; }
@@ -1708,6 +2117,46 @@ function rk_abrufen($erzwingen = false)
         && (time() - $letzter_lauf) < (int) $cfg['takt']) {
         return $alt;
     }
+
+    /* ------------------------------------------------------------------
+     * DIE SPERRE STEHT SEIT 0.11.2 HIER - nicht mehr nur im Cron-Skript.
+     *
+     * `flock` gab es bis 0.11.1 an genau einer Stelle: bin/raumklima_abruf.php.
+     * Damit war der Cron gegen sich selbst geschuetzt, gegen die Oberflaeche
+     * aber nicht - und rk_abrufen() wird von sechs weiteren Stellen gerufen
+     * (html/index.php ueber ?aktion=abrufen, htmlauth/index.php dreimal,
+     * rk_test.php).
+     *
+     * Gemessen am 30.08.2026 mit einem Cron-Lauf und einem gleichzeitigen
+     * ?aktion=abrufen: rk_json_schreiben() schreibt zwar atomar (erst
+     * daneben, dann umbenennen), der Zyklus LESEN-RECHNEN-SCHREIBEN aber
+     * ist ungeschuetzt. Beide lasen dieselbe verlauf.json, beide rechneten,
+     * der zweite schrieb:
+     *
+     *     Start: fein = 1   nach zwei Laeufen: fein = 2   (erwartet 3)
+     *     der Eintrag des Cron war weg
+     *
+     * Verloren gehen Messpunkte, Stundenkoerbe, Lueftungsereignisse und der
+     * Laufzaehler - lautlos.
+     *
+     * Nicht blockierend: wer nicht drankommt, bekommt den letzten Stand
+     * zurueck. Warten waere schlechter - der Webarbeiter haenge dann an
+     * einem Netzabruf, den ein anderer gerade macht, und der naechste Takt
+     * kommt ohnehin gleich.
+     * ------------------------------------------------------------------ */
+    $sperrdatei = $p['datadir'] . '/.abruf.lock';
+    $sperre = @fopen($sperrdatei, 'c');
+    if ($sperre === false) {
+        /* Kein Schloss zu bekommen ist kein Grund, gar nicht zu messen -
+         * aber es gehoert gesagt. */
+        rk_log_gebremst('sperre_nicht_moeglich',
+            'Die Abrufsperre liess sich nicht anlegen (' . $sperrdatei
+            . '). Gleichzeitige Laeufe koennen einander ueberschreiben.', 3600);
+    } elseif (!flock($sperre, LOCK_EX | LOCK_NB)) {
+        fclose($sperre);
+        return $alt;
+    }
+
     $jetzt = time();
     /* ------------------------------------------------------------------
      * ZWEI Zeitstempel und ein Zaehler - der Befund vom 28.08.2026
@@ -1763,7 +2212,11 @@ function rk_abrufen($erzwingen = false)
             }
         }
     } else {
-        list($d, $m) = rk_holen($cfg['aussen_quelle'], true);
+        /* Zugangsdaten NUR an einen Wirt, der auch die Fuehler traegt -
+         * siehe rk_zugang_erlaubt(). Die Aussenquelle ist das einzige Feld,
+         * in das ueblicherweise eine FREMDE Adresse eingetragen wird. */
+        list($d, $m) = rk_holen($cfg['aussen_quelle'],
+                                rk_zugang_erlaubt($cfg['aussen_quelle'], $cfg));
         if ($d === null) {
             $stand['meldungen']['aussen'] = $m;
         } else {
@@ -1915,7 +2368,12 @@ function rk_abrufen($erzwingen = false)
     $stand['vereist_n'] = 0;
     $mit_werten = 0;
     foreach ($stand['raeume'] as $e) {
-        if ($e['schimmel']) { $stand['schimmel_n']++; }
+        /* === 1 und nicht "wahr". Seit 0.11.2 kann SCHIMMEL auch -1 tragen
+         * ("keine Aussage moeglich"), und -1 ist in PHP wahr. Ein blosses
+         * `if ($e['schimmel'])` haette jeden stummen Fuehler als
+         * Schimmelgefahr gezaehlt - aus einer fehlenden Aussage waere ein
+         * Alarm geworden. */
+        if ((int) $e['schimmel'] === 1) { $stand['schimmel_n']++; }
         if ($e['lueften']) { $stand['lueften_n']++; }
         if ($e['feucht']) { $stand['feucht_n']++; }
         if ($e['trocken']) { $stand['trocken_n']++; }
@@ -1927,8 +2385,16 @@ function rk_abrufen($erzwingen = false)
         /* Raeume, ueber deren Schimmelgefahr sich NICHTS sagen laesst.
          * Die Ampel steht dort auf -1; frueher stand dort eine 0, und die
          * war von "gemessen und unbedenklich" nicht zu unterscheiden. Wer
-         * einen Waechter auf schimmel_n legt, braucht diese Zahl daneben. */
-        if ($e['ok'] && isset($e['ampel']) && (int) $e['ampel'] < 0) { $stand['ampellos_n']++; }
+         * einen Waechter auf schimmel_n legt, braucht diese Zahl daneben.
+         *
+         * OHNE die $e['ok']-Bedingung, seit 0.11.2. Sie stand dort, solange
+         * ein stummer Fuehler AMPEL=0 lieferte - dann waere er hier gar
+         * nicht aufgefallen. Seit dem Ausfallzweig oben AMPEL=-1 setzt, ist
+         * er genau das, was der Name sagt: ein Raum, ueber dessen
+         * Schimmelgefahr sich nichts sagen laesst. Ihn hier auszunehmen
+         * hiesse, die Zahl kleiner zu machen als die Wirklichkeit. Wie viele
+         * Raeume ueberhaupt Werte tragen, sagt OK daneben. */
+        if (isset($e['ampel']) && (int) $e['ampel'] < 0) { $stand['ampellos_n']++; }
         if (!empty($e['schwuel']) && (int) $e['schwuel'] === 1) { $stand['schwuel_n']++; }
         if (!empty($e['zwang'])) { $stand['zwang_n']++; }
         if (!empty($e['sperre'])) { $stand['sperre_n']++; }
@@ -1958,6 +2424,15 @@ function rk_abrufen($erzwingen = false)
         $stand['meldungen']['stand'] = 'NICHT_GESPEICHERT';
     }
     if (!empty($cfg['verlauf_ein'])) { rk_verlauf_schreiben($verlauf); }
+
+    /* Erst hier loesen: der Verlauf ist der Teil, um den es bei der Sperre
+     * geht, und er wird eine Zeile darueber geschrieben. Das Versenden
+     * darunter liest nur noch. */
+    if (is_resource($sperre)) {
+        @flock($sperre, LOCK_UN);
+        @fclose($sperre);
+    }
+
     foreach ($stand['meldungen'] as $k => $m) {
         rk_log_gebremst('quelle_' . $k, 'Quelle ' . $k . ': ' . $m);
     }
@@ -2326,7 +2801,10 @@ function rk_felder()
         'OBERRF'   => array('%',      0, 100, 'RK_FELD.OBERRF',   '<v.0> %'),
         'LUEFTEN'  => array('',       0,   1, 'RK_FELD.LUEFTEN',  ''),
         'GEWINN'   => array('g/m3', -40,  40, 'RK_FELD.GEWINN',   '<v.2> g/m³'),
-        'SCHIMMEL' => array('',       0,   1, 'RK_FELD.SCHIMMEL', ''),
+        /* -1 heisst "keine Aussage moeglich", wie bei AMPEL. MinVal muss
+         * deshalb -1 sein: mit 0 schneidet Loxone die -1 ab und zeigt
+         * genau die 0, die hier vermieden werden soll. */
+        'SCHIMMEL' => array('',      -1,   1, 'RK_FELD.SCHIMMEL', ''),
         'FEUCHT'   => array('',       0,   1, 'RK_FELD.FEUCHT',   ''),
         'TROCKEN'  => array('',       0,   1, 'RK_FELD.TROCKEN',  ''),
         'BESTIN'   => array('min',   -1, 2880, 'RK_FELD.BESTIN',  '<v.0> min'),

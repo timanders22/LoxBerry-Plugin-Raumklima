@@ -3,7 +3,7 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.1 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.2 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
 
@@ -136,6 +136,24 @@ jeder Raum eine **Art**:
   sich derselbe Fall als unauffällige 56 %.
 * **Innenraum** — keine Schimmelaussage statt einer erfundenen.
 
+**„Keine Aussage" ist ein eigener Wert, nicht die Null.** `AMPEL` und
+`SCHIMMEL` tragen **−1**, wo sich nichts sagen lässt: bei einem stummen
+Fühler und bei der Raumart *Innenraum*. Bis 0.11.1 stand dort eine 0 — von
+„gemessen und unbedenklich" nicht zu unterscheiden. Wer einen Wächter auf
+`AMPEL = 0` legt, verließe sich sonst auf einen Fühler, der seit Tagen
+schweigt. `NAMPELLOS` zählt diese Räume; wie viele überhaupt Werte tragen,
+sagt `OK` daneben.
+
+Dasselbe gilt für `NASS24` und `NASS7T`: eine Stunde, in der über die kalte
+Fläche **nichts** bekannt war, zählt nicht als trockene Stunde mit, sondern
+gar nicht. Sonst erschiene ein tagelanger Ausfall der Außenquelle als
+lückenlos trockene Wand — und das ist die gefährliche Richtung.
+
+> **Nach dem Update auf 0.11.2 die Loxone-Vorlage neu importieren.**
+> `SCHIMMEL` reicht jetzt von −1 bis 1; mit der alten Vorlage schneidet
+> Loxone die −1 ab und zeigt wieder die 0, die hier vermieden werden soll.
+> (Für `AMPEL` gilt das schon seit 0.11.0.)
+
 ## Nach Loxone
 
 Zwei Wege, beide gleichzeitig nutzbar:
@@ -243,6 +261,27 @@ Plugin-Oberfläche:
 1. Breiten- und Längengrad eintragen.
 2. Adresse der Sensorquelle und je Raum die beiden Pfade.
 3. Speichern, dann „Jetzt abrufen“.
+
+**Schritt 2 geht auch von selbst**, wenn die Fühler schon in Loxone stehen:
+ganz oben im Reiter *Einstellungen* holt „Räume vom Miniserver holen“ die
+Raumliste und schlägt je Raum Temperatur- und Feuchtebaustein vor.
+Zugeordnet wird über den **Raum**, nicht über den Namen. Der erste Knopf
+schreibt nichts.
+
+Steht in einem Raum mehr als ein Baustein zur Wahl, wird er **übersprungen
+und genannt** — welcher der richtige ist, kann das Plugin nicht wissen. In
+solchen Fällen trägt man in *Nur aus dieser Kategorie* einen Teil des
+Kategorienamens ein (an einer Shelly-Anlage etwa `Shelly`) und holt die
+Liste erneut. Ebenso genannt wird, was **nicht mehr hineinpasst**: die
+Tabelle führt zwölf Zeilen, und belegte bleiben belegt.
+
+### Zugangsdaten
+
+Der Assistent legt Benutzer und Passwort des Miniservers in `geheim.json`
+ab. Sie gehen **nur an Wirte, die auch Fühler dieser Anlage tragen** — an
+die Adressen der Raumquellen und an den Miniserver selbst. Eine frei
+eingetragene Außenquelle auf einem fremden Rechner bekommt sie nicht; das
+Protokoll sagt einmal je Stunde, dass sie zurückgehalten wurden.
 
 Der Abruf läuft danach alle fünf Minuten über Cron; ein Dauerdienst ist nicht
 nötig, Raumklima ändert sich langsam.

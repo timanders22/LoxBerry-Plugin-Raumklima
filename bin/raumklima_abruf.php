@@ -1,17 +1,22 @@
 <?php
-/* ---- Sperre gegen Parallellaeufe (Muster fer_sperre, FerienFeiertage) ----
+/* ---- Die Sperre steht seit 0.11.2 NICHT MEHR HIER ----
  *
- * Der Abruf der Messwerte wartet auf ein Netz. Dauert der Lauf laenger als der Cron-Takt,
- * startet der naechste, waehrend dieser noch laeuft: doppelte Abrufe,
- * doppelte Meldungen, im schlimmsten Fall zwei Schreibvorgaenge auf dieselbe
- * Datei. Die Sperre ist nicht blockierend - wer nicht drankommt, geht
- * kommentarlos wieder (der naechste Takt kommt ohnehin gleich).
+ * Sie sass bis 0.11.1 an dieser Stelle und schuetzte damit genau einen
+ * Aufrufer: dieses Skript. rk_abrufen() wird aber von sechs weiteren
+ * Stellen gerufen - html/index.php (?aktion=abrufen), htmlauth/index.php
+ * (dreimal) und rk_test.php -, und keine davon nahm ein Schloss. Ein
+ * Cron-Lauf und ein gleichzeitiger Knopfdruck ueberschrieben einander die
+ * Messpunkte; gemessen am 30.08.2026.
+ *
+ * Jetzt sitzt sie in rk_abrufen() selbst, also an der Stelle, die den
+ * Verlauf liest und schreibt. Sie hier ZUSAETZLICH zu halten waere kein
+ * doppelter Boden, sondern eine Falle: `flock` auf denselben Ablauf mit
+ * zwei Kennungen aus DEMSELBEN Prozess blockiert auf Linux.
+ *
+ * Wer nicht drankommt, bekommt dort den letzten Stand zurueck. Fuer dieses
+ * Skript heisst das: keine Meldungen, Rueckgabewert 0 - dasselbe Verhalten
+ * wie vorher, nur eine Ebene tiefer entschieden.
  */
-$rk_sperrdatei = sys_get_temp_dir() . '/rk_cron.lock';
-$rk_sperre = @fopen($rk_sperrdatei, 'c');
-if ($rk_sperre === false || !flock($rk_sperre, LOCK_EX | LOCK_NB)) {
-    exit(0);
-}
 
 /**
  * Raumklima - der regelmaessige Abruf
