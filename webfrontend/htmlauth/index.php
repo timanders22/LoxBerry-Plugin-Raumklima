@@ -231,41 +231,126 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
     } else {
         list($rk_ok, $rk_meld, $rk_msr, $rk_bau) = rk_struktur_holen($rk_ms);
         if (!$rk_ok) {
+            /* Die VOLLE Adresse in die Meldung - Schema und Port
+             * eingeschlossen. Bis 0.11.1 stand dort nur der Wirt, und
+             * genau die beiden Angaben, die den Fehlschlag erklaeren
+             * (redet das Plugin http oder https, und gegen welchen Port),
+             * fehlten. Ein LoxBerry mit Preferhttps=1 meldete "antwortet
+             * nicht", ohne zu verraten, wohin er gefragt hat. */
             $rk_fehler[] = sprintf(rk_t('EINST.MS_FEHLER'),
-                rk_e($rk_ms['name'] . ' (' . $rk_ms['adresse'] . ')'), rk_t($rk_meld));
+                rk_e($rk_ms['name'] . ' (' . rtrim(rk_ms_url($rk_ms, ''), '/') . ')'),
+                rk_t($rk_meld));
         } else {
             $rk_kat = isset($_POST['ms_kategorie']) ? rk_text_saeubern($_POST['ms_kategorie']) : '';
             $rk_vor = rk_fuehler_vorschlag($rk_bau, $rk_kat);
-            /* Nur Raeume, in denen BEIDE Groessen gefunden wurden. Ein Raum
-             * mit nur einer Haelfte ergaebe ok=0 und stuende danach als
-             * Ausfall da - das waere kein Vorschlag, sondern eine Falle. */
-            $rk_voll = array();
-            foreach ($rk_vor as $v) {
-                if ($v['t'] !== null && $v['rf'] !== null) { $rk_voll[] = $v; }
+
+            /* ------------------------------------------------------------
+             * DIE LAGE JE RAUM WIRD HIER ENTSCHIEDEN, nicht in der Tabelle.
+             *
+             * Bis 0.11.1 rechnete die Vorschautabelle selbst aus, was sie
+             * anzeigt, und die Uebernahme rechnete es ein zweites Mal - mit
+             * anderen Bedingungen. Daraus wurden zwei Falschaussagen
+             * (beide am 30.08.2026 an der eigenen Anlage gemessen):
+             *
+             *   - Dreizehn Zeilen standen auf "wird angelegt", eingetragen
+             *     wurden zwoelf. `if (!$rk_frei) break;` bricht stumm ab,
+             *     und die Erfolgsmeldung nennt nur die Zahl der
+             *     geschriebenen Raeume. Der alphabetisch letzte Raum
+             *     verschwand wortlos.
+             *   - Raeume mit mehreren Bewerbern standen ebenfalls auf "wird
+             *     angelegt". Im KG Technikraum ist der erste von neunzehn
+             *     Bewerbern `Temp. Relay 1` - die Gehaeusetemperatur eines
+             *     Relaismoduls. Der richtige Fuehler ist der achtzehnte.
+             *
+             * Jetzt gibt es EINE Stelle, die 'lage' setzt, und die Tabelle
+             * zeigt nur noch an, was hier steht.
+             * ------------------------------------------------------------ */
+            $rk_frei_n = 0;
+            for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
+                if (rk_platz_frei($rk_cfg0['raeume'][$rk_i])) { $rk_frei_n++; }
             }
+            $rk_uebrig = $rk_frei_n;
+            $rk_voll = array();
+            $rk_mehrdeutig = 0;
+            $rk_kein_platz = 0;
+            foreach ($rk_vor as $rk_k => $v) {
+                $rk_lage = '';
+                $rk_schon = false;
+                foreach ($rk_cfg0['raeume'] as $rk_b) {
+                    if (rk_raum_gleich($rk_b['name'], $v['raum'])) { $rk_schon = true; break; }
+                }
+                if ($rk_schon) {
+                    $rk_lage = 'schon_da';
+                } elseif ($v['t'] === null || $v['rf'] === null) {
+                    /* Ein Raum mit nur einer Haelfte ergaebe ok=0 und stuende
+                     * danach als Ausfall da - das waere kein Vorschlag,
+                     * sondern eine Falle. Er wird gezeigt, nicht angelegt. */
+                    $rk_lage = 'unvollstaendig';
+                } elseif ($v['t_mehr'] > 0 || $v['rf_mehr'] > 0) {
+                    /* KEINE STILLE WAHL UNTER MEHREREN. Der Kopfkommentar zu
+                     * rk_fuehler_vorschlag() sagt es seit 0.11.1: "eine
+                     * stille Auswahl unter mehreren ist eine Entscheidung,
+                     * die der Anwender treffen muss, nicht das Plugin."
+                     * Getan hat das Plugin bis 0.11.1 trotzdem das
+                     * Gegenteil - es nahm den ersten und meldete nur die
+                     * Zahl daneben. */
+                    $rk_lage = 'mehrdeutig';
+                    $rk_mehrdeutig++;
+                } elseif ($rk_uebrig <= 0) {
+                    $rk_lage = 'kein_platz';
+                    $rk_kein_platz++;
+                } else {
+                    $rk_lage = 'wird_angelegt';
+                    $rk_uebrig--;
+                    $rk_voll[] = $v;
+                }
+                $rk_vor[$rk_k]['lage'] = $rk_lage;
+            }
+
             $rk_ass = array('ms' => $rk_ms, 'raeume' => count($rk_msr),
                             'bausteine' => count($rk_bau), 'vorschlag' => $rk_vor,
                             'voll' => $rk_voll, 'kategorie' => $rk_kat,
-                            'probe' => null, 'geschrieben' => 0);
+                            'frei' => $rk_frei_n, 'mehrdeutig' => $rk_mehrdeutig,
+                            'kein_platz' => $rk_kein_platz,
+                            'proben' => array(), 'probe' => null, 'geschrieben' => 0);
 
-            /* EINE Probe, am ersten gefundenen Temperaturbaustein. Sie
-             * beantwortet zweierlei: kommt man an die Werte heran, und wie
-             * heisst der Pfad in der Antwort wirklich. */
+            /* Je Bausteinart eine Probe - siehe rk_ms_proben(). */
             if ($rk_voll) {
-                list($rk_pok, $rk_pmeld, $rk_pfad, $rk_prohw, $rk_pzahl)
-                    = rk_ms_probe($rk_ms, $rk_voll[0]['t']['uuid']);
-                $rk_ass['probe'] = array('ok' => $rk_pok, 'meld' => $rk_pmeld,
-                    'pfad' => $rk_pfad, 'roh' => $rk_prohw, 'zahl' => $rk_pzahl,
-                    'name' => $rk_voll[0]['t']['name']);
-                if (!$rk_pok) {
-                    $rk_fehler[] = sprintf(rk_t('EINST.MS_PROBE_FEHL'), rk_t($rk_pmeld));
+                $rk_ass['proben'] = rk_ms_proben($rk_ms, $rk_voll);
+                foreach (array('t', 'rf') as $rk_g) {
+                    foreach ($rk_ass['proben'][$rk_g] as $rk_pr) {
+                        if ($rk_ass['probe'] === null) { $rk_ass['probe'] = $rk_pr; }
+                        if (!$rk_pr['ok']) {
+                            $rk_fehler[] = sprintf(rk_t('EINST.MS_PROBE_FEHL2'),
+                                rk_e($rk_pr['name']), rk_t($rk_pr['meld']));
+                        }
+                    }
                 }
             }
 
-            /* ---- Zweiter Schritt: uebernehmen ---- */
+            /* ---- Zweiter Schritt: uebernehmen ----
+             *
+             * Die leere Menge bekommt eine EIGENE Meldung. Seit die Lage je
+             * Raum vorab entschieden wird, kann $rk_voll leer sein, obwohl
+             * der Miniserver zwoelf Raeume liefert - dann stehen sie alle
+             * schon in der Tabelle, sind mehrdeutig oder haben keinen Platz
+             * mehr. Ohne diesen Zweig druecke der Anwender den Knopf und
+             * bekaeme UEBERHAUPT KEINE Antwort. Genau das hat die
+             * Knopfprobe am 30.08.2026 gemeldet, nachdem der erste Entwurf
+             * nur den Erfolgsfall behandelte. */
+            if (isset($_POST['ms_uebernehmen']) && !$rk_voll) {
+                $rk_meldungen[] = rk_t('EINST.MS_NICHTS_NEU');
+                if ($rk_ass['mehrdeutig'] > 0) {
+                    $rk_meldungen[] = sprintf(rk_t('EINST.MS_MEHRDEUTIG_N'),
+                        (int) $rk_ass['mehrdeutig']);
+                }
+                if ($rk_ass['kein_platz'] > 0) {
+                    $rk_fehler[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
+                        (int) $rk_ass['kein_platz'], RK_RAEUME);
+                }
+            }
             if (isset($_POST['ms_uebernehmen']) && $rk_voll
                 && !empty($rk_ass['probe']['ok'])) {
-                $rk_pfad = $rk_ass['probe']['pfad'];
                 $rk_neu2 = $rk_cfg0['raeume'];
                 $rk_frei = array();
                 /* Belegte Plaetze bleiben belegt. Ein Assistent, der einen
@@ -273,31 +358,42 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                  * die Nummer eines Raums ist sein Platz in der Tabelle, an
                  * dem in Loxone jeder Suchtext haengt. */
                 for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
-                    $rk_b = $rk_cfg0['raeume'][$rk_i];
-                    if (trim((string) $rk_b['name']) === ''
-                        && trim((string) $rk_b['pfad_t']) === ''
-                        && trim((string) $rk_b['pfad_rf']) === '') {
-                        $rk_frei[] = $rk_i;
-                    }
+                    if (rk_platz_frei($rk_cfg0['raeume'][$rk_i])) { $rk_frei[] = $rk_i; }
                 }
                 $rk_n2 = 0;
                 foreach ($rk_voll as $rk_v) {
                     if (!$rk_frei) { break; }
                     /* Ein Raum, der schon eingetragen ist, wird nicht ein
-                     * zweites Mal angelegt. */
+                     * zweites Mal angelegt. Verglichen wird ueber
+                     * rk_raum_gleich() - siehe dort, warum ein blosses
+                     * trim()-Vergleich Raeume verdoppelt hat. */
                     $rk_schon = false;
                     foreach ($rk_neu2 as $rk_b) {
-                        if (trim((string) $rk_b['name']) === $rk_v['raum']) { $rk_schon = true; break; }
+                        if (rk_raum_gleich($rk_b['name'], $rk_v['raum'])) { $rk_schon = true; break; }
                     }
                     if ($rk_schon) { continue; }
+                    /* Der Pfad kommt aus der Probe DIESER Bauart, nicht aus
+                     * der ersten Probe ueberhaupt. Fehlt sie oder ist sie
+                     * fehlgeschlagen, wird der Raum uebersprungen - lieber
+                     * kein Eintrag als einer, der nie einen Wert liefert. */
+                    $rk_pt = isset($rk_ass['proben']['t'][$rk_v['t']['typ']])
+                        ? $rk_ass['proben']['t'][$rk_v['t']['typ']] : null;
+                    $rk_prf = isset($rk_ass['proben']['rf'][$rk_v['rf']['typ']])
+                        ? $rk_ass['proben']['rf'][$rk_v['rf']['typ']] : null;
+                    if (!$rk_pt || !$rk_prf || !$rk_pt['ok'] || !$rk_prf['ok']) { continue; }
+
                     $rk_i = array_shift($rk_frei);
-                    $rk_neu2[$rk_i]['name'] = $rk_v['raum'];
+                    /* GETRIMMT eintragen. rk_config() trimmt den Namen beim
+                     * naechsten Lesen ohnehin; ungetrimmt geschrieben fand
+                     * der Waechter "Raum steht schon" seinen eigenen Eintrag
+                     * nicht wieder und legte ihn ein zweites Mal an. */
+                    $rk_neu2[$rk_i]['name'] = trim((string) $rk_v['raum']);
                     $rk_neu2[$rk_i]['quelle'] = rk_ms_url($rk_ms,
                         'jdev/sps/io/' . rawurlencode($rk_v['t']['uuid']) . '/all');
                     $rk_neu2[$rk_i]['quelle_rf'] = rk_ms_url($rk_ms,
                         'jdev/sps/io/' . rawurlencode($rk_v['rf']['uuid']) . '/all');
-                    $rk_neu2[$rk_i]['pfad_t'] = $rk_pfad;
-                    $rk_neu2[$rk_i]['pfad_rf'] = $rk_pfad;
+                    $rk_neu2[$rk_i]['pfad_t'] = $rk_pt['pfad'];
+                    $rk_neu2[$rk_i]['pfad_rf'] = $rk_prf['pfad'];
                     $rk_n2++;
                 }
                 if ($rk_n2 === 0) {
@@ -307,18 +403,50 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                     if (rk_config_speichern($rk_cfg0)) {
                         $rk_ass['geschrieben'] = $rk_n2;
                         $rk_meldungen[] = sprintf(rk_t('EINST.MS_UEBERNOMMEN'), $rk_n2);
+                        /* WAS NICHT HINEINPASSTE, WIRD GENANNT. Bis 0.11.1
+                         * stand hier nur die Zahl der geschriebenen Raeume,
+                         * und der Ueberhang fiel wortlos weg. */
+                        if ($rk_ass['kein_platz'] > 0) {
+                            $rk_fehler[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
+                                (int) $rk_ass['kein_platz'], RK_RAEUME);
+                        }
+                        if ($rk_ass['mehrdeutig'] > 0) {
+                            $rk_meldungen[] = sprintf(rk_t('EINST.MS_MEHRDEUTIG_N'),
+                                (int) $rk_ass['mehrdeutig']);
+                        }
                         /* Die Zugangsdaten des Miniservers gehoeren in die
                          * Geheimnisdatei - rk_holen() schickt sie beim Abruf
                          * als Basic-Auth mit. Ohne sie antwortet der
                          * Miniserver mit 401, und der Anwender suchte lange. */
                         $rk_g2 = rk_geheim();
                         if ($rk_g2['benutzer'] === '' && $rk_ms['user'] !== '') {
-                            rk_geheim_speichern(array('benutzer' => $rk_ms['user'],
-                                                      'passwort' => $rk_ms['pass']));
-                            $rk_meldungen[] = rk_t('EINST.MS_ZUGANG_GESETZT');
+                            /* Rueckgabewert ansehen. Bis 0.11.1 meldete die
+                             * Seite "Zugangsdaten gesetzt", auch wenn das
+                             * Schreiben an Rechten oder voller Platte
+                             * scheiterte - der Sicherungs-Block zwanzig
+                             * Zeilen darueber macht es seit jeher richtig. */
+                            if (rk_geheim_speichern(array('benutzer' => $rk_ms['user'],
+                                                          'passwort' => $rk_ms['pass']))) {
+                                $rk_meldungen[] = rk_t('EINST.MS_ZUGANG_GESETZT');
+                            } else {
+                                $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+                            }
+                        } elseif ($rk_g2['benutzer'] !== ''
+                                  && $rk_g2['benutzer'] !== $rk_ms['user']) {
+                            /* ES STEHEN SCHON FREMDE ZUGANGSDATEN DA.
+                             * Bis 0.11.1 blieben sie kommentarlos stehen.
+                             * Gemessen am 30.08.2026: eine laufende
+                             * Shelly-Einrichtung wurde durch zwoelf Raeume
+                             * ersetzt, die alle 24 Abrufe mit 401 beendeten
+                             * - und die Meldung nannte nur "Abruf
+                             * fehlgeschlagen". */
+                            $rk_fehler[] = sprintf(rk_t('EINST.MS_ZUGANG_FREMD'),
+                                rk_e($rk_g2['benutzer']), rk_e($rk_ms['user']));
                         }
                         rk_log('Einrichtungs-Assistent: ' . $rk_n2 . ' Raum/Raeume vom '
-                               . 'Miniserver uebernommen (Pfad ' . $rk_pfad . ').');
+                               . 'Miniserver uebernommen (Pfad T '
+                               . $rk_ass['probe']['pfad'] . ', ' . $rk_ass['kein_platz']
+                               . ' ohne Platz, ' . $rk_ass['mehrdeutig'] . ' mehrdeutig).');
                         $rk_s2 = rk_abrufen(true);
                         $rk_meldungen[] = empty($rk_s2['meldungen'])
                             ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
@@ -732,6 +860,13 @@ if ($rk_rahmen) {
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
     overflow: auto; margin: 8px 0; white-space: pre-wrap; font-family: Consolas, "Courier New", monospace; }
+/* .sm-log ist eine EIGENE Klasse neben .sm-pre, und der Hausstandard
+   verlangt fuer solche Einzelfaelle eine Begruendung an Ort und Stelle.
+   Sie steht hier: das Protokoll ist die einzige Ausgabe des Plugins, die
+   Hunderte Zeilen lang werden kann. Ohne max-height schiebt sie den Rest
+   des Reiters aus dem Bild, und die kleinere Schrift bringt eine
+   Protokollzeile mit Zeitstempel auf einem Telefon noch in eine Zeile.
+   Alles Uebrige ist mit .sm-pre gleich. */
 .sm-log { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.82em;
     overflow: auto; margin: 8px 0; max-height: 420px; white-space: pre-wrap;
     font-family: Consolas, "Courier New", monospace; }
@@ -884,7 +1019,7 @@ if ($rk_lage === 'kaputt') { ?>
   <td><?= rk_z($rk_r['absolut'], 2, 'g/m&sup3;') ?></td>
   <td><?= rk_z($rk_r['ober_t'], 1, '&deg;C') ?>
     <?php if ($rk_r['ober_rf'] !== null) { ?>
-    <br><span class="<?= $rk_r['schimmel'] ? 'sm-aus' : '' ?>"><?= rk_z($rk_r['ober_rf'], 0, '%') ?></span>
+    <br><span class="<?= (int) $rk_r['schimmel'] === 1 ? 'sm-aus' : '' ?>"><?= rk_z($rk_r['ober_rf'], 0, '%') ?></span>
     <?php } ?>
     <?php if (isset($rk_r['nass24']) && $rk_r['nass24'] > 0) { ?>
     <br><span class="sm-hilfe"><?= sprintf(rk_e(rk_t('TAB.NASS24')), rk_e(number_format((float) $rk_r['nass24'], 1, ',', ''))) ?></span>
@@ -948,7 +1083,7 @@ if ($rk_lage === 'kaputt') { ?>
   <label for="rk_mskat"><?= rk_e(rk_t('EINST.MS_KATEGORIE')) ?></label>
   <input data-role="none" type="text" id="rk_mskat" name="ms_kategorie"
          value="<?= rk_e($rk_ass !== null ? $rk_ass['kategorie'] : '') ?>"
-         placeholder="Feuchte">
+         placeholder="<?= rk_e(rk_t('EINST.MS_KATEGORIE_BEISPIEL')) ?>">
   <p class="sm-hilfe"><?= rk_t('EINST.MS_KATEGORIE_HILFE') ?></p>
 </div>
 <div class="sm-knopfreihe">
@@ -963,10 +1098,30 @@ if ($rk_lage === 'kaputt') { ?>
             rk_e($rk_ass['ms']['adresse']), (int) $rk_ass['raeume'],
             (int) $rk_ass['bausteine'], count($rk_ass['voll'])) ?>
 </div>
-<?php if ($rk_ass['probe'] !== null && $rk_ass['probe']['ok']) { ?>
-<div class="sm-hinweis"><?= sprintf(rk_t('EINST.MS_PROBE_OK'),
-    rk_e($rk_ass['probe']['name']), rk_e($rk_ass['probe']['roh']),
-    rk_e((string) $rk_ass['probe']['zahl']), rk_e($rk_ass['probe']['pfad'])) ?></div>
+<?php /* Eine Zeile JE PROBE - und die Ueberschrift sagt, wie viele es waren.
+       * Bis 0.11.1 stand hier eine einzige Zeile, und der darin genannte
+       * Pfad galt auch fuer die Feuchte, ohne dass sie je geprobt worden
+       * waere. Wer "abgelesen" schreibt, muss so viele Zeilen zeigen, wie
+       * er abgelesen hat. */
+foreach ((array) $rk_ass['proben']['t'] as $rk_pr) {
+    if (!$rk_pr['ok']) { continue; } ?>
+<div class="sm-hinweis"><?= sprintf(rk_t('EINST.MS_PROBE_OK_T'),
+    rk_e($rk_pr['name']), rk_e($rk_pr['raum']), rk_e($rk_pr['roh']),
+    rk_e((string) $rk_pr['zahl']), rk_e($rk_pr['pfad']), rk_e($rk_pr['typ'])) ?></div>
+<?php }
+foreach ((array) $rk_ass['proben']['rf'] as $rk_pr) {
+    if (!$rk_pr['ok']) { continue; } ?>
+<div class="sm-hinweis"><?= sprintf(rk_t('EINST.MS_PROBE_OK_RF'),
+    rk_e($rk_pr['name']), rk_e($rk_pr['raum']), rk_e($rk_pr['roh']),
+    rk_e((string) $rk_pr['zahl']), rk_e($rk_pr['pfad']), rk_e($rk_pr['typ'])) ?></div>
+<?php } ?>
+<?php if ($rk_ass['kein_platz'] > 0 && !$rk_ass['geschrieben']) { ?>
+<div class="sm-warnung"><?= sprintf(rk_e(rk_t('EINST.MS_KEIN_PLATZ_N')),
+    (int) $rk_ass['kein_platz'], RK_RAEUME) ?></div>
+<?php } ?>
+<?php if ($rk_ass['mehrdeutig'] > 0 && !$rk_ass['geschrieben']) { ?>
+<div class="sm-warnung"><?= sprintf(rk_e(rk_t('EINST.MS_MEHRDEUTIG_N')),
+    (int) $rk_ass['mehrdeutig']) ?></div>
 <?php } ?>
 <?php if ($rk_ass['vorschlag']) { ?>
 <div class="sm-breit">
@@ -975,21 +1130,28 @@ if ($rk_lage === 'kaputt') { ?>
     <th><?= rk_e(rk_t('EINST.PFAD_T')) ?></th>
     <th><?= rk_e(rk_t('EINST.PFAD_RF')) ?></th>
     <th><?= rk_e(rk_t('EINST.MS_SP_LAGE')) ?></th></tr>
-<?php foreach ($rk_ass['vorschlag'] as $rk_v) {
-    $rk_beide = ($rk_v['t'] !== null && $rk_v['rf'] !== null);
-    $rk_da = false;
-    foreach ($rk_cfg['raeume'] as $rk_b) {
-        if (trim((string) $rk_b['name']) === $rk_v['raum']) { $rk_da = true; break; }
-    } ?>
+<?php /* Die Lage steht im Handler, nicht hier - siehe dort. Diese Tabelle
+       * zeigt nur noch an. Bis 0.11.1 rechnete sie es selbst aus, mit
+       * anderen Bedingungen als die Uebernahme, und versprach dreizehn
+       * Raeume, wo zwoelf angelegt wurden. */
+$rk_lagen = array(
+    'schon_da'       => array('',       'EINST.MS_SCHON_DA'),
+    'wird_angelegt'  => array('sm-an',  'EINST.MS_WIRD_ANGELEGT'),
+    'mehrdeutig'     => array('sm-aus', 'EINST.MS_MEHRDEUTIG'),
+    'kein_platz'     => array('sm-aus', 'EINST.MS_KEIN_PLATZ'),
+    'unvollstaendig' => array('sm-aus', 'EINST.MS_UNVOLLSTAENDIG'),
+);
+foreach ($rk_ass['vorschlag'] as $rk_v) {
+    $rk_l = isset($rk_lagen[$rk_v['lage']]) ? $rk_lagen[$rk_v['lage']]
+                                            : array('sm-aus', 'EINST.MS_UNVOLLSTAENDIG'); ?>
 <tr>
   <td><b><?= rk_e($rk_v['raum']) ?></b></td>
   <td><?= $rk_v['t'] !== null ? rk_e($rk_v['t']['name']) : '<span class="sm-aus">&ndash;</span>' ?>
       <?= $rk_v['t_mehr'] > 0 ? '<br><span class="sm-hilfe">' . sprintf(rk_e(rk_t('EINST.MS_MEHRERE')), (int) $rk_v['t_mehr'] + 1) . '</span>' : '' ?></td>
   <td><?= $rk_v['rf'] !== null ? rk_e($rk_v['rf']['name']) : '<span class="sm-aus">&ndash;</span>' ?>
       <?= $rk_v['rf_mehr'] > 0 ? '<br><span class="sm-hilfe">' . sprintf(rk_e(rk_t('EINST.MS_MEHRERE')), (int) $rk_v['rf_mehr'] + 1) . '</span>' : '' ?></td>
-  <td><?php if ($rk_da) { ?><?= rk_e(rk_t('EINST.MS_SCHON_DA')) ?><?php }
-           elseif ($rk_beide) { ?><span class="sm-an"><?= rk_e(rk_t('EINST.MS_WIRD_ANGELEGT')) ?></span><?php }
-           else { ?><span class="sm-aus"><?= rk_e(rk_t('EINST.MS_UNVOLLSTAENDIG')) ?></span><?php } ?></td>
+  <td><?php if ($rk_l[0] === '') { ?><?= rk_e(rk_t($rk_l[1])) ?><?php }
+           else { ?><span class="<?= $rk_l[0] ?>"><?= rk_e(rk_t($rk_l[1])) ?></span><?php } ?></td>
 </tr>
 <?php } ?>
 </table>

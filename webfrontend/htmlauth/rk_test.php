@@ -79,10 +79,10 @@ function rk_selbstpruefung()
         }
     }
     if ($p['home'] === '') {
-        $add('PRUEF.CRON', 2, 'LBHOMEDIR unbekannt - hier nicht messbar');
+        $add('PRUEF.CRON', 2, rk_t('PRUEFTEXT.CRON_KEIN_HOME'));
     } elseif ($takt_ordner === '') {
         /* Ueber eine leere Menge wird nicht geurteilt. */
-        $add('PRUEF.CRON', 2, 'kein cron.NNmin im Plugin gefunden - nichts zu suchen');
+        $add('PRUEF.CRON', 2, rk_t('PRUEFTEXT.CRON_KEIN_TAKT'));
     } else {
         $ziel = $p['home'] . '/system/cron/' . $takt_ordner . '/' . $p['plugin'];
         if (is_file($ziel)) {
@@ -90,10 +90,10 @@ function rk_selbstpruefung()
         } elseif (is_dir($ziel)) {
             /* Ein VERZEICHNIS an dieser Stelle heisst: der Eintrag laeuft
              * nie. LoxBerry fuehrt in diesen Ordnern nur Dateien aus. */
-            $add('PRUEF.CRON', 0, 'dort liegt ein VERZEICHNIS, keine Datei - '
-                 . 'der Cron laeuft nicht');
+            $add('PRUEF.CRON', 0, rk_t('PRUEFTEXT.CRON_VERZEICHNIS'));
         } else {
-            $add('PRUEF.CRON', 0, 'fehlt: system/cron/' . $takt_ordner . '/' . $p['plugin']);
+            $add('PRUEF.CRON', 0, sprintf(rk_t('PRUEFTEXT.CRON_FEHLT'),
+                 'system/cron/' . $takt_ordner . '/' . $p['plugin']));
         }
     }
 
@@ -104,17 +104,20 @@ function rk_selbstpruefung()
     $lauf = isset($stand['lauf_ts']) ? (int) $stand['lauf_ts'] : 0;
     $grenze = max(900, 3 * (int) $cfg['takt']);
     if ($lauf <= 0) {
-        $add('PRUEF.LAUF', 2, 'noch kein Lauf');
+        $add('PRUEF.LAUF', 2, rk_t('PRUEFTEXT.LAUF_KEINER'));
     } else {
         $alt = time() - $lauf;
         $add('PRUEF.LAUF', $alt <= $grenze ? 1 : 0,
-             sprintf('%d s alt, Grenze %d s', $alt, $grenze));
+             sprintf(rk_t('PRUEFTEXT.LAUF_ALT'), $alt, $grenze));
     }
 
     /* ---- 3. Ist die Konfiguration heil? ----
      * Vier Zustaende, jeder mit seinem Satz. */
     $lage = rk_config_lage();
-    $add('PRUEF.CFG', $lage === 'ok' ? 1 : ($lage === 'kaputt' ? 0 : 2), $lage);
+    $lagetext = array('ok' => 'PRUEFTEXT.CFG_OK', 'kaputt' => 'PRUEFTEXT.CFG_KAPUTT',
+                      'fehlt' => 'PRUEFTEXT.CFG_FEHLT');
+    $add('PRUEF.CFG', $lage === 'ok' ? 1 : ($lage === 'kaputt' ? 0 : 2),
+         rk_t(isset($lagetext[$lage]) ? $lagetext[$lage] : 'PRUEFTEXT.CFG_FEHLT'));
 
     /* ---- 4. Antwortet der eigene Endpunkt? ----
      * Zwischengespeichert, sonst ruft sich der Webserver bei jedem
@@ -137,12 +140,12 @@ function rk_selbstpruefung()
     $liste = array_map(function ($x) { return 'tab-' . $x; }, $liste);
     sort($leiste); sort($bereich); sort($liste);
     if (!$leiste || !$bereich || !$liste) {
-        $add('PRUEF.REITER', 0, sprintf('%d Leiste, %d Bereiche, %d Positivliste - '
-            . 'mindestens eine Menge ist leer', count($leiste), count($bereich), count($liste)));
+        $add('PRUEF.REITER', 0, sprintf(rk_t('PRUEFTEXT.REITER_LEER'),
+            count($leiste), count($bereich), count($liste)));
     } else {
         $gleich = ($leiste === $bereich && $leiste === $liste);
         $add('PRUEF.REITER', $gleich ? 1 : 0,
-             sprintf('%d / %d / %d angesehen', count($leiste), count($bereich), count($liste)));
+             sprintf(rk_t('PRUEFTEXT.REITER_ANZ'), count($leiste), count($bereich), count($liste)));
     }
 
     /* ---- 6. Tragen ALLE Formulare das Merkmal? ----
@@ -150,10 +153,10 @@ function rk_selbstpruefung()
     $formulare = substr_count($q, '<form ');
     $merkmale = substr_count($q, 'name="formtoken"');
     if ($formulare === 0) {
-        $add('PRUEF.FORMULAR', 0, '0 Formulare gefunden - hier wurde nichts gemessen');
+        $add('PRUEF.FORMULAR', 0, rk_t('PRUEFTEXT.FORM_KEINE'));
     } else {
         $add('PRUEF.FORMULAR', $formulare === $merkmale ? 1 : 0,
-             sprintf('%d Formulare, %d mit Merkmal', $formulare, $merkmale));
+             sprintf(rk_t('PRUEFTEXT.FORM_ANZ'), $formulare, $merkmale));
     }
 
     /* ---- 7. Stimmt die Themenliste mit dem Sendecode ueberein? ----
@@ -166,7 +169,7 @@ function rk_selbstpruefung()
     /* ---- 8. Sind die Vorlagen wohlgeformt? ----
      * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config. */
     if (!rk_raeume()) {
-        $add('PRUEF.VORLAGE', 2, 'kein Raum eingerichtet - nichts zu erzeugen');
+        $add('PRUEF.VORLAGE', 2, rk_t('PRUEFTEXT.VORLAGE_LEER'));
     } else {
         list($vn, $vi) = rk_vorlage();
         $vorher = libxml_use_internal_errors(true);
@@ -176,8 +179,9 @@ function rk_selbstpruefung()
         libxml_use_internal_errors($vorher);
         $cmds = $x !== false ? count($x->VirtualInHttpCmd) : 0;
         $add('PRUEF.VORLAGE', $x !== false ? 1 : 0,
-             $x !== false ? sprintf('%s, %d Eingaenge', $vn, $cmds)
-                          : (count($fehler) ? trim($fehler[0]->message) : 'nicht lesbar'));
+             $x !== false ? sprintf(rk_t('PRUEFTEXT.VORLAGE_OK'), $vn, $cmds)
+                          : (count($fehler) ? trim($fehler[0]->message)
+                                            : rk_t('PRUEFTEXT.VORLAGE_UNLESBAR')));
     }
 
     /* ---- 9. Liest der Assistent den Messwert aus der richtigen Zeile? ----
@@ -213,7 +217,7 @@ function rk_selbstpruefung()
         if ((int) $sok !== (int) $f[2] || $spfad !== $f[0]) { $fehl++; }
     }
     $add('PRUEF.WERTPFAD', $fehl === 0 ? 1 : 0,
-         sprintf('%d von %d Antworten richtig gelesen', count($ff) - $fehl, count($ff)));
+         sprintf(rk_t('PRUEFTEXT.WERTPFAD_N'), count($ff) - $fehl, count($ff)));
 
     return $z;
 }
@@ -231,12 +235,13 @@ function rk_test_endpunkt_kurz($sekunden = 300)
     if (is_file($cache) && (time() - (int) filemtime($cache)) < $sekunden) {
         $d = json_decode((string) @file_get_contents($cache), true);
         if (is_array($d) && isset($d['ok'], $d['text'])) {
-            return array((int) $d['ok'], $d['text'] . ' (zwischengespeichert)');
+            return array((int) $d['ok'],
+                $d['text'] . ' ' . rk_t('PRUEFTEXT.EP_CACHE'));
         }
     }
     $token = rk_token_lesen();
     if ($token === '') {
-        return array(2, 'noch kein Wortzeichen vergeben');
+        return array(2, rk_t('PRUEFTEXT.EP_KEIN_TOKEN'));
     }
     $url = rk_endpunkt() . '?token=' . rawurlencode($token) . '&aktion=status';
     $ctx = stream_context_create(array('http' => array(
@@ -247,12 +252,12 @@ function rk_test_endpunkt_kurz($sekunden = 300)
          * und kann sich nicht selbst rufen. Das sagt nichts ueber den
          * Endpunkt, und ein rotes Kreuz waere hier eines, das nichts
          * bedeutet. */
-        $erg = array(2, 'nicht erreichbar - Hostname oder einlaeufiger Server?');
+        $erg = array(2, rk_t('PRUEFTEXT.EP_STUMM'));
     } elseif (strpos($text, 'RAUMKLIMA;') === 0) {
-        $erg = array(1, strlen($text) . ' Zeichen, Antwortzeile erkannt');
+        $erg = array(1, sprintf(rk_t('PRUEFTEXT.EP_OK'), strlen($text)));
     } else {
-        $erg = array(0, 'geantwortet, aber nicht mit der Antwortzeile: '
-                        . substr(trim($text), 0, 60));
+        $erg = array(0, sprintf(rk_t('PRUEFTEXT.EP_FALSCH'),
+                        substr(trim($text), 0, 60)));
     }
     @file_put_contents($cache, json_encode(array('ok' => $erg[0], 'text' => $erg[1])));
     return $erg;
@@ -263,7 +268,7 @@ function rk_test_themen_vergleich()
 {
     $stand = rk_stand();
     if (empty($stand['raeume'])) {
-        return array(2, 'noch kein Abbild - nichts zu vergleichen');
+        return array(2, rk_t('PRUEFTEXT.THEMEN_KEIN_ABBILD'));
     }
     $gesendet = array();
     foreach (array_keys(rk_mqtt_werte($stand)) as $k) {
@@ -273,19 +278,18 @@ function rk_test_themen_vergleich()
     $fehlt_tab = array_diff(array_keys($gesendet), array_keys($tabelle));
     $fehlt_send = array_diff(array_keys($tabelle), array_keys($gesendet));
     $n = count($gesendet);
-    if ($n === 0) { return array(0, '0 Themen erzeugt - hier wurde nichts gemessen'); }
+    if ($n === 0) { return array(0, rk_t('PRUEFTEXT.THEMEN_KEINE')); }
     if (!$fehlt_tab && !$fehlt_send) {
-        return array(1, sprintf('%d Themen, deckungsgleich', $n));
+        return array(1, sprintf(rk_t('PRUEFTEXT.THEMEN_GLEICH'), $n));
     }
     /* Ein Thema, das nur bei besonderer Einrichtung entsteht (Zuluft,
      * Aussenmittel), fehlt in der Sendemenge zu Recht. Gemeldet wird
      * deshalb nur die andere Richtung als Kreuz. */
     if ($fehlt_tab) {
-        return array(0, sprintf('%d Themen gesendet, %d fehlen in der Tabelle: %s',
+        return array(0, sprintf(rk_t('PRUEFTEXT.THEMEN_FEHLT_TAB'),
             $n, count($fehlt_tab), implode(', ', array_slice($fehlt_tab, 0, 5))));
     }
-    return array(2, sprintf('%d Themen gesendet; %d stehen in der Tabelle und '
-        . 'entstehen erst mit weiterer Einrichtung', $n, count($fehlt_send)));
+    return array(2, sprintf(rk_t('PRUEFTEXT.THEMEN_FEHLT_SEND'), $n, count($fehlt_send)));
 }
 
 /**
