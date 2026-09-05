@@ -53,6 +53,85 @@ define('RK_RAEUME', 12);
  * mehr. Siehe die Begruendung in rk_holen(). */
 define('RK_ANTWORT_MAX', 2 * 1024 * 1024);
 
+/**
+ * Ein GESAMTBUDGET fuer einen Abruf, in Sekunden.
+ *
+ * Die Schranken in rk_holen() gelten je Abruf (12 s, davon 6 s fuer den
+ * Verbindungsaufbau). Ein voll besetzter Aufbau macht zwoelf Raeume mal
+ * zwei Adressen plus die Aussenquelle = 25 Abrufe nacheinander;
+ * rechnerisch 300 s - und genau 300 s stehen als PollingTime in der
+ * erzeugten Vorlage und als Untergrenze des Taktes. Der naechste Cron-Lauf
+ * ueberholte den vorigen also im schlimmsten Fall.
+ *
+ * Deshalb fuehrt rk_abrufen() seit 0.11.3 eine Frist mit. Wer sie
+ * ueberschreitet, fragt nicht weiter, sondern meldet ZEIT_ABGELAUFEN -
+ * ein fehlender Wert ist eine Auskunft, ein haengender Lauf keine.
+ */
+function rk_frist($setzen = null)
+{
+    static $bis = 0;
+    if ($setzen !== null) { $bis = (int) $setzen; }
+    return $bis;
+}
+
+/** Wie viele Sekunden bleiben? 0 heisst: keine Frist gesetzt. */
+function rk_frist_rest()
+{
+    $bis = rk_frist();
+    if ($bis <= 0) { return 0; }
+    return $bis - time();
+}
+
+/**
+ * Die Zeitzone, in der dieses Plugin rechnet.
+ *
+ * Ohne `date.timezone` in der php.ini rechnet PHP in UTC, und die
+ * Umgebungsvariable TZ liest es seit 5.4 nicht mehr. Bis 0.11.2 setzte
+ * das Plugin nichts - damit standen alle Protokollzeitstempel gegen das
+ * LoxBerry-Systemprotokoll verschoben, der Tageswechsel der .kaputt-Kopie
+ * fiel auf 02:00 Ortszeit, und eine Ruhezeit 22:00-06:00 wirkte von 00:00
+ * bis 08:00. Der Kommentar in rk_klima.php behauptete das Gegenteil.
+ *
+ * Reihenfolge: was das Betriebssystem sagt (auf Debian /etc/timezone,
+ * und genau dort landet die Einstellung aus der LoxBerry-Oberflaeche).
+ * Sonst die php.ini. PHP 8 fuehrt dort UTC als VORGABE, nicht als
+ * Entscheidung - wer die ini zuerst fragte, laese auf einem LoxBerry 4
+ * mit Debian 13 nie die Systemzone.
+ * Sonst UTC - und dann steht es so im Reiter Test, statt geraten zu
+ * werden. Ein ungueltiger Name wird abgewiesen, nicht gesetzt.
+ */
+function rk_zeitzone()
+{
+    static $z = null;
+    if ($z !== null) { return $z; }
+    $z = rk_zeitzone_system();
+    if ($z === '') { $z = trim((string) ini_get('date.timezone')); }
+    if ($z === '' || !in_array($z, timezone_identifiers_list(), true)) {
+        $z = 'UTC';
+    }
+    return $z;
+}
+
+/** Die Zone des Betriebssystems, oder '' wenn keine lesbar ist. */
+function rk_zeitzone_system()
+{
+    if (!@is_readable('/etc/timezone')) { return ''; }
+    $t = trim((string) @file_get_contents('/etc/timezone'));
+    if ($t === '' || !in_array($t, timezone_identifiers_list(), true)) { return ''; }
+    return $t;
+}
+
+/** Woher die Zeitzone stammt - fuer den Reiter Test. */
+function rk_zeitzone_quelle()
+{
+    if (rk_zeitzone_system() !== '') { return '/etc/timezone'; }
+    $i = trim((string) ini_get('date.timezone'));
+    if ($i !== '' && in_array($i, timezone_identifiers_list(), true)) { return 'php.ini'; }
+    return 'Rueckfall UTC';
+}
+
+date_default_timezone_set(rk_zeitzone());
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -395,7 +474,20 @@ function rk_wert_pruefen($schluessel, $wert)
              * Vorgabe, die zwei Zeilen weiter unten fuer unbekannte
              * Schluessel gilt. */
             if (count($wert) > RK_RAEUME) { return array(null, 'FEHLER.RAEUME_ZUVIEL'); }
-            foreach (array_values($wert) as $i => $r2) {
+            /* Die Schluessel bleiben, was sie sind. array_values() hat sie
+             * bis 0.11.2 verdichtet: wer den Block eines Raums von Hand aus
+             * der Sicherung entfernte, schob alle folgenden um eins nach
+             * vorn - und der Eingang mit \i;R3TAU= zeigte danach auf einen
+             * anderen Raum, ohne dass ein Wert fehlte. Das ist derselbe
+             * Befund, den 0.10.0 fuer die Oberflaeche behoben hat, nur
+             * ueber den Rueckspielweg. Ein Platz ausserhalb der Tabelle
+             * wird beanstandet, nicht verschoben. */
+            foreach ($wert as $i => $r2) {
+                if (!is_int($i) && !ctype_digit((string) $i)) {
+                    return array(null, 'FEHLER.RAEUME');
+                }
+                $i = (int) $i;
+                if ($i < 0 || $i >= RK_RAEUME) { return array(null, 'FEHLER.RAEUME'); }
                 if (!is_array($r2)) { return array(null, 'FEHLER.RAEUME'); }
                 foreach ($r2 as $k2 => $v2) {
                     if (!array_key_exists($k2, $vorg)) { return array(null, 'FEHLER.RAEUME'); }
@@ -459,12 +551,22 @@ function rk_json_schreiben($pfad, $daten, $rechte = null)
     $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) { return false; }
     $tmp = $pfad . '.tmp.' . getmypid();
+    /* Die Rechte gehoeren an das ANLEGEN. Zwischen fopen() und chmod()
+     * laege die Nebendatei sonst mit 0666 & ~umask da - bei geheim.json
+     * waeren das die Zugangsdaten des Miniservers, fuer jeden lesbar.
+     * Deshalb die umask fuer diesen einen Aufruf enger stellen. */
+    $umask_alt = ($rechte !== null) ? umask(~$rechte & 0777) : null;
     $fh = @fopen($tmp, 'c');
+    if ($umask_alt !== null) { umask($umask_alt); }
     if ($fh === false) { return false; }
     if ($rechte !== null) { @chmod($tmp, $rechte); }
-    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
-    fflush($fh);
-    fclose($fh);
+    /* `!== false` genuegt nicht: bei voller Platte schreibt fwrite() nur
+     * einen Teil und liefert dessen Laenge zurueck. Das galt als Erfolg,
+     * und die abgeschnittene Nebendatei wurde ueber die gute Datei
+     * umbenannt. Auch fflush() und fclose() koennen ENOSPC nachreichen. */
+    $ok = ftruncate($fh, 0) && fwrite($fh, $json) === strlen($json);
+    if (!fflush($fh)) { $ok = false; }
+    if (!fclose($fh)) { $ok = false; }
     if (!$ok) { @unlink($tmp); return false; }
     if (!@rename($tmp, $pfad)) { @unlink($tmp); return false; }
     return true;
@@ -606,7 +708,11 @@ function rk_config($heilen = true)
          * ------------------------------------------------------------ */
         $vorg_r = rk_raum_vorgabe();
         $fremd = array_diff_key($r, $vorg_r);
-        if ($fremd) {
+        /* NUR mit $heilen. Ohne die Klammer schrieb ein unangemeldeter
+         * Aufruf mit falschem Wortzeichen zwei Dateien, bevor der 403
+         * hinausging - gemessen am 05.09.2026, 8 auf 9 Dateien. Das
+         * Ablegen der Fremdschluessel darunter wirkt nur im Speicher. */
+        if ($fremd && $heilen) {
             rk_log_gebremst('raum_fremdschluessel',
                 'Raum ' . ($i + 1) . ': unbekannte Felder abgelegt ('
                 . implode(', ', array_slice(array_keys($fremd), 0, 6))
@@ -860,6 +966,30 @@ function rk_token()
  * Das Merkmal ist NICHT der Aktionstoken. Es lebt in einer eigenen Datei
  * unter data/, gehoert nicht in die Sicherungsdatei und darf nie in einer
  * Adresse stehen.
+ *
+ * ES IST GESPEICHERT, NICHT ABGELEITET - und das hat eine Folge fuer
+ * jeden, der diese Linie prueft.
+ *
+ * Der Hausstandard kennt beide Bauarten. Die VORLAGE leitet das Merkmal
+ * aus dem Aktionstoken ab (hash_hmac('sha256', 'formular-v1', $token));
+ * ein Pruefstand kann es dort in drei Zeilen nachrechnen und damit einen
+ * POST bauen, der den Wachposten passiert. Hier geht das NICHT: das
+ * Merkmal wird einmal gewuerfelt und in data/ abgelegt, es laesst sich
+ * aus nichts herleiten. Wer einen Zweig hinter dem Wachposten messen
+ * will, muss es deshalb LESEN - aus der gerenderten Seite (jedes
+ * Formular traegt es als verstecktes Feld) oder aus der Datei -, und
+ * nicht ausrechnen. Ein selbst zusammengesetzter POST wird abgewiesen,
+ * bevor der Handler anlaeuft; die Messung misst dann den Wachposten und
+ * nicht den Fehler, den sie sucht.
+ *
+ * wirkungstest.py kommt damit zurecht - es liest die versteckten Felder
+ * aus dem gerenderten Formular. Selbst gebaute Pruefstuecke tun das
+ * nicht von allein.
+ *
+ * Gewuerfelt statt abgeleitet ist hier Absicht: waere es abgeleitet,
+ * haette jeder, der das Wortzeichen einmal gesehen hat - es steht in
+ * der Adresse jedes virtuellen Eingangs -, damit auch das
+ * Formularmerkmal.
  * ================================================================== */
 
 function rk_formtoken()
@@ -1044,6 +1174,12 @@ function rk_zugang_erlaubt($url, $cfg = null)
 
 function rk_holen($url, $mit_zugang = false)
 {
+    /* Die Frist gilt fuer den ganzen Lauf, nicht je Abruf. Ist sie
+     * abgelaufen, wird nicht mehr gefragt - sonst haengt der Lauf laenger
+     * als sein eigener Takt. Ohne gesetzte Frist (Oberflaeche, Reiter
+     * Test) aendert sich nichts. */
+    $rest = rk_frist_rest();
+    if (rk_frist() > 0 && $rest <= 0) { return array(null, 'ZEIT_ABGELAUFEN'); }
     $url = trim((string) $url);
     if ($url === '') { return array(null, 'KEINE_ADRESSE'); }
     if (!preg_match('#^https?://#i', $url)) { return array(null, 'KEINE_ADRESSE'); }
@@ -1077,10 +1213,17 @@ function rk_holen($url, $mit_zugang = false)
         $grenze = RK_ANTWORT_MAX;
         $text = '';
         $zuviel = false;
+        /* Die Schranken je Abruf, gedeckelt durch die verbleibende Frist. */
+        $zeit = 12;
+        $verb = 6;
+        if (rk_frist() > 0) {
+            $zeit = max(2, min($zeit, (int) $rest));
+            $verb = max(1, min($verb, $zeit));
+        }
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 6);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $zeit);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $verb);
         curl_setopt($ch, CURLOPT_MAXFILESIZE, $grenze);
         curl_setopt($ch, CURLOPT_WRITEFUNCTION,
             function ($ch2, $stueck) use (&$text, &$zuviel, $grenze) {
@@ -1115,7 +1258,8 @@ function rk_holen($url, $mit_zugang = false)
          * der Betreiber. Ohne diese Zeile haengt es also davon ab, ob
          * php-curl geladen ist, ob die Zugangsdaten abfliessen koennen. */
         $ctx = stream_context_create(array('http' => array(
-            'timeout' => 12, 'header' => implode("\r\n", $kopf), 'ignore_errors' => true,
+            'timeout' => (rk_frist() > 0 ? max(2, min(12, (int) $rest)) : 12),
+            'header' => implode("\r\n", $kopf), 'ignore_errors' => true,
             'follow_location' => 0, 'max_redirects' => 1)));
         /* Dieselbe Obergrenze wie im curl-Zweig - sonst haengt es davon ab,
          * ob php-curl geladen ist, ob eine Quelle den Lauf umbringen kann.
@@ -1138,6 +1282,21 @@ function rk_holen($url, $mit_zugang = false)
         if ($text === false) { return array(null, 'NICHT_ERREICHBAR'); }
     }
     if ($code === 401 || $code === 403) { return array(null, 'ZUGANG_ABGELEHNT'); }
+    /* Jeder andere Fehlercode ebenfalls. Bis 0.11.2 ging eine Antwort mit
+     * 404, 500 oder 502 unbesehen durch json_decode(): der Pfad wurde nicht
+     * gefunden, der Raum stand auf ok=0, und in meldungen stand NICHTS -
+     * der Anwender sah einen stummen Raum ohne Grund und suchte am Pfad.
+     * rk_struktur_holen() macht es seit jeher richtig. */
+    if ($code > 0 && ($code < 200 || $code > 299)) {
+        /* Die Nummer gehoert ins Protokoll, nicht in den Meldungscode:
+         * der wird ueber rk_t('MELD.' . <code>) in einen Satz
+         * uebersetzt, und ein je Fehlercode anderer Schluessel haette
+         * in den Sprachdateien nie einen. */
+        rk_log_gebremst('http_' . rk_wirt($url) . '_' . (int) $code,
+            'Die Quelle ' . rk_wirt($url) . ' hat mit HTTP ' . (int) $code
+            . ' geantwortet. Es wurde kein Wert uebernommen.', 3600);
+        return array(null, 'HTTP_FEHLER');
+    }
     $d = json_decode((string) $text, true);
     if (!is_array($d)) {
         /* Kommt HTML statt JSON zurueck, hat ein Anmeldeportal oder ein
@@ -1349,11 +1508,17 @@ function rk_struktur_holen($ms, $zeit = 30)
 /**
  * Je Raum den Temperatur- und den Feuchtebaustein vorschlagen.
  *
- * ZUGEORDNET WIRD UEBER DEN RAUM, NICHT UEBER DEN NAMEN. An der Anlage vom
- * 29.08.2026 heissen dieselben Kacheln je nach Raum
+ * ZUGEORDNET WIRD UEBER DEN RAUM, NICHT UEBER DEN NAMEN. An einer echten
+ * Anlage heissen dieselben Kacheln je nach Raum ganz verschieden - mal
+ * nach dem Zimmer, mal nach der Person, die darin wohnt, mal nach dem
+ * Stockwerk:
  *
- *     "01) Temperatur Kueche"      "01) Temperatur OG Leonie"
- *     "01) Temperatur Christian"   "01) Temperatur OG Schlafzimmer"  (= Eltern)
+ *     "01) Temperatur Kueche"       "01) Temperatur OG Kinderzimmer"
+ *     "01) Temperatur Arbeitsraum"  "01) Temperatur OG Schlafzimmer"
+ *
+ * (Die Beispiele trugen bis 0.11.2 die Vornamen aus dem Haushalt, an dem
+ * gemessen wurde - in ausgeliefertem Quelltext haben die nichts zu
+ * suchen.)
  *
  * Ueber den Namen ginge die Zuordnung also schief, ueber den Raum nicht.
  * Der Name entscheidet nur, WELCHE der beiden Groessen ein Baustein traegt.
@@ -1413,7 +1578,18 @@ function rk_fuehler_vorschlag($bausteine, $nur_kategorie = '')
  */
 function mb_strtolower_ersatz($s)
 {
-    $s = strtolower((string) $s);
+    /* NICHT strtolower(): das ist bis PHP 8.1 gebietsschema-abhaengig und
+     * bildet unter einem Einbyte-Gebietsschema auch das Byte 0xC3 der
+     * UTF-8-Folge mit ab. Aus "L" + 0xC3 0xBC + "ften" wurde dann 0xE3,
+     * das Ausschlusswort griff nicht mehr, und der Assistent trug einen
+     * Merker namens "Lueften Feuchte" als Feuchtequelle ein - der Raum
+     * meldete danach dauerhaft 1 % relative Feuchte. Gemessen am
+     * 05.09.2026 unter PHP 7.4.33 mit LC_CTYPE German_Germany.1252: der
+     * eigene Selbsttest fiel an genau dieser Stelle durch, unter 8.4.24
+     * nicht. strtr() mit ausgeschriebenen Tabellen kennt kein
+     * Gebietsschema und arbeitet Byte fuer Byte. */
+    $s = strtr((string) $s, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                            'abcdefghijklmnopqrstuvwxyz');
     return strtr($s, array("\xc3\x84" => "\xc3\xa4", "\xc3\x96" => "\xc3\xb6",
                            "\xc3\x9c" => "\xc3\xbc"));
 }
@@ -1677,9 +1853,13 @@ function rk_verlauf_schreiben($v)
     $tmp = $ziel . '.tmp.' . getmypid();
     $fh = @fopen($tmp, 'c');
     if ($fh === false) { return false; }
-    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
-    fflush($fh);
-    fclose($fh);
+    /* `!== false` genuegt nicht: bei voller Platte schreibt fwrite() nur
+     * einen Teil und liefert dessen Laenge zurueck. Das galt als Erfolg,
+     * und die abgeschnittene Nebendatei wurde ueber die gute Datei
+     * umbenannt. Auch fflush() und fclose() koennen ENOSPC nachreichen. */
+    $ok = ftruncate($fh, 0) && fwrite($fh, $json) === strlen($json);
+    if (!fflush($fh)) { $ok = false; }
+    if (!fclose($fh)) { $ok = false; }
     if (!$ok) { @unlink($tmp); return false; }
     if (!@rename($tmp, $ziel)) { @unlink($tmp); return false; }
     return true;
@@ -1990,7 +2170,9 @@ function rk_verlauf_werte($vr, $jetzt, $volumen = 0, $trend_min = 60)
      * Duschstoss: ein Sprung der absoluten Feuchte, wie ihn nur eine
      * Wasserquelle im Raum erzeugt.
      *
-     * Erkannt wird an der Steigung ueber die letzten zwanzig Minuten - nicht
+     * Erkannt wird an der Steigung ueber die letzten dreissig Minuten (die
+     * Schranke unten ist 1800 s; bis 0.11.2 sagte dieser Satz zwanzig, und
+     * eine der beiden Zahlen musste falsch sein) - nicht
      * an einem festen Schwellwert der Feuchte, denn wie feucht ein Bad
      * "normal" ist, weiss niemand. Abgeschaltet wird nicht nach einer festen
      * Minutenzahl, sondern wenn die Feuchte wieder unter den Wert VOR dem
@@ -2041,7 +2223,12 @@ function rk_verlauf_aussen(&$va, $t_aussen, $jetzt)
     if (!is_array($va)) { $va = array(); }
     if (!isset($va['tage']) || !is_array($va['tage'])) { $va['tage'] = array(); }
     if (!rk_t_gueltig($t_aussen)) { return; }
-    $tag = (int) $jetzt - ((int) $jetzt % 86400);
+    /* Der Kalendertag, nicht der UTC-Tag. `% 86400` teilt den Zeitstempel
+     * an der UTC-Mitternacht, also um 02:00 MESZ bzw. 01:00 MEZ - das
+     * Tagesmittel enthielt damit die beiden kaeltesten Stunden der
+     * FOLGENDEN Nacht, und ueber rk_aussen_mittel() verschob das an der
+     * Heizgrenze den Umschaltpunkt um einen Tag. */
+    $tag = (int) strtotime('today 00:00', (int) $jetzt);
     $korb_gut = isset($va['korb']) && is_array($va['korb']) && count($va['korb']) >= 3;
     if (!$korb_gut || (int) $va['korb'][0] !== $tag) {
         if ($korb_gut && (int) $va['korb'][1] > 0) {
@@ -2113,8 +2300,21 @@ function rk_abrufen($erzwingen = false)
      * verschiedene Zeitstempel - siehe unten. */
     $letzter_lauf = isset($alt['lauf_ts']) ? (int) $alt['lauf_ts']
         : (isset($alt['ts']) ? (int) $alt['ts'] : 0);
+    /* $abstand >= 0 gehoert dazu. Steht in stand.json ein Zeitstempel in
+     * der ZUKUNFT - ein Raspberry ohne gepufferte Uhr springt beim ersten
+     * Zeitabgleich -, ist der Abstand negativ und damit immer kleiner als
+     * der Takt: rk_abrufen(false) kehrte dann bei JEDEM Cron-Lauf um, bis
+     * die echte Zeit den Zeitstempel eingeholt hat. Gemessen am 05.09.2026
+     * mit lauf_ts + 30 Tage: drei Laeufe, Zaehler blieb auf 1. Dieselbe
+     * Wache steht an den drei anderen Zeitstellen laengst. */
+    /* Die Frist: der Takt abzueglich einer halben Minute, mindestens 30 s.
+     * Bei der Vorgabe 300 s sind das 270 s - der naechste Cron-Lauf findet
+     * damit immer einen beendeten Vorgaenger. */
+    rk_frist(time() + max(30, (int) $cfg['takt'] - 30));
+
+    $abstand = time() - $letzter_lauf;
     if (!$erzwingen && $letzter_lauf > 0
-        && (time() - $letzter_lauf) < (int) $cfg['takt']) {
+        && $abstand >= 0 && $abstand < (int) $cfg['takt']) {
         return $alt;
     }
 
@@ -2573,12 +2773,16 @@ function rk_mqtt_werte($stand)
         $z = 'raum' . (int) $nr . '/';
         $w[$z . 'name'] = $e['name'];
         $w[$z . 'ok'] = (int) $e['ok'];
+        /* gewinn und kuehlgewinn stehen seit 0.11.3 in dieser Liste: sie
+         * duerfen keinen fehlenden Wert als 0 veroeffentlichen, und ein
+         * fehlendes Thema ist in dieser Linie die eingefuehrte Form dafuer
+         * (spread und vlmin machen es seit jeher so). */
         foreach (array('t', 'rf', 'taupunkt', 'absolut', 'ober_t', 'ober_rf',
-                       'spread', 'vlmin', 'enth', 'co2') as $f) {
+                       'spread', 'vlmin', 'enth', 'co2', 'gewinn',
+                       'kuehlgewinn') as $f) {
             if (isset($e[$f]) && $e[$f] !== null) { $w[$z . $f] = $e[$f]; }
         }
         $w[$z . 'lueften'] = (int) $e['lueften'];
-        $w[$z . 'gewinn'] = $e['gewinn'];
         $w[$z . 'schimmel'] = (int) $e['schimmel'];
         $w[$z . 'feucht'] = (int) $e['feucht'];
         $w[$z . 'trocken'] = (int) $e['trocken'];
@@ -2888,10 +3092,23 @@ function rk_endpunkt()
 function rk_vorlage()
 {
     $cmds = array();
+    /* Die Kurznamen muessen EINDEUTIG sein. Bis 0.11.2 wurde nach zwoelf
+     * Zeichen abgeschnitten, ohne nachzusehen: "Kinderzimmer Nord" und
+     * "Kinderzimmer Sued" ergaben beide KINDERZIMMER, und die erzeugte
+     * Vorlage trug 50 Titel doppelt. Die Werte blieben richtig - die
+     * Befehlserkennung unterscheidet ;R1T= von ;R3T= -, aber in Loxone
+     * Config waren die Eingaenge nicht mehr auseinanderzuhalten, und
+     * beide Zahlen sehen aus wie eine Temperatur. Gemessen am 05.09.2026
+     * an der erzeugten Datei: 226 Befehle, 176 verschiedene Titel.
+     * Bei Gleichheit haengt die Raumnummer an - sie ist ohnehin die
+     * Nummer, unter der der Raum in der Antwortzeile steht. */
+    $vergeben = array();
     foreach (rk_raeume() as $nr => $r) {
         $kurz = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $r['name']));
         if ($kurz === '') { $kurz = 'RAUM' . $nr; }
         $kurz = substr($kurz, 0, 12);
+        if (isset($vergeben[$kurz])) { $kurz = substr($kurz, 0, 9) . '_' . $nr; }
+        $vergeben[$kurz] = true;
         foreach (rk_felder() as $feld => $info) {
             $cmds[] = array(
                 'title'   => 'RK_' . $kurz . '_' . $feld,
@@ -2912,7 +3129,14 @@ function rk_vorlage()
         'AABS' => array('g/m3',  0, 40, 'RK_FELD.AABS', '<v.2> g/m³'),
         'NLUEFT' => array('',    0, 99, 'RK_FELD.NLUEFT', ''),
         'NSCHIMMEL' => array('', 0, 99, 'RK_FELD.NSCHIMMEL', ''),
-        'ALTER' => array('s',    0, 86400, 'RK_FELD.ALTER', '<v.0> s'),
+        /* MinVal -1, nicht 0: rk_zeile() liefert -1, solange nie eine
+         * Messung gelang, und Loxone schnitte das an der Untergrenze ab -
+         * dort staende dann 0, also "gerade eben gemessen". Genau die
+         * stille Falschaussage, fuer die 0.11.0 bei AMPEL und SCHIMMEL
+         * MinVal -1 eingefuehrt hat. Und die Obergrenze deckelte das
+         * Wachstum bei 24 Stunden, waehrend die README sagt, es wachse -
+         * 100 Tage sind die ehrlichere Schranke. */
+        'ALTER' => array('s',   -1, 8640000, 'RK_FELD.ALTER', '<v.0> s'),
         'OK'   => array('',      0, 1, 'RK_FELD.OK', ''),
         'NOHNE' => array('',     0, 99, 'RK_FELD.NOHNE', ''),
         'NSTEHT' => array('',    0, 99, 'RK_FELD.NSTEHT', ''),
@@ -3251,7 +3475,10 @@ function rk_sicherung_lesen($roh)
         $neu[$k] = $wert;
         $anzahl++;
     }
-    if ($anzahl === 0) {
+    /* Nur wenn wirklich nichts Bekanntes DRINSTAND. Standen bekannte
+     * Schluessel da und wurden ihre Werte beanstandet, ist $anzahl
+     * ebenfalls 0 - der Satz waere dann unwahr. */
+    if ($anzahl === 0 && !$mangel) {
         $mangel[] = rk_t('EINST.SICH_LEER');
     }
     return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
@@ -3335,9 +3562,18 @@ function rk_fassung()
     static $v = null;
     if ($v !== null) { return $v; }
     $v = '';
+    /* Drei Kandidaten, nicht zwei. Installiert liegt diese Datei unter
+     * <home>/webfrontend/html/plugins/<ordner>/; der erste Kandidat zeigt
+     * dann auf <home>/webfrontend/html/plugin.cfg, wo keine liegt, und der
+     * zweite setzt eine plugin.cfg im Konfigordner voraus, die weder das
+     * Archiv mitbringt noch postinstall.sh ablegt. Ergebnis war ein leerer
+     * Fassungseintrag im Kopf jeder Sicherungsdatei - und auffallen konnte
+     * es nicht, weil im ausgepackten Archiv der erste Kandidat trifft.
+     * Der dritte liest die Plugin-Datenbank, die LoxBerry selbst fuehrt. */
     foreach (array(dirname(dirname(__DIR__)) . '/plugin.cfg',
                    rk_paths()['home'] . '/config/plugins/'
-                   . rk_paths()['plugin'] . '/plugin.cfg') as $p) {
+                   . rk_paths()['plugin'] . '/plugin.cfg',
+                   __DIR__ . '/plugin.cfg') as $p) {
         if (!is_file($p)) { continue; }
         foreach (file($p, FILE_IGNORE_NEW_LINES) ?: array() as $z) {
             if (preg_match('/^\s*VERSION\s*=\s*([0-9][0-9A-Za-z.\-]*)/', $z, $m)) {
@@ -3346,5 +3582,25 @@ function rk_fassung()
             }
         }
     }
+    if ($v === '') { $v = rk_fassung_aus_datenbank(); }
     return $v;
+}
+
+/** Die Fassung aus der Plugin-Datenbank, die LoxBerry selbst fuehrt. */
+function rk_fassung_aus_datenbank()
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return ''; }
+    $d = rk_json_lesen($p['home'] . '/data/system/plugindatabase.json');
+    if (!isset($d['plugins']) || !is_array($d['plugins'])) { return ''; }
+    foreach ($d['plugins'] as $e) {
+        if (!is_array($e)) { continue; }
+        $ord = isset($e['directories']['lbpplugindir'])
+            ? (string) $e['directories']['lbpplugindir']
+            : (isset($e['folder']) ? (string) $e['folder'] : '');
+        if ($ord !== '' && $ord === $p['plugin'] && isset($e['version'])) {
+            return (string) $e['version'];
+        }
+    }
+    return '';
 }

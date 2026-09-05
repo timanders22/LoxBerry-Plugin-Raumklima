@@ -113,11 +113,31 @@ function rk_selbstpruefung()
 
     /* ---- 3. Ist die Konfiguration heil? ----
      * Vier Zustaende, jeder mit seinem Satz. */
+    /* VIER Zustaende - und rk_config_lage() liefert genau diese vier:
+     * ok, kaputt, zweitschrift, leer. Bis 0.11.2 stand hier eine Tabelle
+     * mit 'fehlt', das die Funktion nie liefert; 'zweitschrift' und 'leer'
+     * fielen beide in den Rueckfall. Eine Minute nach einer geglueckten
+     * Selbstheilung sagte der Reiter Test dem Anwender deshalb, es gebe
+     * keine Konfiguration und es gaelten die Vorgabewerte. */
     $lage = rk_config_lage();
-    $lagetext = array('ok' => 'PRUEFTEXT.CFG_OK', 'kaputt' => 'PRUEFTEXT.CFG_KAPUTT',
-                      'fehlt' => 'PRUEFTEXT.CFG_FEHLT');
-    $add('PRUEF.CFG', $lage === 'ok' ? 1 : ($lage === 'kaputt' ? 0 : 2),
-         rk_t(isset($lagetext[$lage]) ? $lagetext[$lage] : 'PRUEFTEXT.CFG_FEHLT'));
+    $lagetext = array('ok'           => 'PRUEFTEXT.CFG_OK',
+                      'kaputt'       => 'PRUEFTEXT.CFG_KAPUTT',
+                      'zweitschrift' => 'PRUEFTEXT.CFG_ZWEITSCHRIFT',
+                      'leer'         => 'PRUEFTEXT.CFG_LEER');
+    $lagewert = array('ok' => 1, 'kaputt' => 0, 'zweitschrift' => 1, 'leer' => 2);
+    $add('PRUEF.CFG', isset($lagewert[$lage]) ? $lagewert[$lage] : 2,
+         rk_t(isset($lagetext[$lage]) ? $lagetext[$lage] : 'PRUEFTEXT.CFG_LEER'));
+
+    /* ---- 3b. In welcher Zeitzone rechnet das Plugin? ----
+     * Bis 0.11.2 setzte es keine. Ohne date.timezone rechnet PHP in UTC,
+     * und dann stehen Protokollzeitstempel, der Tageswechsel und die
+     * Ruhezeit gegen die Ortszeit verschoben - sichtbar wurde das
+     * nirgends. Jetzt steht hier, welche Zone gilt und woher sie kommt. */
+    $zone = rk_zeitzone();
+    $zq = rk_zeitzone_quelle();
+    $add('PRUEF.ZEITZONE', $zq === 'Rueckfall UTC' ? 2 : 1,
+         $zq === 'Rueckfall UTC' ? rk_t('PRUEFTEXT.ZONE_RUECKFALL')
+                                 : sprintf(rk_t('PRUEFTEXT.ZONE_OK'), $zone, $zq));
 
     /* ---- 4. Antwortet der eigene Endpunkt? ----
      * Zwischengespeichert, sonst ruft sich der Webserver bei jedem
@@ -168,7 +188,14 @@ function rk_selbstpruefung()
 
     /* ---- 8. Sind die Vorlagen wohlgeformt? ----
      * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config. */
-    if (!rk_raeume()) {
+    /* SimpleXML liegt auf Debian im Paket php-xml. Es steht seit 0.11.3 in
+     * dpkg/apt - aber ein Paket, das der Installer nicht nachziehen
+     * konnte, darf nicht den ganzen Reiter Test mit einem Fatal error
+     * umbringen. Dieselbe Wache wie bei curl, und der dritte Ausgang:
+     * "konnte nicht pruefen" ist weder Haken noch Kreuz. */
+    if (!function_exists('simplexml_load_string')) {
+        $add('PRUEF.VORLAGE', 2, rk_t('PRUEFTEXT.VORLAGE_KEIN_XML'));
+    } elseif (!rk_raeume()) {
         $add('PRUEF.VORLAGE', 2, rk_t('PRUEFTEXT.VORLAGE_LEER'));
     } else {
         list($vn, $vi) = rk_vorlage();
@@ -177,8 +204,11 @@ function rk_selbstpruefung()
         $fehler = libxml_get_errors();
         libxml_clear_errors();
         libxml_use_internal_errors($vorher);
+        /* Der Haken hing bis 0.11.2 allein an "wohlgeformt". Eine Vorlage
+         * mit null Eingaengen ist wohlgeformt und trotzdem unbrauchbar -
+         * die Zahl wurde ausgegeben, aber nicht beurteilt. */
         $cmds = $x !== false ? count($x->VirtualInHttpCmd) : 0;
-        $add('PRUEF.VORLAGE', $x !== false ? 1 : 0,
+        $add('PRUEF.VORLAGE', ($x !== false && $cmds > 0) ? 1 : 0,
              $x !== false ? sprintf(rk_t('PRUEFTEXT.VORLAGE_OK'), $vn, $cmds)
                           : (count($fehler) ? trim($fehler[0]->message)
                                             : rk_t('PRUEFTEXT.VORLAGE_UNLESBAR')));

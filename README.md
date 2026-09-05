@@ -3,7 +3,7 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.2 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.3 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
 
@@ -19,7 +19,7 @@ Für jeden eingerichteten Raum:
 | Schimmelrisiko | 1 ab 80 % relativer Feuchte an dieser Fläche |
 | Taupunktabstand | wie viele Kelvin dieser Fläche bis zum Tauwasser fehlen |
 | Vorlaufgrenze | kleinste Kühl-Vorlauftemperatur ohne Kondensat |
-| Schimmelampel | 0 unbedenklich · 1 beobachten · 2 Gefahr · 3 Tauwasser |
+| Schimmelampel | −1 keine Aussage · 0 unbedenklich · 1 beobachten · 2 Gefahr · 3 Tauwasser |
 | Nassstunden | wie lange die Fläche in 24 h und 7 Tagen über 80 % lag |
 | Lüften jetzt | 0/1 plus der Gewinn in g/m³ und der Grund |
 | Lüftungsdauer | Minuten bis zu einem Luftwechsel, und was er an Wärme kostet |
@@ -94,7 +94,9 @@ Messrauschen — bei einem Abruf alle fünf Minuten.
 ## Der Verlauf
 
 Zwölf Stunden im Fünfminutentakt und dreißig Tage als Stundenmittel, unter
-`data/plugins/raumklima/verlauf.json` (rund 6 kB je Raum). Erst damit lassen
+`data/plugins/raumklima/verlauf.json` (rund 30 kB je Raum, davon 25 kB die
+Stundenreihe; bis 0.11.2 stand hier „rund 6 kB“, das war nur die
+Fünfminutenreihe). Erst damit lassen
 sich drei Fragen beantworten, die wichtiger sind als jede Momentaufnahme:
 
 * Wie lange steht die kalte Fläche schon über 80 %? Schimmel wächst aus
@@ -141,18 +143,22 @@ jeder Raum eine **Art**:
 Fühler und bei der Raumart *Innenraum*. Bis 0.11.1 stand dort eine 0 — von
 „gemessen und unbedenklich" nicht zu unterscheiden. Wer einen Wächter auf
 `AMPEL = 0` legt, verließe sich sonst auf einen Fühler, der seit Tagen
-schweigt. `NAMPELLOS` zählt diese Räume; wie viele überhaupt Werte tragen,
-sagt `OK` daneben.
+schweigt. `NAMPELLOS` zählt diese Räume; wie viele **keine** Werte tragen, sagt
+`NOHNE` daneben (`OK` ist nur ein 0/1-Merkmal).
 
 Dasselbe gilt für `NASS24` und `NASS7T`: eine Stunde, in der über die kalte
 Fläche **nichts** bekannt war, zählt nicht als trockene Stunde mit, sondern
 gar nicht. Sonst erschiene ein tagelanger Ausfall der Außenquelle als
 lückenlos trockene Wand — und das ist die gefährliche Richtung.
 
-> **Nach dem Update auf 0.11.2 die Loxone-Vorlage neu importieren.**
-> `SCHIMMEL` reicht jetzt von −1 bis 1; mit der alten Vorlage schneidet
-> Loxone die −1 ab und zeigt wieder die 0, die hier vermieden werden soll.
-> (Für `AMPEL` gilt das schon seit 0.11.0.)
+> **Nach dem Update die Loxone-Vorlage neu importieren.**
+> `SCHIMMEL` reicht seit 0.11.2 von −1 bis 1 und `ALTER` seit 0.11.3
+> ebenfalls; mit der alten Vorlage schneidet Loxone die −1 ab und zeigt
+> wieder die 0, die hier vermieden werden soll. (Für `AMPEL` gilt das schon
+> seit 0.11.0.) 0.11.3 vergibt außerdem **eindeutige Kurznamen**: zwei
+> Räume, deren Namen in den ersten zwölf Buchstaben übereinstimmen
+> („Kinderzimmer Nord“ und „Kinderzimmer Süd“), bekamen bis dahin
+> dieselben Eingangsnamen.
 
 ## Nach Loxone
 
@@ -165,8 +171,10 @@ Zwei Wege, beide gleichzeitig nutzbar:
 Fehlende Werte werden **nicht** gesendet und als Strich angezeigt. Eine 0
 wäre bei einer Temperatur eine Falschaussage.
 
-**Ausfälle sind sichtbar.** `OK` zählt Räume *mit Werten*, nicht eingetragene
-Räume; je Raum sagen `RALTER` die Sekunden seit dem letzten gültigen Wert und
+**Ausfälle sind sichtbar.** `OK` ist **1**, sobald mindestens *ein* Raum
+Werte liefert, sonst 0 — ein Merkmal, kein Zähler. Wie viele Räume ohne
+Werte dastehen, sagt `NOHNE`; je Raum sagen `RALTER` die Sekunden seit dem
+letzten gültigen Wert und
 `STEHT`, ob sich der Wert seit einer einstellbaren Zeit überhaupt nicht mehr
 bewegt hat. Ein eingefrorener Fühler liefert sonst unauffällige Zahlen — nur
 immer dieselben —, und in Loxone fällt das nie auf, weil virtuelle Eingänge
@@ -209,7 +217,10 @@ Zeitabgleich.
 
 `ALTER` misst seit 0.11.0 das Alter der **Werte**, nicht mehr den Zeitpunkt des
 letzten Laufs. Bleibt eine Quelle stumm, wächst es — vorher stand dort
-dauerhaft eine Null.
+dauerhaft eine Null. Solange **nie** eine Messung gelang, steht `-1` da;
+seit 0.11.3 trägt die Vorlage dafür `MinVal=-1` (vorher 0 — Loxone schnitt
+die −1 ab und zeigte „gerade eben gemessen“), und die Obergrenze steht auf
+100 Tagen statt auf 24 Stunden.
 
 ## CO₂ und die Personenzahl
 

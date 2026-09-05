@@ -408,7 +408,13 @@ function rk_lueften($af_innen, $t_aussen, $rf_aussen, $mindest, $t_min, $af_unte
                     $wand_abstand = 1.0)
 {
     $af_aussen = rk_absolut($t_aussen, $rf_aussen);
-    $leer = array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'keine_daten',
+    /* gewinn = null, nicht 0.0. GEWINN ist g/m3 mit MinVal -40 - dort IST
+     * die Null ein gueltiger Messwert ("aussen genauso feucht wie innen").
+     * Ein Waechter in Loxone auf GEWINN < 0.5 konnte den stummen Fuehler
+     * deshalb nicht von der windstillen, gleich feuchten Nacht
+     * unterscheiden. Die Nachbarfelder machen es laengst richtig: SPREAD
+     * und VLMIN kommen als '-', DAUER und KOSTEN als -1. */
+    $leer = array('lohnt' => 0, 'gewinn' => null, 'grund' => 'keine_daten',
                   'sperre' => 0);
     if ($af_innen === null || $af_aussen === null) { return $leer; }
 
@@ -480,10 +486,12 @@ function rk_lueften($af_innen, $t_aussen, $rf_aussen, $mindest, $t_min, $af_unte
 function rk_kuehlen($t_innen, $rf_innen, $t_aussen, $rf_aussen, $t_soll,
                     $spanne = 1.0, $af_zusatz = 1.0, $lief = false, $hyst = 0.5)
 {
-    $leer = array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'keine_daten');
+    /* Wie bei rk_lueften(): KUEHLG ist K mit MinVal -40, die Null ist dort
+     * ein Messwert. Ohne Daten und ohne Zieltemperatur gibt es keinen. */
+    $leer = array('lohnt' => 0, 'gewinn' => null, 'grund' => 'keine_daten');
     if (!rk_t_gueltig($t_innen) || !rk_t_gueltig($t_aussen)) { return $leer; }
     if (!is_numeric($t_soll) || (float) $t_soll <= 0) {
-        return array('lohnt' => 0, 'gewinn' => 0.0, 'grund' => 'kein_ziel');
+        return array('lohnt' => 0, 'gewinn' => null, 'grund' => 'kein_ziel');
     }
     $t_innen = (float) $t_innen; $t_aussen = (float) $t_aussen;
     $gewinn = round($t_innen - $t_aussen, 2);
@@ -1009,10 +1017,10 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         'nass24'    => -1,
         'nass7t'    => -1,
         'lueften'   => 0,
-        'gewinn'    => 0.0,
+        'gewinn'    => null,
         'grund'     => 'keine_daten',
         'kuehlen'   => 0,
-        'kuehlgewinn' => 0.0,
+        'kuehlgewinn' => null,
         'dauer'     => -1,
         'kosten'    => -1,
         'erfolg'    => -1,
@@ -1424,10 +1432,14 @@ function rk_meteo_lesen($daten)
             continue;
         }
         /* Open-Meteo liefert mit timezone=auto Ortszeit OHNE Zeitzonenangabe
-         * ("2026-08-10T13:00"). strtotime nimmt dann die Zeitzone des
-         * Systems - und die stimmt auf einem LoxBerry mit der Ortszeit
-         * ueberein. Ein blindes gmmktime() waere hier um die Zeitzone
-         * daneben, und die Empfehlung um Stunden. */
+         * ("2026-08-10T13:00"). strtotime nimmt dann die Zeitzone, die in
+         * PHP gesetzt ist. Bis 0.11.2 setzte das Plugin gar keine, und ohne
+         * date.timezone in der php.ini rechnet PHP in UTC - der Satz, der
+         * hier stand ("die stimmt auf einem LoxBerry mit der Ortszeit
+         * ueberein"), war eine Annahme ueber die php.ini, keine gemessene
+         * Eigenschaft. Seit 0.11.3 setzt rk_zeitzone() sie aus
+         * /etc/timezone; der Reiter Test zeigt, welche gerade gilt.
+         * Ein blindes gmmktime() waere hier um die Zeitzone daneben. */
         $ts = strtotime((string) $h['time'][$i]);
         if ($ts === false || $ts <= 0) { continue; }
         $w = array('t' => (float) $h['temperature_2m'][$i],

@@ -24,15 +24,55 @@
 # beliebig alt sein kann. Und GEZAEHLT wird, was wirklich weg ist: eine
 # Schlussmeldung, die mehr behauptet als geschehen ist, ist schlimmer als
 # gar keine.
-SELF=$(cd "$(dirname "$0")" && pwd)
-PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
-BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+# BIS 0.11.2 RECHNETE DIESES SKRIPT SEINE PFADE AUS DEM EIGENEN ABLAGEORT.
+#
+# Das kann in keiner Lage zugleich stimmen: `basename $SELF/..` setzt den
+# Elternordner als Plugin-Ordner an, `$SELF/../../..` setzt das Skript
+# drei Ebenen unter der Wurzel an - Plugin-Ordner liegen aber drei, nicht
+# zwei Ebenen darunter. Gemessen am 05.09.2026 an drei Ablageorten:
+#
+#   data/system/uninstall/<name>   ohne und mit LBHOMEDIR:  0 geloescht
+#   <plugindir>/uninstall/uninstall  mit LBHOMEDIR:         5 geloescht
+#   <plugindir>/uninstall/uninstall  ohne:  BASE = <home>/bin, findet nichts
+#
+# Im Fehlfall meldete es trotzdem "entfernt ... darunter Zweitschriften,
+# Zugangsdaten und Protokolle", und {"passwort":"..."} blieb im Klartext
+# liegen. Jetzt kommen Ordner und Wurzel aus den Argumenten, die der
+# Installer uebergibt - wie in postinstall.sh und preupgrade.sh -, und
+# ohne brauchbare Wurzel wird abgebrochen statt Vollzug gemeldet.
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-raumklima}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    # config/system ist das unterscheidende Merkmal, nicht config/plugins.
+    # Auf einem Rechner, auf dem Pruefstaende ohne LBHOMEDIR gelaufen
+    # sind, liegen config/plugins, data/plugins und webfrontend auch im
+    # Wurzelverzeichnis herum - gemessen am 05.09.2026 an C:\. Eine
+    # general.json hat dort keiner angelegt; ein LoxBerry hat immer eine.
+    for K in "$SELF/../../.." "$SELF/../../../.." "$SELF/../.."; do
+        if [ -d "$K/config/plugins" ] && [ -d "$K/data/plugins" ] && [ -f "$K/config/system/general.json" ]; then
+            BASE=$(cd "$K" && pwd)
+            break
+        fi
+    done
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    echo "<WARNING> Die LoxBerry-Wurzel liess sich nicht bestimmen."
+    echo "<WARNING> Es wurde NICHTS geloescht. Bitte von Hand entfernen:"
+    echo "<WARNING>   config/plugins/raumklima.backup*.json"
+    echo "<WARNING>   config/plugins/raumklima/geheim.json"
+    echo "<WARNING>   data/plugins/raumklima  und  log/plugins/raumklima"
+    exit 0
+fi
 
 WEG=0
 for F in \
     "$BASE/config/plugins/$PFOLDER.backup.json" \
     "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
     "$BASE/config/plugins/$PFOLDER.backup.raumklima.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.verlauf.json" \
     "$BASE/config/plugins/$PFOLDER/geheim.json"
 do
     if [ -e "$F" ]; then
@@ -57,7 +97,8 @@ REST=0
 for F in \
     "$BASE/config/plugins/$PFOLDER.backup.json" \
     "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
-    "$BASE/config/plugins/$PFOLDER.backup.raumklima.json"
+    "$BASE/config/plugins/$PFOLDER.backup.raumklima.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.verlauf.json"
 do
     [ -e "$F" ] && { echo "<WARNING> Nicht entfernt: $F"; REST=$((REST + 1)); }
 done

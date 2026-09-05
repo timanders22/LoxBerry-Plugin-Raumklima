@@ -18,11 +18,41 @@ ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 
+# Gesichert wird nur, was auch INHALT hat.
+#
+# Bis 0.11.2 stand hier nur `[ -f "$CF" ]`. Steht raumklima.json auf der
+# mitgelieferten Vorgabe `{}` - genau das schreibt postinstall.sh, wenn
+# keine Datei da ist -, kopierte diese Zeile die Vorgabe ueber die GUTE
+# Zweitschrift daneben und meldete "gesichert". Der letzte Rueckweg war
+# damit weg. Gemessen am 05.09.2026: Zweitschrift vorher mit Raeumen und
+# Aktionstoken, nachher `{}`.
 CF="$BASE/config/plugins/$PFOLDER/raumklima.json"
 if [ -f "$CF" ]; then
-    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
-        && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
-        && echo "<OK> Konfiguration gesichert."
+    INHALT=$(tr -d ' \t\r\n' < "$CF")
+    if [ "$INHALT" = "{}" ] || [ -z "$INHALT" ]; then
+        echo "<INFO> raumklima.json ist leer - die vorhandene Zweitschrift"
+        echo "<INFO> bleibt unangetastet."
+    else
+        cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
+            && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
+            && echo "<OK> Konfiguration gesichert."
+    fi
+fi
+
+# Der Verlaufsspeicher (B7).
+#
+# data/plugins/<ordner>/ raeumt der Installer beim Upgrade vollstaendig ab
+# (purge_installation, Aufrufstelle im Upgrade-Zweig). Bis 0.11.2 sicherte
+# ihn niemand: nach JEDEM Update standen Nassstunden, Lueftungserfolg und
+# Feuchteeintrag wieder auf null - lautlos, ohne eine Zeile. Genau die drei
+# Fragen, die die README als wichtiger bezeichnet als jede Momentaufnahme.
+# Die Datei traegt keine Zugangsdaten, aber Raumnamen; deshalb 600 und ein
+# Eintrag in uninstall.
+VL="$BASE/data/plugins/$PFOLDER/verlauf.json"
+if [ -s "$VL" ]; then
+    cp -p "$VL" "$BASE/config/plugins/$PFOLDER.backup.verlauf.json" \
+        && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.verlauf.json" 2>/dev/null \
+        && echo "<OK> Verlaufsspeicher gesichert."
 fi
 echo "<OK> preupgrade abgeschlossen."
 

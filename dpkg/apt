@@ -14,4 +14,10 @@
 # Verzeichnis scheitert das mit <ERROR> Cannot open APT file., und die
 # Paketliste kam leer an - gemessen am 29.08.2026 in einem echten
 # Installationsprotokoll. Dieselbe Klasse wie cron/cron.XXmin.
+# php-xml   - der Reiter Test prueft die erzeugte Loxone-Vorlage mit
+#             simplexml_load_string(). Auf Debian liegt SimpleXML im
+#             Paket php-xml; bis 0.11.2 stand es hier nicht, und ohne die
+#             Erweiterung stirbt der ganze Reiter mit einem Fatal error.
+#             Der Code sichert es zusaetzlich mit function_exists ab.
 php-curl
+php-xml

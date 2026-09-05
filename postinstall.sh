@@ -116,6 +116,20 @@ if [ -f "$PBIN/raumklima_abruf.php" ]; then
     fi
 fi
 
+# Den Verlaufsspeicher zurueckholen (B7), bevor die Rechte gesetzt werden.
+# preupgrade.sh hat ihn neben den Ordner gelegt, weil der Installer den
+# Ordner ausraeumt. Zurueckgeholt wird nur, wenn dort nichts steht - eine
+# frische Reihe ist mehr wert als eine alte, und ueberschreiben wollen wir
+# nichts.
+VLZ="$BASE/config/plugins/$PFOLDER.backup.verlauf.json"
+if [ -s "$VLZ" ]; then
+    if [ ! -s "$PDATA/verlauf.json" ]; then
+        cp -p "$VLZ" "$PDATA/verlauf.json" \
+            && echo "<OK> Verlaufsspeicher wiederhergestellt."
+    fi
+    rm -f "$VLZ"
+fi
+
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 
 echo "<OK> Installation abgeschlossen."
