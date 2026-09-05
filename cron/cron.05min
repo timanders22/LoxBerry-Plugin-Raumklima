@@ -9,4 +9,14 @@
 # REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
 # Ausdruecklich ueber php aufgerufen: geht bei einem misslungenen Update das
 # Ausfuehrungsrecht verloren, schluege der unmittelbare Aufruf lautlos fehl.
-php "REPLACELBPBINDIR/raumklima_abruf.php" >/dev/null 2>&1
+# Die Fehlerausgabe geht NICHT nach /dev/null.
+#
+# Bis 0.11.2 stand hier `>/dev/null 2>&1`. Findet raumklima_abruf.php
+# seine Bibliothek nicht, schreibt es "rk_lib.php wurde nicht gefunden."
+# nach stderr und endet mit 2 - und ein Protokolleintrag ist dann
+# unmoeglich, weil das Protokollieren selbst in rk_lib.php steckt. Ein
+# Plugin, das nach einem misslungenen Update gar nicht mehr laeuft, sah
+# von aussen aus wie eines, das laeuft. Die uebliche Ausgabe bleibt
+# verworfen, nur die Fehlerausgabe wird aufgehoben.
+php "REPLACELBPBINDIR/raumklima_abruf.php" \
+    >/dev/null 2>>"REPLACELBPLOGDIR/cron_fehler.log"

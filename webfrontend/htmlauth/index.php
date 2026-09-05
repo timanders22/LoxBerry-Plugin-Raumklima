@@ -42,8 +42,15 @@ if (!function_exists('rk_e')) {
     function rk_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 }
 
-/* Die Reiter, an EINER Stelle. Leiste, Pruefausdruck und die serverseitige
- * Klasse sm-active entstehen daraus - vergessen kann man nichts mehr. */
+/* Die Positivliste fuer activetab entsteht HIERAUS.
+ *
+ * Nicht mehr: die Leiste weiter unten ist ausgeschrieben, und das ist
+ * Absicht - eine foreach-Schleife macht sie fuer hausstandard_pruefen.py
+ * unsichtbar (Spalte tab zeigt dann einen Strich, und ein Strich sieht
+ * aus wie ein Haken). Bis 0.11.2 behauptete dieser Kommentar, auch Leiste
+ * und sm-active entstuenden daraus; gemessen wird $rk_reiter genau einmal
+ * gelesen, fuer $rk_muster. Dass die drei Stellen zusammenpassen, misst
+ * deshalb der Reiter Test nach - nicht dieser Satz. */
 $rk_reiter = array(
     'settings' => 'REITER.EINSTELLUNGEN',
     'mqtt'     => null,                    // Eigenname, wird nicht uebersetzt
@@ -77,10 +84,12 @@ $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * wachposten_pruefen.py misst das nach und meldet die Zahl der ungedeckten
  * Zweige - vor dem Einbau erschien die Linie in seiner Tabelle ueberhaupt
  * nicht. */
-$rk_merkmal_fehlt = false;
+/* $rk_merkmal_fehlt gab es bis 0.11.2 - zweimal zugewiesen, nirgends
+ * gelesen. Eine Variable, die aussieht, als wuerde ein abgewiesener POST
+ * gesondert behandelt, obwohl er es nicht wird. Sichtbar wird der Fall
+ * ueber FEHLER.FREMDES_FORMULAR in der Sammelliste, und das genuegt. */
 if ($rk_post && !rk_formtoken_ok()) {
     $rk_post = false;
-    $rk_merkmal_fehlt = true;
     $rk_fehler[] = rk_t('FEHLER.FREMDES_FORMULAR');
     rk_log('Ein POST ohne gueltiges Formularmerkmal wurde abgewiesen.');
 }
@@ -136,9 +145,19 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
     /* Die Zugangsdaten kommen nur mit, wenn der Haken gesetzt ist. Ein
      * Passwort geht nicht ungefragt in eine Datei, die jemand herunterlaedt -
      * und der Kopf der Datei sagt hinterher, was wirklich drin steht. */
+    /* Das Protokoll sagt, was WIRKLICH in der Datei steht - nicht, was der
+     * Haken wollte. Bis 0.11.2 fragte diese Zeile den Haken: war er
+     * gesetzt, aber nichts hinterlegt, schrieb das Protokoll "MIT
+     * Zugangsdaten", waehrend der Kopf der Datei das Gegenteil sagte.
+     * Wer spaeter nachsieht, ob eine herausgegebene Datei ein Geheimnis
+     * trug, bekam die falsche Auskunft - in der gefaehrlichen Richtung.
+     * Deshalb dasselbe Kriterium wie in rk_sicherung_bauen(). */
     $rk_mit_zugang = !empty($_POST['sich_zugang']);
-    $rk_js = rk_sicherung_bauen(rk_config(), $rk_mit_zugang ? rk_geheim() : null);
-    if ($rk_mit_zugang) {
+    $rk_zug = $rk_mit_zugang ? rk_geheim() : null;
+    $rk_zug_drin = is_array($rk_zug)
+        && ((string) $rk_zug['benutzer'] !== '' || (string) $rk_zug['passwort'] !== '');
+    $rk_js = rk_sicherung_bauen(rk_config(), $rk_zug);
+    if ($rk_zug_drin) {
         rk_log('Einstellungen gesichert - MIT Zugangsdaten der Quelle.');
     } else {
         rk_log('Einstellungen gesichert - ohne Zugangsdaten.');
@@ -723,7 +742,17 @@ if ($rk_post && isset($_POST['speichern'])) {
         if (!empty($_POST['zug_loeschen'])) {
             $rk_g = array('benutzer' => '', 'passwort' => '');
         }
-        rk_geheim_speichern($rk_g);
+        /* Den Rueckgabewert ansehen. Die beiden anderen Aufrufstellen
+         * dieser Datei taten es seit 0.11.1, diese nicht - und sie ist die
+         * einzige, an der ein Anwender im Normalbetrieb Benutzername und
+         * Passwort eintraegt. Scheiterte das Schreiben an Rechten oder
+         * voller Platte, meldete die Seite trotzdem "gespeichert", und die
+         * Quelle antwortete danach mit 401. Dasselbe galt fuer den Haken
+         * "Zugangsdaten loeschen": er wirkte scheinbar, das Passwort blieb
+         * auf der Platte. */
+        if (!rk_geheim_speichern($rk_g)) {
+            $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+        }
     }
 
     /* ===================== Felder des Reiters MQTT ===================== */
@@ -1508,15 +1537,14 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
  * an einer Stelle verzweigt, an der zweiten weiter behauptet. */
 $rk_gwf = (int) $rk_mqtt['fassung'];
 ?>
+<?php /* Zwei Faelle, nicht drei. Bis 0.11.2 standen hier ein
+         elseif-Zweig fuer Fassung 1 und ein else-Zweig fuer "nicht
+         feststellbar" - Zeichen fuer Zeichen derselbe Inhalt. Wer die
+         Verzweigung spaeter anfasst, muesste erst messen, ob das Absicht
+         war. Der Unterschied, auf den es ankommt, steckt in
+         rk_abo_text(): der nennt bei fassung = 0 beide Saetze. */ ?>
 <?php if ($rk_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= rk_abo_text() ?></div>
-<?php } elseif ($rk_gwf === 1) { ?>
-<div class="sm-warnung"><?= rk_abo_text() ?></div>
-<table class="sm-tbl">
-<tr><th><?= rk_e(rk_t('MQTT.SP_ABO')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= rk_e($rk_thema . '/#') ?></span></td>
-    <td><?= rk_e(rk_t('MQTT.ABO_ALLES')) ?></td></tr>
-</table>
 <?php } else { ?>
 <div class="sm-warnung"><?= rk_abo_text() ?></div>
 <table class="sm-tbl">
@@ -1584,6 +1612,13 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <tr><td><?= rk_e(rk_t('LOX.Z_STATUS')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=status') ?></span></td></tr>
 <tr><td><?= rk_e(rk_t('LOX.Z_JSON')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=json') ?></span></td></tr>
 <tr><td><?= rk_e(rk_t('LOX.Z_ABRUFEN')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=abrufen') ?></span></td></tr>
+<?php /* Die vierte Adresse. Bis 0.11.2 stand sie nur im Kopfkommentar von
+         webfrontend/html/index.php - der Anwender musste sie aus dem
+         Quelltext holen. Die Nummer ist der erste eingerichtete Raum,
+         damit das Beispiel an dieser Anlage wirklich antwortet. */
+   $rk_bsp = 1;
+   foreach (array_keys(rk_raeume()) as $rk_bn) { $rk_bsp = (int) $rk_bn; break; } ?>
+<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=raum&nr=' . $rk_bsp) ?></span></td></tr>
 </table>
 
 <div class="sm-legende">
