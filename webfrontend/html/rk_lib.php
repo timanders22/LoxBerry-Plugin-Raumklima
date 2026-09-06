@@ -2653,6 +2653,33 @@ function rk_abrufen($erzwingen = false)
  * bildet das Gateway erfundene Themen. Ein Tabulator schadet ebenso, weil
  * Leerzeichen Thema und Wert trennt.
  */
+/**
+ * Eine Zeitspanne so, wie ein Mensch sie liest.
+ *
+ * "vor 1788652628 Sekunden" ist keine Auskunft, und "vor 5400 Sekunden"
+ * auch nicht. Die Zahl bleibt in der Antwortzeile und ueber MQTT roh -
+ * dort rechnet Loxone damit -, nur die Oberflaeche schreibt sie aus.
+ * Gerundet wird nach unten, damit nie mehr behauptet wird, als vergangen
+ * ist.
+ */
+function rk_dauer_text($sekunden)
+{
+    $s = (int) $sekunden;
+    if ($s < 0)   { return rk_t('ALLG.NIE'); }
+    if ($s < 5)   { return rk_t('DAUER.GERADE'); }
+    if ($s < 90)  { return sprintf(rk_t('DAUER.SEKUNDEN'), $s); }
+    if ($s < 5400) {
+        $m = (int) floor($s / 60);
+        return sprintf(rk_t($m === 1 ? 'DAUER.MINUTE' : 'DAUER.MINUTEN'), $m);
+    }
+    if ($s < 172800) {
+        $h = (int) floor($s / 3600);
+        return sprintf(rk_t($h === 1 ? 'DAUER.STUNDE' : 'DAUER.STUNDEN'), $h);
+    }
+    $t = (int) floor($s / 86400);
+    return sprintf(rk_t($t === 1 ? 'DAUER.TAG' : 'DAUER.TAGE'), $t);
+}
+
 function rk_mqtt_wert_saeubern($v)
 {
     $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
@@ -2718,7 +2745,8 @@ function rk_mqtt_senden($stand)
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }   // lieber nichts als eine erfundene 0
-        @fwrite($s, 'publish ' . $praefix . '/' . $k . ' ' . rk_mqtt_wert_saeubern($v));
+        @fwrite($s, (rk_mqtt_retain($k) ? 'retain ' : 'publish ')
+                  . $praefix . '/' . $k . ' ' . rk_mqtt_wert_saeubern($v));
     }
     fclose($s);
     return true;
@@ -2806,6 +2834,48 @@ function rk_mqtt_werte($stand)
 }
 
 /** Die Themen mit ihrer Bedeutung - fuer den Reiter MQTT. */
+/**
+ * Wird dieses Thema mit Retain veroeffentlicht?
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): **Zustaende** retained, damit
+ * Loxone nach einem Neustart des Miniservers oder des Gateways sofort den
+ * Stand hat; **Messwerte mit Zeitbezug** nicht, damit nach einem Ausfall
+ * kein alter Wert als aktuell erscheint; das **Lebenszeichen** nie.
+ *
+ * Bis 0.11.4 schickte rk_mqtt_senden() ausnahmslos 'publish'. Am
+ * laufenden Broker gemessen (06.09.2026): 26 Themen im Verkehr, **0**
+ * retained - waehrend README und Hilfe dem Anwender ausdruecklich sagten,
+ * die Werte gingen "ueber MQTT mit Retain" hinaus. Dass der Weg traegt,
+ * ist an derselben Anlage belegt: Intercom 2.2.7 schickt ueber denselben
+ * UDP-Eingang 'retain ' und hat vier retained Themen im Broker.
+ *
+ * Die Liste ist eine POSITIVLISTE. Ein Thema, das hier nicht steht, geht
+ * ohne Retain hinaus - die sichere Richtung: ein nicht retained Zustand
+ * ist unbequem, ein retained Messwert eine Falschaussage. Wer ein Thema
+ * ergaenzt, entscheidet hier mit; der Reiter Test zaehlt beide Mengen.
+ */
+function rk_mqtt_retain($thema)
+{
+    static $zustand = null;
+    if ($zustand === null) {
+        $zustand = array_flip(array(
+            /* Sammelzustaende */
+            'ok', 'raeume', 'lueften', 'schimmel', 'feucht', 'trocken',
+            'ohne', 'steht', 'kuehlen', 'co2', 'fenster', 'ampellos',
+            'schwuel', 'zwang', 'sperre', 'vereist', 'heizfall',
+            /* Zustaende je Raum */
+            'raumN/name', 'raumN/ok', 'raumN/lueften', 'raumN/schimmel',
+            'raumN/feucht', 'raumN/trocken', 'raumN/steht', 'raumN/ampel',
+            'raumN/kuehlen', 'raumN/co2_hoch', 'raumN/fenster',
+            'raumN/fenster_zu', 'raumN/schwuel', 'raumN/vereist',
+            'raumN/ruhe', 'raumN/zwang', 'raumN/dusche', 'raumN/kuehlfrei',
+            'raumN/sperre',
+        ));
+    }
+    $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
+    return isset($zustand[$t]);
+}
+
 function rk_mqtt_themen()
 {
     return array(

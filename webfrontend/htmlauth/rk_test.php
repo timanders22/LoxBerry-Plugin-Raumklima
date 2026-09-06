@@ -310,7 +310,13 @@ function rk_test_themen_vergleich()
     $n = count($gesendet);
     if ($n === 0) { return array(0, rk_t('PRUEFTEXT.THEMEN_KEINE')); }
     if (!$fehlt_tab && !$fehlt_send) {
-        return array(1, sprintf(rk_t('PRUEFTEXT.THEMEN_GLEICH'), $n));
+        /* Seit 0.11.5 steht dabei, wie viele davon retained hinausgehen -
+         * sonst ist die Zusage im Reiter Loxone eine Behauptung. */
+        $ret = 0;
+        foreach (array_keys($gesendet) as $rk_t2) {
+            if (rk_mqtt_retain($rk_t2)) { $ret++; }
+        }
+        return array(1, sprintf(rk_t('PRUEFTEXT.THEMEN_GLEICH'), $n, $ret));
     }
     /* Ein Thema, das nur bei besonderer Einrichtung entsteht (Zuluft,
      * Aussenmittel), fehlt in der Sendemenge zu Recht. Gemeldet wird

@@ -827,7 +827,15 @@ $rk_g = rk_geheim();
 $rk_stand = rk_stand();
 $rk_raeume = rk_raeume();
 $rk_mqtt = rk_mqtt_zustand();
-$rk_alter = isset($rk_stand['ts']) ? max(0, time() - (int) $rk_stand['ts']) : -1;
+/* !empty statt isset - der Unterschied ist die ganze Wirkung.
+ *
+ * Solange keine einzige Messung gelungen ist, steht in stand.json `ts: 0`.
+ * isset() ist darauf WAHR, und `time() - 0` ist der Unix-Zeitstempel
+ * selbst. Die Kachel zeigte dann "Letzter Abruf vor 1788652628 Sekunden" -
+ * am Geraet gesehen am 06.09.2026. rk_zeile() und rk_mqtt_werte() machen es
+ * seit jeher mit !empty richtig; die Oberflaeche widersprach dem eigenen
+ * Endpunkt. */
+$rk_alter = !empty($rk_stand['ts']) ? max(0, time() - (int) $rk_stand['ts']) : -1;
 $rk_basis = rk_endpunkt();
 $rk_thema = trim((string) $rk_cfg['mqtt_topic'], '/');
 // Nur das Ende lesen, nicht die ganze Datei - siehe rk_log_ende().
@@ -885,6 +893,20 @@ if ($rk_rahmen) {
    Spalten. Betroffen war zuletzt die Spalte CO2-Grenze. */
 .sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
 .sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Die erste Spalte ist in allen vier Rolltabellen die RAUMNUMMER. Rollt
+   man nach rechts, lief sie bis 0.11.4 mit hinaus - und dann steht man
+   vor einer Reihe Eingabefelder, ohne zu wissen, zu welchem Raum sie
+   gehoeren. position:sticky haelt sie fest.
+
+   Zwei Dinge gehoeren dazu, sonst sieht es kaputt aus: eine eigene
+   Hintergrundfarbe (sonst rollt der Inhalt sichtbar DURCH die Zelle)
+   und ein Schatten als Rahmen - border-collapse zeichnet den rechten
+   Rahmen einer klebenden Zelle nicht mit. */
+.sm-breit .sm-tbl th:first-child,
+.sm-breit .sm-tbl td:first-child {
+    position: -webkit-sticky; position: sticky; left: 0; z-index: 2;
+    background: #fff; box-shadow: 1px 0 0 #ccc; }
+.sm-breit .sm-tbl th:first-child { background: #eef3e6; z-index: 3; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -939,6 +961,25 @@ if ($rk_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
+   05.09.2026 nach Regeln/04; Wortlaut aus VORLAGE_hausstandard.css.html.
+
+   Am Geraet gemessen (LoxBerry 4.0.0.15, components.css): die Rahmen-CSS
+   zeichnet seit der neuen Oberflaeche selbst einen Pfeil - Regel
+   ".lb-content select". Darauf kann sich eine Plugin-Oberflaeche nicht
+   verlassen: die Regel gibt es erst seit dieser Fassung, und die eigene
+   Feldregel loescht sie, sobald sie die Kurzform "background:" benutzt.
+   Dann steht ein Auswahlfeld da, das aussieht wie ein Textfeld.
+
+   Die Raute im SVG wird als %23 geschrieben: eine rohe Raute beendet in
+   einer CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+
 </style>
 
 <div class="sm-wrap">
@@ -974,8 +1015,9 @@ if ($rk_lage === 'kaputt') { ?>
     <span class="sm-hilfe"><?= rk_e(rk_t('ALLG.GEFAEHRDET')) ?></span>
   </div>
   <div class="sm-kachel"><?= rk_e(rk_t('ALLG.LETZTER_ABRUF')) ?>
-    <b><?= $rk_alter < 0 ? '&ndash;' : (int) $rk_alter ?></b>
-    <span class="sm-hilfe"><?= $rk_alter < 0 ? rk_e(rk_t('ALLG.NIE')) : rk_e(rk_t('ALLG.SEKUNDEN')) ?></span>
+    <b><?= rk_e(rk_dauer_text($rk_alter)) ?></b>
+    <span class="sm-hilfe"><?= $rk_alter < 0 ? rk_e(rk_t('ALLG.NIE_HILFE'))
+        : sprintf(rk_e(rk_t('ALLG.SEKUNDEN_GENAU')), (int) $rk_alter) ?></span>
   </div>
   <div class="sm-kachel">MQTT
     <b class="<?= $rk_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $rk_mqtt['autostart'] ? rk_e(rk_t('ALLG.EIN')) : rk_e(rk_t('ALLG.AUS')) ?></b>
@@ -1576,14 +1618,20 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 
 <h3><?= rk_e(rk_t('MQTT.H_THEMEN')) ?></h3>
 <table class="sm-tbl">
-<tr><th><?= rk_e(rk_t('MQTT.SP_THEMA')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<?php /* Die Spalte "retained" ist Pflicht, sobald eine Linie ueberhaupt
+         retained sendet (Regeln/07): wer ein Thema anlegt, schreibt hier
+         hin, ob es einen Neustart ueberlebt. Die Spalte wird GERECHNET,
+         nicht getippt - sie fragt dieselbe Funktion wie der Sendeweg. */ ?>
+<tr><th><?= rk_e(rk_t('MQTT.SP_THEMA')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th><th><?= rk_e(rk_t('MQTT.SP_RETAIN')) ?></th></tr>
 <?php foreach (rk_mqtt_themen() as $rk_k => $rk_schl) { ?>
 <tr>
   <td><span class="sm-mono"><?= rk_e($rk_thema . '/' . $rk_k) ?></span></td>
   <td><?= rk_e(rk_t($rk_schl)) ?></td>
+  <td><?= rk_mqtt_retain($rk_k) ? rk_e(rk_t('ALLG.JA')) : rk_e(rk_t('ALLG.NEIN')) ?></td>
 </tr>
 <?php } ?>
 </table>
+<p class="sm-hilfe"><?= rk_t('MQTT.RETAIN_HILFE') ?></p>
 <p class="sm-hilfe"><?= rk_t('MQTT.RAUMN_HILFE') ?></p>
 </div>
 

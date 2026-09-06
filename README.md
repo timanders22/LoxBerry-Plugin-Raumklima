@@ -3,9 +3,43 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.3 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.5 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.5
+
+- **Zustände gehen jetzt mit Retain hinaus.** Bis 0.11.4 schickte das Plugin
+  ausnahmslos `publish`; am laufenden Broker gemessen waren **0 von 26** Themen
+  retained — während diese README und die Hilfe das Gegenteil sagten. Jetzt
+  gehen die **36 Zustandsthemen** (`ok`, `schimmel`, `lueften`, `raumN/ampel`,
+  …) retained hinaus, damit der Miniserver nach einem Neustart sofort wieder
+  den Stand hat. **Messwerte mit Zeitbezug** (Temperatur, `alter`, Zeitstempel)
+  und das **Lebenszeichen** bleiben ohne Retain — sonst stünde nach einem
+  Ausfall ein alter Wert da und sähe aus wie ein aktueller. Welches Thema was
+  ist, steht jetzt als eigene Spalte in der Themenübersicht im Reiter *MQTT*;
+  die Spalte wird gerechnet, nicht getippt.
+- **„Letzter Abruf“ zeigt wieder eine Zeitspanne.** Solange keine Messung
+  gelungen war, stand dort der Unix-Zeitstempel als Sekundenzahl — eine
+  zehnstellige Zahl, die aussah wie ein Alter (`isset()` statt einer Prüfung
+  auf einen Wert größer null; `stand.json` führt dann `ts: 0`). Die Kachel
+  schreibt die Spanne jetzt aus („gerade eben“, „vor 75 Minuten“, „vor 2
+  Tagen“, „noch nie“) und nennt die genaue Sekundenzahl darunter. In der
+  Antwortzeile und über MQTT bleibt `ALTER` unverändert eine Zahl — dort
+  rechnet Loxone damit.
+- **Die Raumnummer bleibt beim Rollen stehen.** Die vier breiten Tabellen
+  rollen waagerecht; die erste Spalte lief bis 0.11.4 mit hinaus, und dann
+  standen Eingabefelder da, ohne dass man den Raum dazu sah.
+
+## Neu in 0.11.4
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 0.11.3 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`). Sonst ist an dieser
+  Fassung nichts geändert.
 
 ## Was es macht
 
@@ -207,8 +241,10 @@ Luftwechsel **austrägt**, und mit einer Wäschemenge, wie lange das dauert.
 
 ## Woran man merkt, dass der Abruf steht
 
-Ein virtueller Eingang behält seinen letzten Wert, über MQTT mit Retain sogar
-über jeden Neustart. Stirbt der Abruf, steht in Loxone weiter die letzte Zahl —
+Ein virtueller Eingang behält seinen letzten Wert. Bei den **Zuständen** hält
+ihn der Broker seit 0.11.5 zusätzlich mit Retain über jeden Neustart hinweg;
+Messwerte gehen bewusst ohne. Stirbt der Abruf, steht in Loxone weiter die
+letzte Zahl —
 das ist keine fehlende Auskunft, sondern eine Falschaussage. Dagegen gehen drei
 Werte hinaus: `OK`, ein **Zeitstempel** der letzten *erfolgreichen* Messung und
 ein **Zähler**, der 0 bis 999 umläuft. Der Zähler beantwortet, was ein
