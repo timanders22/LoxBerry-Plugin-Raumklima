@@ -626,6 +626,9 @@ function rk_test_pfadhilfe($daten, $pfad)
 function rk_test_meteo()
 {
     $cfg = rk_config();
+    if (trim((string) $cfg['breite']) === '' || trim((string) $cfg['laenge']) === '') {
+        return 'FEHLER: ' . rk_test_klartext('KEIN_STANDORT');
+    }
     $url = rk_meteo_url($cfg['breite'], $cfg['laenge'], 2);
     $o = array('Adresse: ' . $url, '');
     list($d, $m) = rk_holen($url);

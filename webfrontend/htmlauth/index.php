@@ -666,10 +666,22 @@ if ($rk_post && isset($_POST['speichern'])) {
         if ($rk_w !== null) { $rk_cfg['takt'] = $rk_w; }
 
         $rk_cfg['aussen_art'] = $rk_wahl('aussen_art', array('meteo', 'eigen'), $rk_cfg['aussen_art']);
-        $rk_w = $rk_zahl(isset($_POST['breite']) ? $_POST['breite'] : '', -90, 90, rk_t('EINST.BREITE'));
-        if ($rk_w !== null) { $rk_cfg['breite'] = $rk_w; }
-        $rk_w = $rk_zahl(isset($_POST['laenge']) ? $_POST['laenge'] : '', -180, 180, rk_t('EINST.LAENGE'));
-        if ($rk_w !== null) { $rk_cfg['laenge'] = $rk_w; }
+        /* Ein mitgeschicktes, leeres Feld heisst: kein Standort (seit 0.11.7).
+         * $rk_zahl gibt fuer leer null zurueck, und null hiess bisher
+         * "unveraendert" - der Standort liess sich gar nicht leeren. Nur
+         * wenn das Feld WIRKLICH mitkam: ein anderes Formular leert nichts. */
+        if (isset($_POST['breite']) && trim((string) $_POST['breite']) === '') {
+            $rk_cfg['breite'] = '';
+        } else {
+            $rk_w = $rk_zahl(isset($_POST['breite']) ? $_POST['breite'] : '', -90, 90, rk_t('EINST.BREITE'));
+            if ($rk_w !== null) { $rk_cfg['breite'] = $rk_w; }
+        }
+        if (isset($_POST['laenge']) && trim((string) $_POST['laenge']) === '') {
+            $rk_cfg['laenge'] = '';
+        } else {
+            $rk_w = $rk_zahl(isset($_POST['laenge']) ? $_POST['laenge'] : '', -180, 180, rk_t('EINST.LAENGE'));
+            if ($rk_w !== null) { $rk_cfg['laenge'] = $rk_w; }
+        }
         $rk_a = $rk_adresse(isset($_POST['aussen_quelle']) ? $_POST['aussen_quelle'] : '',
                             rk_t('EINST.AUSSEN_QUELLE'));
         if ($rk_a !== null) { $rk_cfg['aussen_quelle'] = $rk_a; }
@@ -1375,12 +1387,15 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 </div>
 <div class="sm-feld">
   <label for="rk_breite"><?= rk_e(rk_t('EINST.BREITE')) ?></label>
-  <input data-role="none" type="text" id="rk_breite" name="breite" value="<?= rk_e($rk_cfg['breite']) ?>">
+  <input data-role="none" type="text" id="rk_breite" name="breite" value="<?= rk_e($rk_cfg['breite']) ?>" placeholder="51.3183">
 </div>
 <div class="sm-feld">
   <label for="rk_laenge"><?= rk_e(rk_t('EINST.LAENGE')) ?></label>
-  <input data-role="none" type="text" id="rk_laenge" name="laenge" value="<?= rk_e($rk_cfg['laenge']) ?>">
+  <input data-role="none" type="text" id="rk_laenge" name="laenge" value="<?= rk_e($rk_cfg['laenge']) ?>" placeholder="9.4896">
   <p class="sm-hilfe"><?= rk_t('EINST.ORT_HILFE') ?></p>
+<?php if ($rk_cfg['aussen_art'] === 'meteo' && (trim((string) $rk_cfg['breite']) === '' || trim((string) $rk_cfg['laenge']) === '')) { ?>
+  <div class="sm-warnung"><?= rk_e(rk_t('MELD.KEIN_STANDORT')) ?></div>
+<?php } ?>
 </div>
 <div class="sm-feld">
   <label for="rk_aq"><?= rk_e(rk_t('EINST.AUSSEN_QUELLE')) ?></label>

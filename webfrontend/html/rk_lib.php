@@ -268,8 +268,12 @@ function rk_vorgaben()
         'takt'        => 300,       // Sekunden zwischen zwei Abrufen (Cron laeuft alle 300)
         // Aussenwerte
         'aussen_art'  => 'meteo',   // meteo | eigen
-        'breite'      => 48.1372,   // Muenchen als Vorgabe, damit etwas da ist
-        'laenge'      => 11.5756,
+        /* Kein Standort ab Werk (seit 0.11.7). Bis 0.11.6 stand hier eine
+         * Stadtmitte als Vorgabe - ohne eingetragenen Standort holte das
+         * Plugin damit still das Wetter einer fremden Stadt. Leer heisst jetzt:
+         * kein Wetterabruf, und die Meldung KEIN_STANDORT sagt es. */
+        'breite'      => '',
+        'laenge'      => '',
         'aussen_quelle' => '',
         'aussen_t'    => '',
         'aussen_rf'   => '',
@@ -385,8 +389,9 @@ function rk_wert_pruefen($schluessel, $wert)
             'trend_min'     => array('zahl', 10, 720, true),
             'co2_ltr'       => array('zahl', 1.0, 60.0, false),
             'co2_aussen'    => array('zahl', 300.0, 800.0, false),
-            'breite'        => array('zahl', -90.0, 90.0, false),
-            'laenge'        => array('zahl', -180.0, 180.0, false),
+            // Fuenftes Feld: leer erlaubt (seit 0.11.7 - kein Standort).
+            'breite'        => array('zahl', -90.0, 90.0, false, true),
+            'laenge'        => array('zahl', -180.0, 180.0, false, true),
             'aussen_art'    => array('wahl', array('meteo', 'eigen')),
             'aussen_einheit_t'  => array('wahl', array('C', 'F')),
             'aussen_einheit_rf' => array('wahl', array('proz', 'anteil')),
@@ -413,6 +418,7 @@ function rk_wert_pruefen($schluessel, $wert)
                 return array(null, 'FEHLER.KEINE_ZAHL');
             }
             $s = str_replace(',', '.', trim((string) $wert));
+            if ($s === '' && !empty($r[4])) { return array('', ''); }
             if ($s === '' || !is_numeric($s)) { return array(null, 'FEHLER.KEINE_ZAHL'); }
             $w = $r[3] ? (int) round((float) $s) : (float) $s;
             if ($w < $r[1] || $w > $r[2]) { return array(null, 'FEHLER.AUSSERHALB'); }
@@ -773,8 +779,12 @@ function rk_config($heilen = true)
     if (!in_array($cfg['aussen_einheit_rf'], array('proz', 'anteil'), true)) {
         $cfg['aussen_einheit_rf'] = 'proz';
     }
-    $cfg['breite'] = max(-90.0, min(90.0, (float) $cfg['breite']));
-    $cfg['laenge'] = max(-180.0, min(180.0, (float) $cfg['laenge']));
+    /* Leer bleibt leer. (float) '' waere 0,0 - ein Punkt im Golf von
+     * Guinea, und das Plugin holte dort Wetter. */
+    $cfg['breite'] = trim((string) $cfg['breite']) === ''
+        ? '' : max(-90.0, min(90.0, (float) str_replace(',', '.', (string) $cfg['breite'])));
+    $cfg['laenge'] = trim((string) $cfg['laenge']) === ''
+        ? '' : max(-180.0, min(180.0, (float) str_replace(',', '.', (string) $cfg['laenge'])));
     if (!in_array($cfg['aussen_art'], array('meteo', 'eigen'), true)) {
         $cfg['aussen_art'] = 'meteo';
     }
@@ -2398,7 +2408,10 @@ function rk_abrufen($erzwingen = false)
 
     /* ---- Aussen ---- */
     $vorher = array();
-    if ($cfg['aussen_art'] === 'meteo') {
+    if ($cfg['aussen_art'] === 'meteo' && ($cfg['breite'] === '' || $cfg['laenge'] === '')) {
+        /* Ohne Standort kein Abruf - und keine stille Vorgabe (seit 0.11.7). */
+        $stand['meldungen']['aussen'] = 'KEIN_STANDORT';
+    } elseif ($cfg['aussen_art'] === 'meteo') {
         list($d, $m) = rk_holen(rk_meteo_url($cfg['breite'], $cfg['laenge'], 2));
         if ($d === null) {
             $stand['meldungen']['aussen'] = $m;
