@@ -46,6 +46,19 @@ require_once __DIR__ . '/rk_klima.php';
 /** Wie viele Raeume die Oberflaeche fuehrt. */
 define('RK_RAEUME', 12);
 
+/* Mindestabstand fuer ?aktion=abrufen am Endpunkt, in Sekunden. Ein
+ * virtueller Ausgang hat keinen Takt; am Geraet gemessen (06.09.2026)
+ * loesten drei Aufrufe in 0,6 s drei volle Laeufe aus, jeder mit 68
+ * Datagrammen ans Gateway. Gebremst wird nur dieser Weg - der Cron und
+ * die Knoepfe der Oberflaeche nicht. */
+define('RK_ABRUF_MINDESTABSTAND', 60);
+
+/* Pause zwischen zwei Datagrammen an den UDP-Eingang des Gateways, in
+ * Mikrosekunden. Der Eingang verwirft unter Last stumm (Regeln/07,
+ * gemessen 13.09.2026: ohne Pause 0-6 von 90 angekommen, mit 5 ms alle
+ * 90). Bei 68 Themen sind das 0,34 s je Lauf. */
+define('RK_UDP_PAUSE_US', 5000);
+
 /* Groesste Antwort, die eine Quelle liefern darf. Ein Fuehler antwortet mit
  * einigen hundert Byte, der groesste bekannte Umschlag (Shelly.GetStatus)
  * mit knapp 8 kB. Zwei Megabyte sind das Hundertfache davon und bleiben
@@ -839,6 +852,48 @@ function rk_config($heilen = true)
  * ueberschreiben, der in Wahrheit die Vorgabeliste ist, nimmt genau diesen
  * Rueckweg weg - gemessen am 28.08.2026.
  */
+/**
+ * Die Konfiguration VERVOLLSTAENDIGEN - einmal, mit Protokollzeile.
+ *
+ * Hausstandard (Regeln/05): fehlende Schluessel werden beim Speichern UND
+ * beim Dienststart mit ihrer Vorgabe in die Datei geschrieben. Bis 0.11.7
+ * geschah das nur beim Speichern und stumm: am Geraet fehlten ms_nr und
+ * zwoelfmal quelle_rf, mehrere Cron-Laeufe liessen es dabei, und die
+ * Zeile beim Speichern nannte keinen Schluessel (gemessen 06.09.2026).
+ * Gerufen vom Cron-Skript, nicht vom Endpunkt. Nur im Zustand 'ok' -
+ * eine kaputte Datei oder eine Zweitschriftlage wird nicht angefasst.
+ * Rueckgabe: die Liste der ergaenzten Namen (leer = nichts zu tun).
+ */
+function rk_config_vervollstaendigen()
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return array(); }
+    list($daten, $lage) = rk_json_lage($p['config']);
+    if ($lage !== 'ok' || !is_array($daten) || $daten === array()) { return array(); }
+    $fehlt = array_keys(array_diff_key(rk_vorgaben(), $daten));
+    $je_raum = array();
+    if (isset($daten['raeume']) && is_array($daten['raeume'])) {
+        $vorg_r = rk_raum_vorgabe();
+        foreach ($daten['raeume'] as $r) {
+            if (!is_array($r)) { continue; }
+            foreach (array_keys(array_diff_key($vorg_r, $r)) as $k) {
+                $je_raum[$k] = isset($je_raum[$k]) ? $je_raum[$k] + 1 : 1;
+            }
+        }
+    }
+    foreach ($je_raum as $k => $n) { $fehlt[] = $k . ' (' . $n . ' Raeume)'; }
+    if (!$fehlt) { return array(); }
+    $cfg = rk_config();
+    if (rk_config_lage() !== 'ok') { return array(); }
+    if (!rk_config_speichern($cfg)) {
+        rk_log_gebremst('cfg_ergaenzen', 'Konfiguration: ' . count($fehlt)
+            . ' fehlende Schluessel liessen sich nicht schreiben.', 3600);
+        return array();
+    }
+    rk_log('Konfiguration mit den Vorgabewerten ergaenzt: ' . implode(', ', $fehlt) . '.');
+    return $fehlt;
+}
+
 function rk_config_speichern($cfg)
 {
     $p = rk_paths();
@@ -1014,6 +1069,61 @@ function rk_formtoken()
         @chmod($f, 0600);
     }
     return $t;
+}
+
+/* ==================================================================
+ * Einmalmeldung fuer die Umleitung nach einem POST
+ *
+ * Hausstandard (Regeln/04, Docker NG 06.09.2026): jeder POST-Handler endet
+ * mit 303 und exit; das Ergebnis - Meldungen, Fehler, Testausgabe,
+ * Vorschau des Assistenten - reist in einer Datei im Datenordner, 0600,
+ * wird NUR beim GET gelesen und dabei geloescht, und ist nach zwei
+ * Minuten verworfen. Bis 0.11.7 wurde die Seite unmittelbar nach dem POST
+ * gerendert: Neuladen wiederholte die Aktion (Abruf, neues Wortzeichen,
+ * Protokoll leeren).
+ * ================================================================== */
+
+function rk_flash_datei()
+{
+    return rk_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+/** Was aus der Vorschau des Assistenten hinaus darf: KEINE Zugangsdaten. */
+function rk_flash_ohne_geheimnis($w)
+{
+    if (!is_array($w)) { return $w; }
+    $aus = array();
+    foreach ($w as $k => $v) {
+        if (is_string($k) && preg_match('/pass|kennwort|token|auth|benutzer|user/i', $k)) { continue; }
+        $aus[$k] = rk_flash_ohne_geheimnis($v);
+    }
+    return $aus;
+}
+
+function rk_flash_schreiben($daten)
+{
+    $daten['ts'] = time();
+    if (isset($daten['ass']) && is_array($daten['ass'])) {
+        $ms = isset($daten['ass']['ms']) && is_array($daten['ass']['ms']) ? $daten['ass']['ms'] : array();
+        $daten['ass'] = rk_flash_ohne_geheimnis($daten['ass']);
+        $daten['ass']['ms'] = array(
+            'name'    => isset($ms['name']) ? (string) $ms['name'] : '',
+            'adresse' => isset($ms['adresse']) ? (string) $ms['adresse'] : '');
+    }
+    return rk_json_schreiben(rk_flash_datei(), $daten, 0600);
+}
+
+/** Liest die Einmalmeldung und LOESCHT sie. null = keine oder zu alt. */
+function rk_flash_lesen()
+{
+    $f = rk_flash_datei();
+    if (!is_file($f)) { return null; }
+    $d = rk_json_lesen($f);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['ts'])) { return null; }
+    $alter = time() - (int) $d['ts'];
+    if ($alter < -5 || $alter > 120) { return null; }
+    return $d;
 }
 
 /** Traegt die Anfrage das Merkmal? Nur fuer POST-Handler. */
@@ -2322,9 +2432,16 @@ function rk_abrufen($erzwingen = false)
      * damit immer einen beendeten Vorgaenger. */
     rk_frist(time() + max(30, (int) $cfg['takt'] - 30));
 
+    /* Die Schranke liegt eine halbe Minute UNTER dem Takt - dieselbe Zahl
+     * wie die Frist oben. Bis 0.11.7 stand hier der volle Takt: der Cron
+     * startet alle 300 s, und am Geraet hielt der Abstand die Schranke um
+     * genau null Sekunden ein. Brauchte PHP einmal eine Sekunde weniger,
+     * fiel der Lauf aus - gemessen 06.09.2026 um 03:10 und 03:25, jeweils
+     * zehn Minuten Pause, und in einem ausgefallenen Lauf ging auch das
+     * Lebenszeichen nicht hinaus. */
     $abstand = time() - $letzter_lauf;
     if (!$erzwingen && $letzter_lauf > 0
-        && $abstand >= 0 && $abstand < (int) $cfg['takt']) {
+        && $abstand >= 0 && $abstand < max(30, (int) $cfg['takt'] - 30)) {
         return $alt;
     }
 
@@ -2760,6 +2877,9 @@ function rk_mqtt_senden($stand)
         if ($v === null || $v === '') { continue; }   // lieber nichts als eine erfundene 0
         @fwrite($s, (rk_mqtt_retain($k) ? 'retain ' : 'publish ')
                   . $praefix . '/' . $k . ' ' . rk_mqtt_wert_saeubern($v));
+        /* Siehe RK_UDP_PAUSE_US: ohne Pause verwirft der Eingang stumm,
+         * und fwrite() meldet trotzdem Erfolg. */
+        usleep(RK_UDP_PAUSE_US);
     }
     fclose($s);
     return true;
@@ -3057,7 +3177,14 @@ function rk_xml_virtual_in_http($kopf, $cmds)
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . rk_x(isset($c['min']) ? $c['min'] : '-100') . '" ';
         $o .= 'MaxVal="' . rk_x(isset($c['max']) ? $c['max'] : '100') . '" ';
-        $o .= 'Unit="' . rk_x(isset($c['unit']) ? $c['unit'] : '') . '" ';
+        /* Eine leere Einheit gibt es in keiner Ausfuhr von Loxone Config:
+         * VI_Rasenmaeher 17 von 17 und VI_Marstek 7 von 7 Befehlen tragen
+         * eine, auch einheitenlose Werte ('<v.0>'). Bis 0.11.7 trugen 34 von
+         * 75 Befehlen Unit="". Die Feldtabelle bleibt unberuehrt - dort ist
+         * die leere Spalte fuer die Oberflaeche richtig. */
+        $rk_unit = isset($c['unit']) ? (string) $c['unit'] : '';
+        if ($rk_unit === '') { $rk_unit = '<v.0>'; }
+        $o .= 'Unit="' . rk_x($rk_unit) . '" ';
         $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
@@ -3076,6 +3203,15 @@ function rk_xml_virtual_in_http($kopf, $cmds)
  *
  * NEUE FELDER GEHOEREN ANS ENDE. Weiter oben eingefuegt verschoeben sie die
  * Reihenfolge in der Statuszeile.
+ *
+ * MaxVal ist in Loxone Config eine VALIDIERUNGSGRENZE, keine Anzeigeskala:
+ * ein Wert darueber wird zum Standardwert 0 (Regeln/07, gemessen an der
+ * Bewaesserung 06.09.2026). Jede Grenze wird deshalb gegen das gehalten,
+ * was das Plugin RECHNEN kann. Bis 0.11.7 zu eng: RALTER 86400 (ein Raum,
+ * der laenger als einen Tag schweigt, stand dann als 'eben gemessen' da),
+ * TROCKENREST 240 h (Wasser / Leistung ist ungedeckelt), KOSTEN 5000 Wh
+ * (Volumen bis 2000 m3, rund 26 800 Wh bei 40 K), EINTRAG 2000 g/h und
+ * TROCKNEN 5000 g/h (beide wachsen mit dem Volumen).
  */
 function rk_felder()
 {
@@ -3098,7 +3234,7 @@ function rk_felder()
         'BESTSTD'  => array('h',     -1,  23, 'RK_FELD.BESTSTD',  '<v.0> h'),
         'SPREAD'   => array('K',    -40,  60, 'RK_FELD.SPREAD',   '<v.1> K'),
         'VLMIN'    => array('C',    -40,  40, 'RK_FELD.VLMIN',    '<v.1> °C'),
-        'RALTER'   => array('s',     -1, 86400, 'RK_FELD.RALTER', '<v.0> s'),
+        'RALTER'   => array('s',     -1, 8640000, 'RK_FELD.RALTER', '<v.0> s'),
         'STEHT'    => array('',       0,   1, 'RK_FELD.STEHT',    ''),
         'ENTH'     => array('kJ/kg',  0, 120, 'RK_FELD.ENTH',     '<v.1> kJ/kg'),
         /* -1 heisst "keine Aussage moeglich" - siehe rk_ampel(). MinVal
@@ -3111,17 +3247,17 @@ function rk_felder()
         'KUEHLEN'  => array('',       0,   1, 'RK_FELD.KUEHLEN',  ''),
         'KUEHLG'   => array('K',    -40,  40, 'RK_FELD.KUEHLG',   '<v.1> K'),
         'DAUER'    => array('min',   -1,  60, 'RK_FELD.DAUER',    '<v.0> min'),
-        'KOSTEN'   => array('Wh',    -1, 5000, 'RK_FELD.KOSTEN',  '<v.0> Wh'),
+        'KOSTEN'   => array('Wh',    -1, 99999, 'RK_FELD.KOSTEN', '<v.0> Wh'),
         'ERFOLG'   => array('%',     -1, 100, 'RK_FELD.ERFOLG',   '<v.0> %'),
-        'EINTRAG'  => array('g/h',   -1, 2000, 'RK_FELD.EINTRAG', '<v.0> g/h'),
+        'EINTRAG'  => array('g/h',   -1, 99999, 'RK_FELD.EINTRAG', '<v.0> g/h'),
         'CO2'      => array('ppm',   -1, 5000, 'RK_FELD.CO2',     '<v.0> ppm'),
         'CO2HOCH'  => array('',       0,   1, 'RK_FELD.CO2HOCH',  ''),
         'FENSTER'  => array('',      -1,   1, 'RK_FELD.FENSTER',  ''),
         'FENSTERZU' => array('',      0,   1, 'RK_FELD.FENSTERZU', ''),
         /* ---- Neu in 0.11.0. Hinten angehaengt - siehe der Satz oben. ---- */
         'SCHWUEL'  => array('',      -1,   1, 'RK_FELD.SCHWUEL',  ''),
-        'TROCKNEN' => array('g/h', -5000, 5000, 'RK_FELD.TROCKNEN', '<v.0> g/h'),
-        'TROCKENREST' => array('h',  -1, 240, 'RK_FELD.TROCKENREST', '<v.1> h'),
+        'TROCKNEN' => array('g/h', -99999, 99999, 'RK_FELD.TROCKNEN', '<v.0> g/h'),
+        'TROCKENREST' => array('h',  -1, 99999, 'RK_FELD.TROCKENREST', '<v.1> h'),
         'ZULUFT'   => array('C',    -30,  60, 'RK_FELD.ZULUFT',   '<v.1> °C'),
         'WRG'      => array('%',     -1, 100, 'RK_FELD.WRG',      '<v.0> %'),
         'FORTLUFT' => array('C',    -60,  60, 'RK_FELD.FORTLUFT', '<v.1> °C'),
@@ -3157,6 +3293,26 @@ function rk_check($feld)
     return '\i;' . $feld . '=\i\v';
 }
 
+/**
+ * Der Kachelname eines Vorlagenbefehls: Vorsatz und KURZER Name.
+ *
+ * Der Comment einer Vorlage wird in Loxone Config zum Anzeigenamen der
+ * Kachel (Regeln/07, an dieser Anlage gegengeprueft). Bis 0.11.7 stand dort
+ * der lange Erklaertext samt Einheit in Klammern - am Erzeugnis gemessen
+ * 06.09.2026: 51 von 75 Kommentaren ueber 40 Zeichen, der laengste 127.
+ * Jetzt eine eigene Liste [RK_KACHEL] mit einem Namen je Feld; der lange
+ * Text bleibt in den Tabellen der Oberflaeche ([RK_FELD]). Die Einheit
+ * haengt Loxone selbst an. Fehlt ein Kurzname, gilt der lange Text - lieber
+ * ein langer Name als ein Sprachschluessel in der App.
+ */
+function rk_kachelname($vorsatz, $feldschluessel)
+{
+    $k = str_replace('RK_FELD.', 'RK_KACHEL.', (string) $feldschluessel);
+    $kurz = rk_klartext($k);
+    if ($kurz === '' || $kurz === $k) { $kurz = rk_klartext($feldschluessel); }
+    return trim(trim((string) $vorsatz) . ' ' . $kurz);
+}
+
 function rk_klartext($schluessel)
 {
     return trim(strip_tags(html_entity_decode(rk_t($schluessel), ENT_QUOTES, 'UTF-8')));
@@ -3168,6 +3324,16 @@ function rk_endpunkt()
     $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
+    /* Eine Rueckschleife ist fuer den Miniserver keine Adresse - er fragte
+     * damit sich selbst. Gemessen 06.09.2026: ueber 127.0.0.1 geoeffnet,
+     * trugen Vorlage und Adresstabelle http://127.0.0.1/... Dann gilt der
+     * Rechnername; ob der Miniserver ihn aufloest, sagt der Hinweis im
+     * Reiter Einbindung. */
+    $rk_nur_host = strtolower(preg_replace('/:\d+$/', '', trim($host, '[]')));
+    if ($host === '' || $rk_nur_host === 'localhost' || $rk_nur_host === '::1'
+        || strpos($rk_nur_host, '127.') === 0) {
+        $host = gethostname() ?: 'loxberry';
+    }
     return 'http://' . $host . '/plugins/' . $p['plugin'] . '/index.php';
 }
 
@@ -3195,8 +3361,7 @@ function rk_vorlage()
         foreach (rk_felder() as $feld => $info) {
             $cmds[] = array(
                 'title'   => 'RK_' . $kurz . '_' . $feld,
-                'comment' => $r['name'] . ': ' . rk_klartext($info[3])
-                             . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
+                'comment' => rk_kachelname($r['name'], $info[3]),
                 'check'   => rk_check('R' . $nr . $feld),
                 'min'     => $info[1],
                 'max'     => $info[2],
@@ -3247,7 +3412,7 @@ function rk_vorlage()
     ) as $feld => $info) {
         $cmds[] = array(
             'title'   => 'RK_' . $feld,
-            'comment' => rk_klartext($info[3]) . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
+            'comment' => rk_kachelname('Raumklima', $info[3]),
             'check'   => rk_check($feld),
             'min'     => $info[1],
             'max'     => $info[2],

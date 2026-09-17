@@ -57,6 +57,10 @@ if (in_array('--selbsttest', $rk_argv, true)) {
     exit($rk_f > 0 ? 1 : 0);
 }
 
+/* Einmal je Lauf nachsehen, ob der Konfiguration Schluessel fehlen, und
+ * sie dann mit Protokollzeile ergaenzen - siehe rk_config_vervollstaendigen(). */
+rk_config_vervollstaendigen();
+
 $rk_stand = rk_abrufen(in_array('--sofort', $rk_argv, true));
 
 if (!empty($rk_stand['meldungen'])) {

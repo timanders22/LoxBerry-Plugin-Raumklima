@@ -60,6 +60,25 @@ register_shutdown_function(function () {
 $token = (isset($_GET['token']) && is_string($_GET['token']))
     ? $_GET['token'] : '';
 $soll = rk_token_lesen();
+
+/* ?selftest=1 beantwortet die Tokenfrage, ohne etwas auszuloesen:
+ * kein Abruf, kein Schreiben, kein Geraetekontakt. Die drei Antworten
+ * sind Hausstandard (Regeln/07, Regeln/03). Bis 0.11.7 wurde der
+ * Parameter stillschweigend uebergangen - gemessen 06.09.2026: HTTP 200
+ * mit der normalen Statuszeile. */
+if (isset($_GET['selftest'])) {
+    if ($soll === '') {
+        header('HTTP/1.1 403 Forbidden');
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+    } elseif (!hash_equals($soll, $token)) {
+        header('HTTP/1.1 403 Forbidden');
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+    } else {
+        echo "SELFTEST;OK=1;TOKEN=OK\n";
+    }
+    exit;
+}
+
 if ($soll === '' || !hash_equals($soll, $token)) {
     header('HTTP/1.1 403 Forbidden');
     echo "FEHLER;GRUND=TOKEN\n";
@@ -93,7 +112,24 @@ if (!in_array($aktion, array('status', 'json', 'abrufen', 'raum'), true)) {
 }
 
 if ($aktion === 'abrufen') {
-    $stand = rk_abrufen(true);
+    /* Die Bremse: ein virtueller Ausgang hat keinen Takt. Liegt der letzte
+     * Lauf weniger als RK_ABRUF_MINDESTABSTAND zurueck, wird der letzte
+     * Stand geliefert - die Antwortzeile bleibt dieselbe, damit Loxone
+     * nichts verliert -, und der Grund steht in einer Kopfzeile und
+     * einmal je Stunde im Protokoll. */
+    $alt = rk_stand();
+    $letzt = isset($alt['lauf_ts']) ? (int) $alt['lauf_ts'] : 0;
+    $abst = time() - $letzt;
+    if ($alt && $letzt > 0 && $abst >= 0 && $abst < RK_ABRUF_MINDESTABSTAND) {
+        header('X-Raumklima-Abruf: gebremst, naechster Lauf in '
+               . (RK_ABRUF_MINDESTABSTAND - $abst) . ' s');
+        rk_log_gebremst('abruf_gebremst', 'Endpunkt: aktion=abrufen kam ' . $abst
+            . ' s nach dem letzten Lauf und wurde gebremst (Mindestabstand '
+            . RK_ABRUF_MINDESTABSTAND . ' s); geliefert wurde der letzte Stand.', 3600);
+        $stand = $alt;
+    } else {
+        $stand = rk_abrufen(true);
+    }
     $aktion = 'status';
 } else {
     $stand = rk_stand();

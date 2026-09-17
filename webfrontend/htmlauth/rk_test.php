@@ -70,16 +70,39 @@ function rk_selbstpruefung()
      * zweistellig (34-mal cron.01min, 9-mal cron.05min, dazu cron.03min und
      * cron.10min). Ein geratener Pfad, der nie trifft, macht aus einer
      * Messung eine Behauptung ueber die Zahl der abgesuchten Orte. */
+    /* ZUERST AM ZIEL suchen. Bis 0.11.7 suchte die Zeile den Ordner cron/
+     * nur im Plugin - installiert gibt es ihn nicht, der Installer
+     * verteilt seinen Inhalt nach system/cron/. Am Geraet gemessen
+     * (06.09.2026): beide Kandidaten fehlten, die Zeile zeigte einen
+     * Strich, waehrend der Eintrag lief. Der zweite Kandidat war dazu
+     * schief gerechnet (<bin>/plugins/<plugin>/../cron = <bin>/plugins/cron).
+     * Der Archivfall (Pruefstand) bleibt als Rueckfall erhalten. */
     $takt_ordner = '';
-    foreach (array(dirname(dirname(__DIR__)) . '/cron',
-                   $p['home'] . '/bin/plugins/' . $p['plugin'] . '/../cron') as $q) {
-        if (!is_dir($q)) { continue; }
-        foreach ((array) scandir($q) as $e) {
-            if (preg_match('/^cron\.\d+min$/', $e)) { $takt_ordner = $e; break 2; }
+    $installiert = $p['home'] !== '' && is_dir($p['home'] . '/bin/plugins/' . $p['plugin']);
+    if ($p['home'] !== '') {
+        $treffer = glob($p['home'] . '/system/cron/cron.*min/' . $p['plugin']);
+        foreach (is_array($treffer) ? $treffer : array() as $t) {
+            if (preg_match('#/(cron\.\d+min)/[^/]+$#', str_replace('\\', '/', $t), $m)) {
+                $takt_ordner = $m[1];
+                break;
+            }
+        }
+    }
+    if ($takt_ordner === '') {
+        $q = dirname(dirname(__DIR__)) . '/cron';
+        if (is_dir($q)) {
+            foreach ((array) scandir($q) as $e) {
+                if (preg_match('/^cron\.\d+min$/', (string) $e)) { $takt_ordner = $e; break; }
+            }
         }
     }
     if ($p['home'] === '') {
         $add('PRUEF.CRON', 2, rk_t('PRUEFTEXT.CRON_KEIN_HOME'));
+    } elseif ($takt_ordner === '' && $installiert) {
+        /* Installiert und nirgends ein Eintrag: das ist der Befund, fuer
+         * den es die Zeile gibt - kein Strich. */
+        $add('PRUEF.CRON', 0, sprintf(rk_t('PRUEFTEXT.CRON_FEHLT'),
+             'system/cron/cron.NNmin/' . $p['plugin']));
     } elseif ($takt_ordner === '') {
         /* Ueber eine leere Menge wird nicht geurteilt. */
         $add('PRUEF.CRON', 2, rk_t('PRUEFTEXT.CRON_KEIN_TAKT'));

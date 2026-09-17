@@ -72,6 +72,9 @@ $rk_meldungen = array();
 $rk_fehler = array();      // gesammelt, nicht ueberschrieben
 $rk_testausgabe = '';
 $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+/* Merkt sich, dass ein POST kam - auch wenn der Wachposten ihn abweist.
+ * Auch dann endet die Anfrage mit einer Umleitung. */
+$rk_war_post = $rk_post;
 
 /* ---------------- EIN Wachposten fuer alle Formulare ----------------
  *
@@ -833,6 +836,38 @@ if ($rk_post && isset($_POST['test'])) {
     $rk_tab = 'tab-test';
 }
 
+/* ================= Umleitung nach jedem POST =================
+ * Alle Handler sind durch - die Downloads haben vorher mit exit geendet.
+ * Das Ergebnis geht in die Einmalmeldung, und der Browser holt die Seite
+ * mit GET ab (303: ausdruecklich GET, auch bei Browsern, die 302 als
+ * Wiederholung des POST verstehen). Laesst sich die Einmalmeldung nicht
+ * schreiben, wird wie bisher unmittelbar gerendert - lieber ein
+ * Neuladen-Risiko als eine verlorene Fehlermeldung. */
+if ($rk_war_post) {
+    if (rk_flash_schreiben(array('tab' => $rk_tab, 'meldungen' => $rk_meldungen,
+                                 'fehler' => $rk_fehler, 'testausgabe' => $rk_testausgabe,
+                                 'ass' => $rk_ass))) {
+        header('Location: index.php?form=' . rawurlencode(substr($rk_tab, 4)), true, 303);
+        exit;
+    }
+    rk_log_gebremst('flash_schreiben', 'Die Einmalmeldung liess sich nicht schreiben; '
+        . 'die Seite wird ohne Umleitung angezeigt.', 3600);
+} else {
+    /* NUR beim GET: beim POST ist die Fehlerliste zugleich der Sammler,
+     * mit dem die Handler pruefen - eine alte Meldung darin verhinderte
+     * das naechste Speichern (Regeln/04). */
+    $rk_flash = rk_flash_lesen();
+    if ($rk_flash !== null) {
+        $rk_meldungen = isset($rk_flash['meldungen']) ? (array) $rk_flash['meldungen'] : array();
+        $rk_fehler = isset($rk_flash['fehler']) ? (array) $rk_flash['fehler'] : array();
+        $rk_testausgabe = isset($rk_flash['testausgabe']) ? (string) $rk_flash['testausgabe'] : '';
+        if (isset($rk_flash['tab']) && preg_match($rk_muster, (string) $rk_flash['tab'])) {
+            $rk_tab = (string) $rk_flash['tab'];
+        }
+        if (isset($rk_flash['ass']) && is_array($rk_flash['ass'])) { $rk_ass = $rk_flash['ass']; }
+    }
+}
+
 /* ================= Werte fuer die Anzeige ================= */
 $rk_cfg = rk_config();
 $rk_g = rk_geheim();
@@ -857,6 +892,12 @@ $rk_logzeilen = rk_log_ende($rk_p['log'], 400);
  * Temperatur sieht aus wie eine Messung. */
 function rk_z($v, $nach = 1, $einheit = '')
 {
+    /* Die Einheit geht durch rk_e() - sie wird deshalb als ZEICHEN
+     * uebergeben ('°C', 'g/m³'), nie als HTML-Entitaet. Bis 0.11.7 standen
+     * an den vier Aufrufern '&deg;C' und 'g/m&sup3;'; am Geraet stand
+     * daraufhin in der Raumtabelle woertlich '22,5 &deg;C' (gemessen
+     * 06.09.2026, vier Stellen je Raum). hausstandard_pruefen.py sieht
+     * Entitaeten nur in Sprachdateien, nicht als Argument im PHP. */
     if ($v === null || !is_numeric($v)) { return '&ndash;'; }
     return rk_e(number_format((float) $v, $nach, ',', '')) . ($einheit !== '' ? ' ' . rk_e($einheit) : '');
 }
@@ -1096,11 +1137,11 @@ if ($rk_lage === 'kaputt') { ?>
     <br><span class="sm-aus"><?= sprintf(rk_e(rk_t('TAB.OHNE_SEIT')), (int) round($rk_r['alter'] / 60)) ?></span>
     <?php } ?>
   </td>
-  <td><?= rk_z($rk_r['t'], 1, '&deg;C') ?></td>
+  <td><?= rk_z($rk_r['t'], 1, '°C') ?></td>
   <td><?= rk_z($rk_r['rf'], 0, '%') ?></td>
-  <td><?= rk_z($rk_r['taupunkt'], 1, '&deg;C') ?></td>
-  <td><?= rk_z($rk_r['absolut'], 2, 'g/m&sup3;') ?></td>
-  <td><?= rk_z($rk_r['ober_t'], 1, '&deg;C') ?>
+  <td><?= rk_z($rk_r['taupunkt'], 1, '°C') ?></td>
+  <td><?= rk_z($rk_r['absolut'], 2, 'g/m³') ?></td>
+  <td><?= rk_z($rk_r['ober_t'], 1, '°C') ?>
     <?php if ($rk_r['ober_rf'] !== null) { ?>
     <br><span class="<?= (int) $rk_r['schimmel'] === 1 ? 'sm-aus' : '' ?>"><?= rk_z($rk_r['ober_rf'], 0, '%') ?></span>
     <?php } ?>

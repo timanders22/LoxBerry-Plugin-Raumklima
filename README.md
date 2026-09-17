@@ -3,9 +3,65 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.7 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.8 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.8
+
+**Nach dem Update die Loxone-Vorlage neu erzeugen und importieren** — fünf
+Grenzen und 34 Einheiten der Vorlage haben sich geändert (unten). Loxone
+Config legt beim Import neu an und überschreibt nichts; eine alte Vorlage
+also vorher entfernen.
+
+- **Kurze Kachelnamen.** Der Kommentar jedes Vorlagenbefehls wird in Loxone
+  Config zum Namen der Kachel. Bis 0.11.7 stand dort der ganze Erklärtext —
+  51 von 75 Namen waren länger als 40 Zeichen, der längste 127. Jetzt heißen
+  sie „Raumname Temperatur“, „Raumname Schimmelgefahr“ oder „Raumklima
+  Außentemperatur“; der ausführliche Text steht weiter in den Tabellen der
+  Oberfläche. Wer die alte Vorlage schon importiert hat, benennt entweder von
+  Hand um oder importiert neu.
+- **Nach jedem Knopfdruck lädt die Seite neu, statt das Formular zu
+  wiederholen.** Bis 0.11.7 wurde nach einem POST sofort gerendert; ein
+  Neuladen im Browser wiederholte den Vorgang (Abruf, neues Wortzeichen,
+  Protokoll leeren). Jetzt antwortet jeder Knopf mit einer Umleitung, und
+  Meldung, Fehler oder Testausgabe erscheinen danach genau einmal.
+  Die Downloads (Vorlage, Sicherung) sind davon ausgenommen.
+- **Die Raumtabelle zeigt wieder °C und g/m³.** Bis 0.11.7 stand dort
+  wörtlich `22,5 &deg;C` und `8,37 g/m&sup3;` — die Einheit wurde als
+  HTML-Entität übergeben und dann noch einmal maskiert.
+- **Kein Cron-Lauf fällt mehr aus.** Die Taktschranke lag genau auf dem
+  Takt; am Gerät hielt der Abstand sie um null Sekunden ein, und zweimal in
+  einer Stunde entfiel ein Lauf samt Lebenszeichen. Sie liegt jetzt eine
+  halbe Minute darunter.
+- **`?selftest=1&token=…` am Endpunkt** beantwortet, ob ein Wortzeichen
+  gilt, ohne etwas auszulösen: `SELFTEST;OK=1;TOKEN=OK`, bei falschem
+  Wortzeichen HTTP 403 `SELFTEST;OK=0;ERR=TOKEN`, ohne eingerichtetes
+  HTTP 403 `SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET`.
+- **`?aktion=abrufen` ist gebremst.** Liegt der letzte Lauf weniger als
+  60 Sekunden zurück, kommt der letzte Stand zurück (dieselbe Antwortzeile),
+  der Grund steht in der Kopfzeile `X-Raumklima-Abruf` und einmal je Stunde
+  im Protokoll. Vorher löste jeder Aufruf einen vollen Lauf aus.
+- **Zwischen zwei MQTT-Datagrammen liegen 5 ms.** Der UDP-Eingang des
+  Gateways verwirft unter Last stumm; bei einem Raum dauert ein Versand
+  damit rund 0,35 Sekunden.
+- **Die Prüfzeile „Steht der Cron-Eintrag?" misst jetzt auf der Anlage.**
+  Sie suchte den Eintrag nur im Plugin-Ordner, den es installiert nicht gibt,
+  und zeigte immer einen Strich.
+- **Fehlende Einstellungen werden beim Cron-Lauf ergänzt**, einmal und mit
+  einer Protokollzeile, die die Schlüssel nennt. Vorher geschah das nur beim
+  Speichern und ohne Hinweis.
+- **Die Adresse in Vorlage und Adresstabelle** trägt nie mehr `127.0.0.1`
+  oder `localhost`, wenn die Oberfläche über eine Rückschleife geöffnet
+  wurde; dann gilt der Rechnername. Der Reiter *Einbindung in Loxone* sagt
+  jetzt, dass der Rechnername zu prüfen ist.
+
+**Vorlage:** jeder Befehl trägt eine Einheit (einheitenlose Werte `<v.0>`,
+wie in den Ausfuhren von Loxone Config), und fünf Grenzen sind geweitet,
+weil `MaxVal` in Config eine Validierung ist und ein Wert darüber zu 0 wird:
+`RALTER` 86 400 → 8 640 000 s (ein Tag Funkstille stand sonst als „eben
+gemessen" da), `TROCKENREST` 240 → 99 999 h, `KOSTEN` 5 000 → 99 999 Wh,
+`EINTRAG` 2 000 → 99 999 g/h, `TROCKNEN` ±5 000 → ±99 999 g/h.
 
 ## Neu in 0.11.5
 
