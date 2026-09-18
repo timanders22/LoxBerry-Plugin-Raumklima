@@ -3,9 +3,38 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.9 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.10 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.10
+
+Die Sicherungen beim Update entscheiden jetzt nach dem **Inhalt** einer
+Datei, nicht mehr nach ihrer Größe. Wer nichts davon merkt, hat nichts
+verloren; die Änderungen greifen nur, wenn eine Datei beschädigt ist.
+
+- **Die Zugangsdaten gingen bei einer beschädigten `geheim.json` endgültig
+  verloren.** Eine abgeschnittene Datei ist nicht leer. Bis 0.11.9 galt sie
+  deshalb als „wieder da“, und `postupgrade.sh` löschte die heile Zweitschrift
+  — das Protokoll meldete dabei `<OK> Zwischengelegte Zugangsdaten wieder
+  entfernt.` Jetzt wird die Zweitschrift nur gelöscht, wenn in `geheim.json`
+  wirklich ein Benutzername oder Kennwort steht, und die Meldung sagt, ob die
+  Datei danach tatsächlich weg ist.
+- **Dieselbe Lücke an acht weiteren Stellen**, je vier in `preupgrade.sh`
+  und `postinstall.sh`: eine abgeschnittene Konfiguration, `geheim.json` oder
+  `verlauf.json` verdrängte die heile Sicherung, wurde nicht zurückgespielt,
+  oder die Rettung wurde gelöscht, ohne dass ihr Inhalt irgendwo angekommen
+  war. Überall entscheidet jetzt der Inhalt; kann `php` den Inhalt nicht
+  prüfen, wird nichts überschrieben und nichts gelöscht.
+- **Die Zweitschrift der Einstellungen wird unteilbar geschrieben.** Bis
+  0.11.9 kopierte das Speichern sie mit `copy()`; das leert die alte Datei,
+  bevor die neue steht. Brach der Vorgang dazwischen ab (volle Karte), gab es
+  keine Zweitschrift mehr.
+- **Eine aus der Zweitschrift wiederhergestellte `raumklima.json` bekommt
+  wieder die Rechte 0600.** Bis 0.11.9 stand sie danach auf 0644.
+- **Die Oberfläche lädt ihre Bibliothek zuerst aus `$LBHOMEDIR`.** Liegt eine
+  zweite Kopie des Plugins in einem anderen Baum, wird nicht mehr deren
+  Bibliothek geladen.
 
 ## Neu in 0.11.8
 

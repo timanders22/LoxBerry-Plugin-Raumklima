@@ -21,6 +21,30 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# ---------- INHALT statt GROESSE ----------
+# Wortgleich zu preupgrade.sh und postupgrade.sh; ein Hakenskript kann sich
+# nichts aus dem Plugin-Ordner holen. Anlass und Messung stehen in
+# preupgrade.sh ueber derselben Funktion.
+# Rueckgabe: 0 = traegt Inhalt, 1 = traegt keinen, 2 = NICHT PRUEFBAR.
+rk_inhalt() {   # $1 Datei, $2 Art: conf | geheim | verlauf
+    [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '
+        $d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d) || count($d) === 0) { exit(1); }
+        $art = isset($argv[2]) ? $argv[2] : "";
+        if ($art === "geheim") {
+            $b = isset($d["benutzer"]) && is_string($d["benutzer"]) && trim($d["benutzer"]) !== "";
+            $w = isset($d["passwort"]) && is_string($d["passwort"]) && $d["passwort"] !== "";
+            exit(($b || $w) ? 0 : 1);
+        }
+        exit(0);
+    ' -- "$1" "$2" 2>/dev/null
+    rk_rc=$?
+    [ "$rk_rc" = 0 ] || [ "$rk_rc" = 1 ] || return 2
+    return "$rk_rc"
+}
+
 # ---------- Eine Altlast von 0.11.0 wegraeumen ----------
 #
 # Bis 0.11.0 lag im Archiv ein VERZEICHNIS dpkg/apt/ mit php-curl.list darin.
@@ -75,13 +99,36 @@ chmod 600 "$PCONFIG/raumklima.json" 2>/dev/null
 [ -f "$PCONFIG/geheim.json" ] && chmod 600 "$PCONFIG/geheim.json" 2>/dev/null
 
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+#
+# Bis 0.11.9 entschied `[ ! -s "$CF" ] || [ "$INHALT" = "{}" ]`. Eine
+# ABGESCHNITTENE raumklima.json ist weder leer noch `{}`: sie galt als heil,
+# es wurde nichts zurueckgespielt, und der Anwender stand ohne Einstellungen
+# da. Gemessen am 18.09.2026 (Fall 8 des eigenen Pruefstands).
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/raumklima.json"
 if [ -f "$BK" ]; then
-    INHALT=$(cat "$CF" 2>/dev/null)
-    if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
-    fi
+    rk_inhalt "$CF" conf
+    case "$?" in
+    1)
+        rk_inhalt "$BK" conf
+        if [ "$?" = 0 ]; then
+            if cp -p "$BK" "$CF" 2>/dev/null; then
+                chmod 600 "$CF" 2>/dev/null
+                echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+            else
+                echo "<WARNING> Die Konfiguration liess sich NICHT zurueckspielen."
+                echo "<WARNING> Die Sicherung liegt unter $BK."
+            fi
+        else
+            echo "<WARNING> Die Sicherung $BK traegt selbst keine lesbaren"
+            echo "<WARNING> Einstellungen. Es wurde nichts zurueckgespielt."
+        fi
+        ;;
+    2)
+        echo "<WARNING> raumklima.json liess sich nicht pruefen (fehlt php?)."
+        echo "<WARNING> Es wurde nichts zurueckgespielt und nichts geloescht."
+        ;;
+    esac
 fi
 
 # ---------- PHP pruefen ----------
@@ -121,13 +168,41 @@ fi
 # Ordner ausraeumt. Zurueckgeholt wird nur, wenn dort nichts steht - eine
 # frische Reihe ist mehr wert als eine alte, und ueberschreiben wollen wir
 # nichts.
+#
+# Bis 0.11.9 entschied `[ ! -s ]` ueber das Zurueckholen, und das `rm -f` der
+# Rettung fiel danach UNBEDINGT. Eine abgeschnittene verlauf.json galt als
+# vorhanden: nicht zurueckgeholt UND die Rettung geloescht - der Verlust war
+# endgueltig. Gemessen am 18.09.2026 (Fall 9 des eigenen Pruefstands).
+# Geloescht wird die Rettung jetzt erst, wenn der Verlauf nachweislich am
+# Ziel steht.
 VLZ="$BASE/config/plugins/$PFOLDER.backup.verlauf.json"
-if [ -s "$VLZ" ]; then
-    if [ ! -s "$PDATA/verlauf.json" ]; then
-        cp -p "$VLZ" "$PDATA/verlauf.json" \
-            && echo "<OK> Verlaufsspeicher wiederhergestellt."
-    fi
-    rm -f "$VLZ"
+VL="$PDATA/verlauf.json"
+if [ -f "$VLZ" ]; then
+    rk_inhalt "$VL" verlauf
+    case "$?" in
+    0)
+        rm -f "$VLZ"
+        ;;
+    1)
+        rk_inhalt "$VLZ" verlauf
+        if [ "$?" = 0 ]; then
+            if cp -p "$VLZ" "$VL" 2>/dev/null && [ -s "$VL" ]; then
+                rm -f "$VLZ"
+                echo "<OK> Verlaufsspeicher wiederhergestellt."
+            else
+                echo "<WARNING> Der Verlaufsspeicher liess sich NICHT zurueckholen."
+                echo "<WARNING> Die Rettung bleibt liegen: $VLZ"
+            fi
+        else
+            echo "<WARNING> Die Rettung des Verlaufsspeichers ist selbst unlesbar."
+            echo "<WARNING> Sie bleibt liegen: $VLZ"
+        fi
+        ;;
+    *)
+        echo "<WARNING> verlauf.json liess sich nicht pruefen (fehlt php?)."
+        echo "<WARNING> Die Rettung bleibt liegen: $VLZ"
+        ;;
+    esac
 fi
 
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
@@ -151,19 +226,36 @@ echo "<INFO>  3. Speichern, dann 'Jetzt abrufen'."
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-raumklima}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+#
+# Die vierte Erkennung seit 0.11.10: der INHALT. Eine abgeschnittene Datei
+# fehlt nicht, ist nicht leer und hat auch nicht die Pruefsumme der Vorgabe -
+# sie ging durch alle drei bisherigen Pruefungen. Gemessen am 18.09.2026.
 netz_zurueck() {
     datei=$1; soll=$2; zweit=$3
     ziel="$NETZ_CFG/$datei"
     [ -f "$zweit" ] || return 0
+    rk_inhalt "$ziel" conf
+    ziel_rc=$?
     verloren=0
-    if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
+    if [ "$ziel_rc" = 1 ]; then
         verloren=1
-    else
+    elif [ "$ziel_rc" = 0 ]; then
         ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
         [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
+    else
+        echo "<WARNING> $datei liess sich nicht pruefen (fehlt php?)."
+        echo "<WARNING> Es wurde nichts zurueckgespielt und nichts geloescht."
+        return 0
     fi
     if [ "$verloren" = "1" ]; then
+        rk_inhalt "$zweit" conf
+        if [ "$?" != "0" ]; then
+            echo "<WARNING> Die Zweitschrift $zweit traegt selbst keine lesbaren"
+            echo "<WARNING> Einstellungen. Es wurde nichts zurueckgespielt."
+            return 0
+        fi
         if cp -p "$zweit" "$ziel" 2>/dev/null; then
+            chmod 0600 "$ziel" 2>/dev/null
             echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
         else
             echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
@@ -186,19 +278,36 @@ netz_zurueck "raumklima.json" \
 # Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,
 # womit man vergleichen koennte, also ist das Kriterium "fehlt oder leer".
 # Eine vorhandene Datei wird nie ueberschrieben.
-netz_ohne_vorgabe() {
+#
+# Auch hier entschied bis 0.11.9 `[ ! -s "$ziel" ]`. Eine abgeschnittene
+# geheim.json galt als vorhanden, die Zugangsdaten wurden nicht zurueckgeholt -
+# und postupgrade.sh loeschte die Zweitschrift unmittelbar danach. Gemessen am
+# 18.09.2026 (Fall 10 des eigenen Pruefstands).
+netz_ohne_vorgabe() {   # $1 Dateiname, $2 Art fuer rk_inhalt
     ziel="$NETZ_CFG/$1"
     zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$1"
     [ -f "$zweit" ] || return 0
-    if [ ! -s "$ziel" ]; then
-        if cp -p "$zweit" "$ziel" 2>/dev/null; then
-            chmod 0600 "$ziel" 2>/dev/null
-            echo "<OK> $1 aus der Zweitschrift wiederhergestellt."
-        else
-            echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
-        fi
+    rk_inhalt "$ziel" "$2"
+    ziel_rc=$?
+    if [ "$ziel_rc" = "2" ]; then
+        echo "<WARNING> $1 liess sich nicht pruefen (fehlt php?)."
+        echo "<WARNING> Es wurde nichts zurueckgespielt und nichts geloescht."
+        return 0
+    fi
+    [ "$ziel_rc" = "1" ] || return 0
+    rk_inhalt "$zweit" "$2"
+    if [ "$?" != "0" ]; then
+        echo "<WARNING> Die Zweitschrift $zweit traegt selbst nichts Brauchbares."
+        echo "<WARNING> Es wurde nichts zurueckgespielt."
+        return 0
+    fi
+    if cp -p "$zweit" "$ziel" 2>/dev/null; then
+        chmod 0600 "$ziel" 2>/dev/null
+        echo "<OK> $1 aus der Zweitschrift wiederhergestellt."
+    else
+        echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
     fi
 }
-netz_ohne_vorgabe "geheim.json"
+netz_ohne_vorgabe "geheim.json" geheim
 
 exit 0

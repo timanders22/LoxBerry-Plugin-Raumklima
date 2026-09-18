@@ -14,12 +14,33 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
+/* Die Wurzel wird GELESEN, nicht gerechnet.
+ *
+ * Regeln/03 nennt die Hausform dreistufig, und Stufe 1 ist $LBHOMEDIR. Bis
+ * 0.11.9 fehlte sie hier: die Liste begann mit der Wette
+ * dirname(dirname(__DIR__)). bin/raumklima_abruf.php:38 in derselben Linie
+ * macht es seit jeher richtig. Gemessen am 18.09.2026 (Fall 18 des eigenen
+ * Pruefstands, PHP 8.3.6): liegt die Oberflaeche in einem ZWEITEN Baum -
+ * legacy/, Prueflauf, zweite Installation -, waehrend $LBHOMEDIR auf den
+ * echten zeigt, lud die Oberflaeche die Bibliothek des zweiten Baums.
+ * Klasse H der Bestandsmessung, Bauart H4.
+ *
+ * Der Ordnername kommt aus LBPPLUGINDIR, wo LoxBerry ihn setzt, sonst aus
+ * dem Ablageort - genau wie in rk_paths().
+ */
 $rk_gefunden_lib = false;
+$rk_home   = getenv('LBHOMEDIR');
+$rk_ordner = getenv('LBPPLUGINDIR');
+if (!$rk_ordner) { $rk_ordner = basename(__DIR__); }
 foreach (array(
+    ($rk_home && is_dir($rk_home))
+        ? rtrim($rk_home, '/') . '/webfrontend/html/plugins/' . $rk_ordner . '/rk_lib.php'
+        : '',
     dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/rk_lib.php',
     dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/rk_lib.php',
     dirname(__DIR__) . '/html/rk_lib.php',
 ) as $rk_kandidat) {
+    if ($rk_kandidat === '') { continue; }
     if (is_file($rk_kandidat)) {
         require_once $rk_kandidat;
         $rk_gefunden_lib = true;

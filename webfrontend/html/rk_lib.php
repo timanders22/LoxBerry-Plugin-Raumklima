@@ -691,7 +691,12 @@ function rk_config($heilen = true)
                  * gesetzten Behandler schlaegt mkdir() auf ein vorhandenes
                  * Verzeichnis durch - gemessen am 24.08.2026. */
                 if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
-                @copy($p['sicherung'], $p['config']);
+                /* Nicht mit copy(): das legt die Datei mit 0666 & ~umask an.
+                 * Gemessen am 18.09.2026 (Fall 16 des eigenen Pruefstands):
+                 * die selbstgeheilte raumklima.json stand danach auf 0644 -
+                 * mit dem Aktionstoken darin. rk_json_schreiben() haengt die
+                 * Rechte ans Anlegen und schreibt unteilbar. */
+                rk_json_schreiben($p['config'], $zdaten, 0600);
             }
         } else {
             rk_config_lage('leer');
@@ -894,13 +899,34 @@ function rk_config_vervollstaendigen()
     return $fehlt;
 }
 
+/**
+ * Die Zweitschrift schreiben - unteilbar, nicht mit copy().
+ *
+ * Bis 0.11.9 stand hier `@copy($p['config'], $p['sicherung'])`. copy() oeffnet
+ * das Ziel mit O_TRUNC: die vorhandene Zweitschrift ist SOFORT leer und wird
+ * erst danach gefuellt. Bricht der Lauf in dieser Luecke ab - volle Karte,
+ * Stromausfall -, gibt es weder die alte noch eine neue. Gemessen am
+ * 18.09.2026 (Bestand-2026-09-18/klasse-D; Fall 14 des eigenen Pruefstands,
+ * PHP 8.3.6 unter `ulimit -f 0`): Zweitschrift vorher 120 Byte mit dem
+ * Merktoken, nach dem copy() 0 Byte und der Merktoken weg. Derselbe Fall ueber
+ * rk_json_schreiben(): 120 Byte, unveraendert.
+ *
+ * rk_json_schreiben() schreibt in eine Nebendatei und benennt um; die Rechte
+ * haengen am Anlegen, nicht an einem chmod hinterher.
+ * Vorbild: WaermepumpeCloud 0.9.23 `wp_json_schreiben()`.
+ */
+function rk_sicherung_schreiben($cfg)
+{
+    $p = rk_paths();
+    return rk_json_schreiben($p['sicherung'], $cfg, 0600);
+}
+
 function rk_config_speichern($cfg)
 {
     $p = rk_paths();
     if (!rk_json_schreiben($p['config'], $cfg, 0600)) { return false; }
     if (rk_config_lage() !== 'kaputt') {
-        @copy($p['config'], $p['sicherung']);
-        @chmod($p['sicherung'], 0600);
+        rk_sicherung_schreiben($cfg);
         rk_config_lage('ok');
     }
     return true;
