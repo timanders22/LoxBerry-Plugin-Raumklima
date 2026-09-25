@@ -18,29 +18,40 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  *
  * Regeln/03 nennt die Hausform dreistufig, und Stufe 1 ist $LBHOMEDIR. Bis
  * 0.11.9 fehlte sie hier: die Liste begann mit der Wette
- * dirname(dirname(__DIR__)). bin/raumklima_abruf.php:38 in derselben Linie
- * macht es seit jeher richtig. Gemessen am 18.09.2026 (Fall 18 des eigenen
- * Pruefstands, PHP 8.3.6): liegt die Oberflaeche in einem ZWEITEN Baum -
- * legacy/, Prueflauf, zweite Installation -, waehrend $LBHOMEDIR auf den
- * echten zeigt, lud die Oberflaeche die Bibliothek des zweiten Baums.
+ * dirname(dirname(__DIR__)). Gemessen am 18.09.2026 (Fall 18 des
+ * Pruefstands 0.11.10, PHP 8.3.6): liegt die Oberflaeche in einem ZWEITEN
+ * Baum - legacy/, Prueflauf, zweite Installation -, waehrend $LBHOMEDIR auf
+ * den echten zeigt, lud die Oberflaeche die Bibliothek des zweiten Baums.
  * Klasse H der Bestandsmessung, Bauart H4.
+ *
+ * Welche Lage gilt, entscheidet seit 0.11.11 der eigene Ablageort: liegt
+ * diese Datei unter .../htmlauth/plugins/<ordner>, ist sie installiert -
+ * dann $LBHOMEDIR und danach der eigene Ort -, sonst liegt sie in einem
+ * ausgepackten Archiv, und es gilt nur dessen eigene Bibliothek. Bis 0.11.10
+ * probierte auch ein Archiv die installierten Kandidaten: aus einem Archiv
+ * unter / war das /html/plugins/htmlauth/rk_lib.php ab der Laufwerkswurzel,
+ * sonst drei Ebenen ueber dem Archiv, und was dort lag, lief als Bibliothek
+ * (in WSL gemessen, Pruefung-Raumklima-0.11.11, Faelle T2 und T10); mit
+ * $LBHOMEDIR nahm die Oberflaeche aus einem Archiv die Anlage (Fall A4).
+ * Bauart ZendureSolarFlow 0.9.26, Spotpreis-Tibber 0.9.19.
  *
  * Der Ordnername kommt aus LBPPLUGINDIR, wo LoxBerry ihn setzt, sonst aus
  * dem Ablageort - genau wie in rk_paths().
  */
 $rk_gefunden_lib = false;
-$rk_home   = getenv('LBHOMEDIR');
-$rk_ordner = getenv('LBPPLUGINDIR');
-if (!$rk_ordner) { $rk_ordner = basename(__DIR__); }
-foreach (array(
-    ($rk_home && is_dir($rk_home))
-        ? rtrim($rk_home, '/') . '/webfrontend/html/plugins/' . $rk_ordner . '/rk_lib.php'
-        : '',
-    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/rk_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/rk_lib.php',
-    dirname(__DIR__) . '/html/rk_lib.php',
-) as $rk_kandidat) {
-    if ($rk_kandidat === '') { continue; }
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $rk_home   = getenv('LBHOMEDIR');
+    $rk_ordner = getenv('LBPPLUGINDIR');
+    if (!$rk_ordner) { $rk_ordner = basename(__DIR__); }
+    $rk_kandidaten = array();
+    if ($rk_home && is_dir($rk_home)) {
+        $rk_kandidaten[] = rtrim($rk_home, '/') . '/webfrontend/html/plugins/' . $rk_ordner . '/rk_lib.php';
+    }
+    $rk_kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/rk_lib.php';
+} else {
+    $rk_kandidaten = array(dirname(__DIR__) . '/html/rk_lib.php');
+}
+foreach ($rk_kandidaten as $rk_kandidat) {
     if (is_file($rk_kandidat)) {
         require_once $rk_kandidat;
         $rk_gefunden_lib = true;
@@ -1093,9 +1104,18 @@ if ($rk_lage === 'kaputt') { ?>
     <span class="sm-hilfe"><?= $rk_alter < 0 ? rk_e(rk_t('ALLG.NIE_HILFE'))
         : sprintf(rk_e(rk_t('ALLG.SEKUNDEN_GENAU')), (int) $rk_alter) ?></span>
   </div>
+  <!-- Der grosse Wert ist die MQTT-Veroeffentlichung DIESES Plugins (mqtt_ein),
+       der Autostart des Gateways steht klein darunter. Bis 0.11.10 stand hier
+       der Autostart des Gateways; "MQTT ein" las sich, als sende das Plugin,
+       auch wenn es gar nicht veroeffentlichte.
+       Vorbild ZendureSolarFlow 0.9.21 und BatterieBMS 0.9.22. Ohne
+       MQTT-Abschnitt in general.json heisst der Autostart "nicht feststellbar"
+       statt "aus". -->
   <div class="sm-kachel">MQTT
-    <b class="<?= $rk_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $rk_mqtt['autostart'] ? rk_e(rk_t('ALLG.EIN')) : rk_e(rk_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= rk_e(rk_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($rk_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($rk_cfg['mqtt_ein']) ? rk_e(rk_t('ALLG.EIN')) : rk_e(rk_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= rk_e(sprintf(rk_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$rk_mqtt['gefunden'] ? rk_t('ALLG.NICHT_FESTSTELLBAR')
+        : ($rk_mqtt['autostart'] ? rk_t('ALLG.EIN') : rk_t('ALLG.AUS')))) ?></span>
   </div>
 </div>
 

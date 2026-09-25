@@ -3,9 +3,54 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.10 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.11 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.11
+
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.11.10
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
+- **Was der Abruf über sich selbst sagt, geht nicht mehr retained hinaus.**
+  `ok`, `raumN/ok`, `ohne` und `ampellos` sagen, ob der Abruf selbst Werte
+  bekommen hat; `steht`, `raumN/steht`, `raumN/ruhe`, `zwang` und
+  `raumN/zwang` werden allein durch die Uhr falsch. Zurückbehalten stünden sie
+  nach dem Ende des Abrufs für immer als „in Ordnung" im Broker. Sie gehen
+  jetzt ohne Retain hinaus; Themen und Werte sind unverändert, in Loxone ist
+  nichts umzustellen. Nach einem Neustart von Broker oder Gateway fehlen sie
+  bis zum nächsten Lauf (höchstens fünf Minuten). Ebenso geht bei
+  `raumN/ampel` und `raumN/schimmel` der Wert −1 („keine Aussage", etwa bei
+  einem stummen Fühler) ohne Retain hinaus: Loxone sieht −1 wie bisher, und im
+  Broker bleibt der letzte echte Wert stehen, statt überschrieben zu werden.
+- **Die alten zurückbehaltenen Werte räumt das Plugin selbst ab.** Es fragt
+  den Broker (Adresse und Zugangsdaten aus der LoxBerry-Konfiguration), welche
+  davon noch stehen, schickt für jedes unmittelbar vor dem gültigen Wert eine
+  leere retained Nachricht und merkt sich „erledigt" erst, wenn der Broker
+  bestätigt, dass nichts mehr dasteht. **Grenze:** lässt sich der Broker nicht
+  befragen (kein Broker-Eintrag, Anmeldung abgewiesen), geht die leere
+  Nachricht in jedem Lauf vor dem gültigen Wert hinaus; Loxone sieht dann
+  jedes Mal für einen Augenblick einen leeren Wert.
+- **Die Deinstallation leert die zurückbehaltenen Themen** der Linie
+  (`raumklima_abruf.php --mqtt-leeren`, mit Rückfrage beim Broker). Themen
+  unter einem früher eingestellten Präfix erreicht sie nicht.
+- **Ein Abruf mitten im Update kostete den Verlauf.** Zwischen dem Kopieren
+  der neuen Dateien und dem Abschluss eines Updates liegt fast eine Minute.
+  Lief der Fünf-Minuten-Takt in dieser Lücke, legte er einen neuen Verlauf an,
+  und das Update verwarf daraufhin die Rettung — Nassstunden,
+  Lüftungserfolg und Feuchteeintrag waren weg. Eine Marke hält jetzt jeden
+  Abruf an, bis das Update fertig ist, und die Rettung wird erst gelöscht,
+  wenn sie byteweise am Ziel steht.
+- **Ein ausgepacktes Archiv fasst die Anlage nicht mehr an.** Ohne
+  LoxBerry-Wurzel (erkannt an `config/system/general.json`) oder aus einem
+  Archiv heraus holt der Abruf nichts, sendet nichts und schreibt nichts; die
+  Hakenskripte warnen, statt zu handeln. Kein fester Systempfad mehr und
+  keine Datei mehr, die ab der Laufwerkswurzel gesucht wird.
+- **Nach einem Update rät das Installationsprotokoll nicht mehr zur
+  Ersteinrichtung**, wenn die Räume übernommen wurden.
 
 ## Neu in 0.11.10
 

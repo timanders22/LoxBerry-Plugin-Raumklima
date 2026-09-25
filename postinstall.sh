@@ -15,11 +15,84 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.11.10 stand hier BASE="${ARGV5:-$LBHOMEDIR}" und danach der Rueckfall $SELF/../.. -
+# zwei Ebenen ueber dem Skript, auch in einem fremden Baum. Standen weder das
+# fuenfte Argument noch $LBHOMEDIR, arbeitete das Skript gegen einen Baum, der
+# keine LoxBerry-Wurzel ist (in WSL gemessen, Pruefung-Raumklima-0.11.11,
+# Faelle W1 bis W4). Eine LoxBerry-Wurzel traegt immer
+# config/system/general.json (Regeln/06, der Vorfall dieser Linie vom
+# 05.09.2026). Ohne Wurzel: <WARNING>, nichts anlegen, nichts entfernen,
+# Rueckgabe ungleich 0. Die Funktion steht in preupgrade.sh, postinstall.sh
+# und postupgrade.sh wortgleich; Bauart Skoda-Connect-NG 0.9.24.
+rk_wurzel_suchen() {
+    rk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    rk_i=0
+    while [ -n "$rk_v" ] && [ "$rk_v" != "/" ] && [ "$rk_i" -lt 8 ]; do
+        if [ -d "$rk_v/config/plugins" ] && [ -d "$rk_v/data/plugins" ] \
+           && [ -f "$rk_v/config/system/general.json" ]; then
+            echo "$rk_v"
+            return 0
+        fi
+        rk_v=$(dirname "$rk_v")
+        rk_i=$((rk_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(rk_wurzel_suchen) || BASE=""
+    fi
 fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
+    echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS eingerichtet."
+    exit 1
+fi
+
+# ---------- Die Marke "Aktualisierung laeuft" ----------
+# preupgrade.sh hat sie als Erstes gelegt; solange sie gilt, setzt jeder
+# Abruf aus (rk_upgrade_laeuft() in webfrontend/html/rk_lib.php). Hier wird
+# sie ausgewertet und auf JEDEM Ausgang wieder entfernt (trap) - das Skript
+# steigt an mehreren Stellen mit 'exit 1' aus.
+#
+# Sie zaehlt nur, wenn sie eine Unixzeit traegt und hoechstens 3600 s zurueck
+# bzw. 300 s voraus liegt. Beide Zahlen werden VOR der Rechnung als Zahl
+# geprueft - bash wertet in $(( )) den Inhalt einer Variablen aus
+# (Bestand-2026-09-18/klasse-M); '10#' nimmt einer fuehrenden Null die
+# Oktaldeutung. Ohne lesbare Uhr gilt eine liegende Marke: die Pruefung
+# faellt geschlossen aus (Bauart Sprachsteuerung 0.11.9).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+MARKE_GILT=""
+if [ -f "$MARKE" ]; then
+    MARKE_JETZT=$(date +%s 2>/dev/null)
+    MARKE_WERT=$(cat "$MARKE" 2>/dev/null)
+    case "$MARKE_JETZT" in
+        ''|*[!0-9]*) MARKE_GILT=ja ;;
+        *)
+            case "$MARKE_WERT" in
+                ''|*[!0-9]*) ;;
+                *)
+                    if [ "${#MARKE_WERT}" -le 12 ]; then
+                        MARKE_ALTER=$(( MARKE_JETZT - 10#$MARKE_WERT ))
+                        if [ "$MARKE_ALTER" -ge -300 ] && [ "$MARKE_ALTER" -lt 3600 ]; then
+                            MARKE_GILT=ja
+                        fi
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+fi
+trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 
 # ---------- INHALT statt GROESSE ----------
 # Wortgleich zu preupgrade.sh und postupgrade.sh; ein Hakenskript kann sich
@@ -165,54 +238,46 @@ fi
 
 # Den Verlaufsspeicher zurueckholen (B7), bevor die Rechte gesetzt werden.
 # preupgrade.sh hat ihn neben den Ordner gelegt, weil der Installer den
-# Ordner ausraeumt. Zurueckgeholt wird nur, wenn dort nichts steht - eine
-# frische Reihe ist mehr wert als eine alte, und ueberschreiben wollen wir
-# nichts.
+# Ordner ausraeumt.
 #
-# Bis 0.11.9 entschied `[ ! -s ]` ueber das Zurueckholen, und das `rm -f` der
-# Rettung fiel danach UNBEDINGT. Eine abgeschnittene verlauf.json galt als
-# vorhanden: nicht zurueckgeholt UND die Rettung geloescht - der Verlust war
-# endgueltig. Gemessen am 18.09.2026 (Fall 9 des eigenen Pruefstands).
-# Geloescht wird die Rettung jetzt erst, wenn der Verlauf nachweislich am
-# Ziel steht.
+# Bis 0.11.10 entschied, ob in verlauf.json schon Inhalt steht: dann wurde die
+# Rettung geloescht, ohne zurueckgeholt zu werden. Lief der Takt in der Luecke
+# des Updates, stand dort eine frische Reihe mit einem Punkt - und der ganze
+# Verlauf war weg (in WSL gemessen, Pruefung-Raumklima-0.11.11, Fall Z1).
+# Und die Kopie wurde nach Groesse geprueft (`[ -s ]`), nicht nach Inhalt.
+#
+# Jetzt entscheidet die Marke, ob die Rettung aus DIESEM Vorgang stammt
+# (preupgrade.sh legt beide an, Regeln/06 "Eine Sicherung, die NICHT aus
+# diesem Vorgang stammt, spielt nichts ein"): mit gueltiger Marke kommt die
+# Rettung zurueck, auch ueber eine Reihe aus der Luecke, und sie wird erst
+# geloescht, wenn die Kopie byteweise gleich am Ziel steht. Ohne Marke wird
+# nichts eingespielt; die Rettung bleibt liegen, und es wird gesagt.
 VLZ="$BASE/config/plugins/$PFOLDER.backup.verlauf.json"
 VL="$PDATA/verlauf.json"
 if [ -f "$VLZ" ]; then
-    rk_inhalt "$VL" verlauf
-    case "$?" in
-    0)
-        rm -f "$VLZ"
-        ;;
-    1)
-        rk_inhalt "$VLZ" verlauf
-        if [ "$?" = 0 ]; then
-            if cp -p "$VLZ" "$VL" 2>/dev/null && [ -s "$VL" ]; then
-                rm -f "$VLZ"
-                echo "<OK> Verlaufsspeicher wiederhergestellt."
-            else
-                echo "<WARNING> Der Verlaufsspeicher liess sich NICHT zurueckholen."
-                echo "<WARNING> Die Rettung bleibt liegen: $VLZ"
-            fi
-        else
-            echo "<WARNING> Die Rettung des Verlaufsspeichers ist selbst unlesbar."
-            echo "<WARNING> Sie bleibt liegen: $VLZ"
-        fi
-        ;;
-    *)
+    rk_inhalt "$VLZ" verlauf
+    VLZ_RC=$?
+    if [ "$VLZ_RC" = 2 ]; then
         echo "<WARNING> verlauf.json liess sich nicht pruefen (fehlt php?)."
         echo "<WARNING> Die Rettung bleibt liegen: $VLZ"
-        ;;
-    esac
+    elif [ "$VLZ_RC" != 0 ]; then
+        echo "<WARNING> Die Rettung des Verlaufsspeichers ist selbst unlesbar."
+        echo "<WARNING> Sie bleibt liegen: $VLZ"
+    elif [ -z "$MARKE_GILT" ]; then
+        echo "<WARNING> Eine Rettung des Verlaufsspeichers liegt, aber keine gueltige"
+        echo "<WARNING> Marke einer laufenden Aktualisierung - sie stammt nicht aus"
+        echo "<WARNING> diesem Vorgang und wird nicht eingespielt. Sie bleibt liegen:"
+        echo "<WARNING>   $VLZ"
+    elif cp -p "$VLZ" "$VL" 2>/dev/null && cmp -s "$VLZ" "$VL"; then
+        rm -f "$VLZ"
+        echo "<OK> Verlaufsspeicher wiederhergestellt."
+    else
+        echo "<WARNING> Der Verlaufsspeicher liess sich NICHT zurueckholen."
+        echo "<WARNING> Die Rettung bleibt liegen: $VLZ"
+    fi
 fi
 
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
-
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
-echo "<INFO>  1. Reiter Einstellungen: Breiten- und Laengengrad eintragen."
-echo "<INFO>  2. Die Adresse deiner Sensorquelle eintragen und je Raum die"
-echo "<INFO>     beiden Pfade - der Reiter Test zeigt, welche Schluessel es gibt."
-echo "<INFO>  3. Speichern, dann 'Jetzt abrufen'."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
@@ -223,8 +288,10 @@ echo "<INFO>  3. Speichern, dann 'Jetzt abrufen'."
 #
 # Eine gueltige Konfiguration wird NIE ueberschrieben. Eine Sicherung, die
 # echte Einstellungen ersetzt, waere schlimmer als gar keine.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-raumklima}"
+# Dieselbe Wurzel wie oben. Bis 0.11.10 rechnete dieser Block sie ein zweites
+# Mal aus $5 und $LBHOMEDIR.
+NETZ_BASE="$BASE"
+NETZ_PDIR="$PFOLDER"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 #
 # Die vierte Erkennung seit 0.11.10: der INHALT. Eine abgeschnittene Datei
@@ -309,5 +376,37 @@ netz_ohne_vorgabe() {   # $1 Dateiname, $2 Art fuer rk_inhalt
     fi
 }
 netz_ohne_vorgabe "geheim.json" geheim
+
+# ---------- Schlusswort: die Erstanleitung nur ohne Einstellungen ----------
+# postinstall.sh laeuft auch bei jedem Update. Bis 0.11.10 riet es danach
+# unbedingt zur Ersteinrichtung, auch wenn die Raeume gerade uebernommen
+# worden waren (Regeln/06 "Nach einer Aktualisierung darf der Schlusstext
+# nicht zur Erstinstallation raten"; Auftrag vom 24.09.2026). Das Schlusswort
+# steht deshalb HINTER allem Zurueckspielen, und es entscheidet der Inhalt:
+# eingerichtet ist raumklima.json, wenn sie mindestens einen Raum mit Namen
+# fuehrt - dasselbe Merkmal, an dem rk_raeume() einen Raum ueberhaupt fuehrt.
+# Ein blosses Aktionstoken zaehlt nicht: es entsteht beim ersten Oeffnen der
+# Oberflaeche.
+rk_eingerichtet() {   # $1 Datei; 0 = eingerichtet
+    php -r '
+        $d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d) || !isset($d["raeume"]) || !is_array($d["raeume"])) { exit(1); }
+        foreach ($d["raeume"] as $r) {
+            if (is_array($r) && isset($r["name"]) && is_string($r["name"])
+                && trim($r["name"]) !== "") { exit(0); }
+        }
+        exit(1);
+    ' -- "$1" 2>/dev/null
+}
+if rk_eingerichtet "$CF"; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen - es ist nichts weiter zu tun."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
+    echo "<INFO>  1. Reiter Einstellungen: Breiten- und Laengengrad eintragen."
+    echo "<INFO>  2. Die Adresse deiner Sensorquelle eintragen und je Raum die"
+    echo "<INFO>     beiden Pfade - der Reiter Test zeigt, welche Schluessel es gibt."
+    echo "<INFO>  3. Speichern, dann 'Jetzt abrufen'."
+fi
 
 exit 0

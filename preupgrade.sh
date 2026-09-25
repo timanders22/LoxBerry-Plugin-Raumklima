@@ -16,7 +16,66 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.11.10 stand hier BASE="${ARGV5:-$LBHOMEDIR}" ohne jede Pruefung - mit leerem BASE hiessen die Pfade /config/plugins/<ordner>. Standen weder das
+# fuenfte Argument noch $LBHOMEDIR, arbeitete das Skript gegen einen Baum, der
+# keine LoxBerry-Wurzel ist (in WSL gemessen, Pruefung-Raumklima-0.11.11,
+# Faelle W1 bis W4). Eine LoxBerry-Wurzel traegt immer
+# config/system/general.json (Regeln/06, der Vorfall dieser Linie vom
+# 05.09.2026). Ohne Wurzel: <WARNING>, nichts anlegen, nichts entfernen,
+# Rueckgabe ungleich 0. Die Funktion steht in preupgrade.sh, postinstall.sh
+# und postupgrade.sh wortgleich; Bauart Skoda-Connect-NG 0.9.24.
+rk_wurzel_suchen() {
+    rk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    rk_i=0
+    while [ -n "$rk_v" ] && [ "$rk_v" != "/" ] && [ "$rk_i" -lt 8 ]; do
+        if [ -d "$rk_v/config/plugins" ] && [ -d "$rk_v/data/plugins" ] \
+           && [ -f "$rk_v/config/system/general.json" ]; then
+            echo "$rk_v"
+            return 0
+        fi
+        rk_v=$(dirname "$rk_v")
+        rk_i=$((rk_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(rk_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
+    echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS gesichert."
+    exit 1
+fi
+
+# ---------- Die Marke "Aktualisierung laeuft", als ERSTES ----------
+#
+# Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
+# Minute (Regeln/06, am Geraet gemessen), und der Fuenf-Minuten-Takt laeuft
+# in dieser Zeit. purge_installation hat data/plugins/<ordner>/ dann schon
+# geleert; ein Abruf legte eine frische verlauf.json an, und postinstall.sh
+# verwarf daraufhin die Rettung (in WSL gemessen, Pruefung-Raumklima-0.11.11,
+# Fall Z1). Solange die Marke gilt, setzt jeder Abruf aus
+# (rk_upgrade_laeuft() in webfrontend/html/rk_lib.php); postinstall.sh
+# entfernt sie. Sie liegt NEBEN dem Datenordner, sonst loeschte
+# purge_installation sie mit. Inhalt: die Unixzeit.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if date +%s > "$MARKE" 2>/dev/null && [ -s "$MARKE" ]; then
+    echo "<INFO> Marke gesetzt: der Abruf setzt bis zum Ende der Aktualisierung aus."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<WARNING> Ein Abruf waehrend der Aktualisierung kann den Verlauf verdraengen."
+fi
 
 # ---------- INHALT statt GROESSE ----------
 #
@@ -163,9 +222,10 @@ echo "<OK> preupgrade abgeschlossen."
 # Zugangsdaten - aber sie lebt nur, solange das Update laeuft.
 # postupgrade.sh raeumt sie unmittelbar danach weg, und uninstall/uninstall
 # loescht sie in jedem Fall.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-raumklima}"
-if [ -z "$NETZ_BASE" ] || [ ! -d "$NETZ_BASE" ]; then NETZ_BASE="$BASE"; fi
+# Dieselbe Wurzel wie oben. Bis 0.11.10 rechnete dieser Block sie ein zweites
+# Mal aus $5 und $LBHOMEDIR.
+NETZ_BASE="$BASE"
+NETZ_PDIR="$PFOLDER"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 GZ="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json"
 # Auch hier: eine abgeschnittene geheim.json besteht `[ -s ]` und verdraengte

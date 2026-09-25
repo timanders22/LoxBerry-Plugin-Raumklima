@@ -149,11 +149,16 @@ date_default_timezone_set(rk_zeitzone());
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung (Regeln/06; der Anlass war
+ * diese Linie am 05.09.2026). Bis 0.11.10 genuegten hier config/plugins und
+ * webfrontend - in einem fremden Baum ohne general.json wurde der Baum zur
+ * Wurzel (in WSL gemessen, Pruefung-Raumklima-0.11.11, Faelle W7 und W9).
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -163,7 +168,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -174,31 +180,77 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und DANACH NICHTS MEHR.
+ *
+ * Bis 0.11.10 stand hier als dritte Stufe ein fest verdrahteter Systempfad
+ * (das Heimatverzeichnis des Benutzers loxberry), an zwei Stellen: in
+ * rk_paths() und in rk_t(). Er macht jede Suche wirkungslos: ein Archiv ohne
+ * Wurzel nahm damit die Anlage unter diesem Pfad, und der Abruf schrieb dort
+ * stand.json (in WSL gemessen, Pruefung-Raumklima-0.11.11, Fall T5). Bauart
+ * tb_lbhome() aus Spotpreis-Tibber 0.9.19.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter -
+ * general.json wird hier nicht verlangt, damit Attrappen ohne sie
+ * (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst "keine Wurzel"; jeder
+ * Aufrufer muss das abfangen. */
+function rk_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function rk_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $home = $k; break; }
-        }
-    }
+    $home = rk_lbhome();
     /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
      * Der feste Name greift nur, wo der ermittelte nachweislich kein
      * Plugin-Ordner sein kann - aus dem ausgepackten Archiv heraus heisst
      * er 'html'. Haengt LoxBerry bei einer Zweitinstallation einen Zaehler
-     * an (raumklima_01), zeigten sonst beide auf dieselbe Konfiguration. */
-    $dir = getenv('LBPPLUGINDIR');
-    if (!$dir) { $dir = basename(dirname(__FILE__)); }
-    if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html' || $dir === 'plugins') {
+     * an (raumklima_01), zeigten sonst beide auf dieselbe Konfiguration.
+     * Von LBPPLUGINDIR zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten auch dort nicht (Bauart
+     * tb_paths(), Spotpreis-Tibber 0.9.19). */
+    $dir = basename(dirname(__FILE__));
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
+        $dir = $lbp;
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html' || $dir === 'plugins') {
         $dir = 'raumklima';
     }
-    if ($home) {
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge
+     * mit ihrer Attrappe, und so ruft die Deinstallation den Abruf). Sonst
+     * ist das ein ausgepacktes Archiv oder ein Pruefordner: alles bleibt in
+     * dessen eigenem Ordner, und bin/raumklima_abruf.php steigt aus
+     * (rk_keine_wurzel_abbruch()).
+     *
+     * Bis 0.11.10 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel,
+     * mit $LBHOMEDIR allein (am Geraet steht es in /etc/environment) ebenso:
+     * der Abruf schrieb stand.json der Anlage, die Oberflaeche legte dort ein
+     * Aktionstoken an, und der Endpunkt nahm das Token der Anlage an (in WSL
+     * gemessen, Pruefung-Raumklima-0.11.11, Faelle A1, A3, A4, A5). */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
+    }
+    if ($home !== '') {
         $p = array(
-            'home'      => rtrim($home, '/'),
+            'home'      => $home,
             'plugin'    => $dir,
             'configdir' => $home . '/config/plugins/' . $dir,
             'config'    => $home . '/config/plugins/' . $dir . '/raumklima.json',
@@ -207,6 +259,10 @@ function rk_paths()
             'datadir'   => $home . '/data/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
             'log'       => $home . '/log/plugins/' . $dir . '/raumklima.log',
+            /* Die Marke "Aktualisierung laeuft" liegt NEBEN dem Datenordner:
+             * purge_installation raeumt den Ordner beim Upgrade ab. */
+            'marke'     => $home . '/data/plugins/' . $dir . '.upgrade_laeuft',
+            'archiv'    => '',
         );
     } else {
         $basis = dirname(dirname(__DIR__));
@@ -219,9 +275,70 @@ function rk_paths()
             'datadir'   => $basis . '/data',
             'logdir'    => $basis . '/log',
             'log'       => $basis . '/log/raumklima.log',
+            'marke'     => '',
+            // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+            // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+            'archiv'    => $gefunden,
         );
     }
     return $p;
+}
+
+/* Fuer bin/raumklima_abruf.php: ohne Wurzel oder aus einem Archiv nichts
+ * holen, nichts senden, nichts schreiben - eine Meldung auf stderr und
+ * Rueckgabewert 1. Der Aufruf steht dort VOR allem, was schreibt; nur
+ * --selbsttest (reine Rechnung, schreibt nichts) laeuft davor. Bauart
+ * tb_keine_wurzel_abbruch() aus Spotpreis-Tibber 0.9.19. */
+function rk_keine_wurzel_abbruch($programm)
+{
+    $p = rk_paths();
+    if ($p['home'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
+/**
+ * Laeuft gerade eine Aktualisierung? Dann setzt jeder Abruf aus.
+ *
+ * Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
+ * Minute (Regeln/06, am Geraet gemessen), und der Takt laeuft in dieser Zeit.
+ * purge_installation hat data/plugins/<ordner>/ dann schon geleert: ein
+ * Abruf legte eine frische verlauf.json an, postinstall.sh sah "Verlauf hat
+ * Inhalt" und loeschte die Rettung - Nassstunden, Lueftungserfolg und
+ * Feuchteeintrag waren weg (in WSL gemessen, Pruefung-Raumklima-0.11.11,
+ * Faelle Z1 und Z2). preupgrade.sh legt deshalb als Erstes die Marke
+ * data/plugins/<ordner>.upgrade_laeuft mit der Unixzeit an; postinstall.sh
+ * wertet sie aus und entfernt sie, uninstall/uninstall raeumt sie weg.
+ *
+ * Sie gilt, wenn ihr Inhalt eine Zahl ist und hoechstens 3600 s zurueck bzw.
+ * 300 s voraus liegt (eine nachgestellte Uhr; Bauart Sprachsteuerung 0.11.9,
+ * Govee 0.9.20). Aelter, weiter voraus oder keine Zahl: sie gilt nicht - eine
+ * abgebrochene Installation darf das Plugin nicht fuer immer stilllegen. Der
+ * Inhalt wird nur mit preg_match geprueft und nie ausgewertet. Ohne lesbare
+ * Uhr gilt eine liegende Marke (der Schutz faellt geschlossen aus).
+ */
+function rk_upgrade_laeuft()
+{
+    $p = rk_paths();
+    if ($p['marke'] === '' || !is_file($p['marke'])) { return false; }
+    $jetzt = time();
+    if (!is_int($jetzt) || $jetzt <= 0) { return true; }
+    $seit = trim((string) @file_get_contents($p['marke']));
+    if (!preg_match('/^[0-9]{1,12}$/', $seit)) { return false; }
+    $alter = $jetzt - (int) $seit;
+    return $alter >= -300 && $alter < 3600;
 }
 
 /* ==================================================================
@@ -2439,6 +2556,14 @@ function rk_stand()
  */
 function rk_abrufen($erzwingen = false)
 {
+    /* Waehrend einer Aktualisierung nichts holen und nichts schreiben - auch
+     * nicht aus der Oberflaeche oder ueber den Endpunkt; siehe
+     * rk_upgrade_laeuft(). Das Abbild bleibt, wie es ist. */
+    if (rk_upgrade_laeuft()) {
+        rk_log('Eine Aktualisierung laeuft (Marke ' . basename(rk_paths()['marke'])
+            . ') - dieser Abruf setzt aus.');
+        return rk_stand();
+    }
     $cfg = rk_config();
     $p = rk_paths();
     $alt = rk_stand();
@@ -2892,16 +3017,38 @@ function rk_mqtt_senden($stand)
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
     $paare = rk_mqtt_werte($stand);
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    /* Die Altwerte: Themen, die bis 0.11.10 retained hinausgingen und jetzt
+     * fluechtig gehen (rk_mqtt_altlast()). Eine Umstellung loescht nichts -
+     * der alte Wert stuende im Broker weiter und kaeme nach jedem Neustart
+     * von Broker oder Gateway zurueck. Welche noch stehen, sagt der Broker
+     * (rk_mqtt_altlast_pruefen()); jedes davon bekommt eine leere
+     * retain-Nutzlast UNMITTELBAR vor seinem gueltigen Wert, als Nachbarzeile
+     * im selben Lauf. Jedes Altthema hat in jedem Lauf einen Wert (Zahlen aus
+     * rk_mqtt_werte()) - eine leere Nachricht ohne Wert dahinter entsteht hier
+     * nicht; sie kaeme am Miniserver als leerer Wert an (Regeln/07). */
+    $alt = array();
+    foreach ($paare as $k => $v) {
+        if ($v === null || $v === '') { continue; }
+        if (rk_mqtt_altlast($k)) { $alt[] = (string) $k; }
+    }
     $nr = 0; $txt = '';
     $s = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $nr, $txt, 2);
     if (!$s) {
         rk_log_gebremst('mqtt_socket', 'MQTT: UDP-Eingang nicht erreichbar: ' . trim($txt));
         return false;
     }
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    $weg = array_flip(rk_mqtt_altlast_pruefen($praefix, $alt)['themen']);
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }   // lieber nichts als eine erfundene 0
-        @fwrite($s, (rk_mqtt_retain($k) ? 'retain ' : 'publish ')
+        if (isset($weg[$k])) {
+            /* Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau
+             * die Form, die das Gateway als Loeschung liest (Regeln/07,
+             * Nachtrag 19.09.2026). */
+            @fwrite($s, 'retain ' . $praefix . '/' . $k . ' ');
+            usleep(RK_UDP_PAUSE_US);
+        }
+        @fwrite($s, (rk_mqtt_behalten($k, $v) ? 'retain ' : 'publish ')
                   . $praefix . '/' . $k . ' ' . rk_mqtt_wert_saeubern($v));
         /* Siehe RK_UDP_PAUSE_US: ohne Pause verwirft der Eingang stumm,
          * und fwrite() meldet trotzdem Erfolg. */
@@ -3008,6 +3155,25 @@ function rk_mqtt_werte($stand)
  * ist an derselben Anlage belegt: Intercom 2.2.7 schickt ueber denselben
  * UDP-Eingang 'retain ' und hat vier retained Themen im Broker.
  *
+ * Seit 0.11.11 gehen fluechtig (Regeln/07, Abschnitt 3, Entscheidungen vom
+ * 18., 19. und 24.09.2026), weil sie nach dem Ende des Abrufs zurueckbehalten
+ * als Falschaussage stehen blieben:
+ *   ok, raumN/ok        "Messwerte liegen vor" - der Erfolg des EIGENEN
+ *                       Abrufs; ok ist nie retained.
+ *   ohne                Zahl der Raeume ohne Werte, also der Ausfaelle.
+ *   ampellos            Zahl der Raeume ohne Aussage zur Schimmelgefahr - sie
+ *                       entsteht aus fehlenden Werten (stummer Fuehler,
+ *                       fehlende Aussenwerte), also aus dem eigenen Abruf.
+ *   steht, raumN/steht  "der Wert bewegt sich seit steht_min nicht mehr" -
+ *                       gerechnet aus der Uhr des Abrufs; eine
+ *                       zurueckbehaltene 0 wird allein durch die Zeit falsch.
+ *   raumN/ruhe          Ruhezeit jetzt aktiv - haengt nur an der Uhr.
+ *   zwang, raumN/zwang  Zwangslueftung nach N Stunden ohne Empfehlung -
+ *                       schaltet ebenfalls allein durch die Zeit.
+ * Die Altwerte raeumt rk_mqtt_senden() ab, solange der Broker sie meldet
+ * (rk_mqtt_altlast_pruefen()); die Deinstallation leert jedes Thema, das
+ * eine Fassung je retained gesendet hat (rk_mqtt_leeren()).
+ *
  * Die Liste ist eine POSITIVLISTE. Ein Thema, das hier nicht steht, geht
  * ohne Retain hinaus - die sichere Richtung: ein nicht retained Zustand
  * ist unbequem, ein retained Messwert eine Falschaussage. Wer ein Thema
@@ -3019,20 +3185,398 @@ function rk_mqtt_retain($thema)
     if ($zustand === null) {
         $zustand = array_flip(array(
             /* Sammelzustaende */
-            'ok', 'raeume', 'lueften', 'schimmel', 'feucht', 'trocken',
-            'ohne', 'steht', 'kuehlen', 'co2', 'fenster', 'ampellos',
-            'schwuel', 'zwang', 'sperre', 'vereist', 'heizfall',
+            'raeume', 'lueften', 'schimmel', 'feucht', 'trocken',
+            'kuehlen', 'co2', 'fenster',
+            'schwuel', 'sperre', 'vereist', 'heizfall',
             /* Zustaende je Raum */
-            'raumN/name', 'raumN/ok', 'raumN/lueften', 'raumN/schimmel',
-            'raumN/feucht', 'raumN/trocken', 'raumN/steht', 'raumN/ampel',
+            'raumN/name', 'raumN/lueften', 'raumN/schimmel',
+            'raumN/feucht', 'raumN/trocken', 'raumN/ampel',
             'raumN/kuehlen', 'raumN/co2_hoch', 'raumN/fenster',
             'raumN/fenster_zu', 'raumN/schwuel', 'raumN/vereist',
-            'raumN/ruhe', 'raumN/zwang', 'raumN/dusche', 'raumN/kuehlfrei',
+            'raumN/dusche', 'raumN/kuehlfrei',
             'raumN/sperre',
         ));
     }
     $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
     return isset($zustand[$t]);
+}
+
+/**
+ * Geht DIESER Wert retained hinaus? Die Tabelle rk_mqtt_retain() entscheidet je
+ * Thema; bei raumN/ampel und raumN/schimmel entscheidet zusaetzlich der Wert.
+ *
+ * -1 heisst dort "keine Aussage" - der Fuehler schweigt oder die Aussenwerte
+ * fehlen, also eine Aussage des Abrufs ueber sich selbst. Bis 0.11.10 ging sie
+ * retained hinaus und ueberschrieb im Broker den zuletzt gemessenen Stand (in
+ * WSL gemessen, Pruefung-Raumklima-0.11.11, Faelle R16 bis R18). Jetzt geht
+ * der Platzhalter FLUECHTIG hinaus: Loxone sieht -1 wie bisher, und im Broker
+ * bleibt der letzte echte Wert (Entscheidung des Hausherrn vom 25.09.2026,
+ * Bauart Robonect 1.1.12 und KODI-NG 1.2.10). Themen und Werte bleiben gleich.
+ */
+function rk_mqtt_behalten($thema, $wert)
+{
+    if (!rk_mqtt_retain($thema)) { return false; }
+    $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
+    if (($t === 'raumN/ampel' || $t === 'raumN/schimmel') && is_numeric($wert) && (float) $wert < 0) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Ging dieses Thema in einer veroeffentlichten Fassung retained hinaus und
+ * geht jetzt fluechtig? Dann kann im Broker ein Altwert stehen.
+ *
+ * Die Retain-Tabelle ist in den Archiven 0.11.5 bis 0.11.10 wortgleich
+ * (gemessen am 25.09.2026 an allen sechs); vor 0.11.5 ging nichts retained.
+ */
+function rk_mqtt_altlast($thema)
+{
+    static $alt = null;
+    if ($alt === null) {
+        $alt = array_flip(array('ok', 'ohne', 'steht', 'ampellos', 'zwang',
+            'raumN/ok', 'raumN/steht', 'raumN/ruhe', 'raumN/zwang'));
+    }
+    $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
+    return isset($alt[$t]);
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat die Anmeldung (CONNACK 0) und JEDEN Filter
+ * (SUBACK-Rueckgabe unter 0x80) bestaetigt; was dann nicht unter 'belegt'
+ * steht, ist leer. 'unbekannt': er war nicht zu fragen (keine Wurzel, keine
+ * general.json, keine Verbindung, Anmeldung abgewiesen, Filter abgelehnt,
+ * keine Antwort) - das heisst nie "nichts belegt" und traegt nie einen
+ * Merker (Muster 11 der Nachlese).
+ *
+ * Warum ueberhaupt fragen: das Abraeumen laeuft ueber den UDP-Eingang des
+ * Gateways, und dort meldet fwrite() auch fuer ein verworfenes Datagramm
+ * Erfolg (Regeln/07, "Ein Absender merkt nichts davon", Nachtrag vom
+ * 19.09.2026). Belegt ist das Abraeumen erst, wenn der Broker selbst sagt,
+ * dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; Bauart bw_mqtt_behalten_liste() (Beschattungswaechter
+ * 0.9.21), dort aus tb_mqtt_behalten_liste() (Spotpreis-Tibber 0.9.19).
+ * Belegt ist ein Thema nur am EMPFANGENEN Paket mit Retain-Merkmal und nicht
+ * leerer Nutzlast. Die Anmeldung nimmt Brokeruser/Brokerpass aus der
+ * general.json (Regeln/07, Abschnitt 2); das Kennwort steht nur im
+ * CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
+ */
+function rk_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = rk_paths();
+    if ($p['home'] === '') { return $aus; }
+    $gen = rk_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('rkrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $abgelehnt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Je Filter ein Rueckgabebyte hinter der Paketkennung;
+                       0x80 heisst abgelehnt. */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { $abgelehnt = true; }
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt && !$abgelehnt) {
+                $aus['lage'] = 'ok';
+            } else {
+                $aus['belegt'] = array();
+            }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * $liste: die Altthemen (ohne Praefix), die dieser Lauf mit einem Wert sendet.
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Bis der Merker liegt, wird je Lauf der Broker gefragt: keines belegt ->
+ * Merker schreiben, nichts abraeumen; einige belegt -> genau diese, kein
+ * Merker, der naechste Lauf fragt wieder; nicht zu fragen -> alle, KEIN
+ * Merker - dann raeumt jeder Lauf ab (Grenze in der README). Der Merker
+ * entsteht NUR aus der Antwort des Brokers, nie aus dem Senden (Regeln/07
+ * Z. 215: am Geraet stand der Altwert nach einem gesetzten Merker weiter im
+ * Broker).
+ *
+ * Kennung "leer-bestaetigt <praefix>: <Themenliste sortiert>" in
+ * data/plugins/<ordner>/retain_altlast_bestaetigt: ein anderes Praefix oder
+ * eine andere Raumzahl gilt nicht und fragt neu. Eine Vorfassung hatte keinen
+ * Merker; purge_installation raeumt ihn bei jedem Update mit ab, dann wird
+ * einmal nachgefragt. Bauart bw_mqtt_altlast() (Beschattungswaechter 0.9.21).
+ */
+function rk_mqtt_altlast_pruefen($praefix, array $liste)
+{
+    $praefix = (string) $praefix;
+    if (!$liste) { return array('lage' => 'erledigt', 'themen' => array()); }
+    $p = rk_paths();
+    $merker = $p['datadir'] . '/retain_altlast_bestaetigt';
+    $sortiert = $liste;
+    sort($sortiert, SORT_STRING);
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $sortiert);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = rk_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+        if (@file_put_contents($merker, $kennung . "\n") !== false) {
+            rk_log('MQTT: unter ' . $praefix . '/ steht keiner der frueher zurueckbehaltenen '
+                . 'Werte mehr im Broker (' . implode(', ', $sortiert) . '; vom Broker bestaetigt).');
+        }
+        return array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        rk_log_gebremst('altlast_belegt', 'MQTT: im Broker stehen noch zurueckbehaltene Altwerte '
+            . 'unter ' . $praefix . '/ (' . implode(', ', $t) . ') - sie gehen mit leerer Nutzlast '
+            . 'unmittelbar vor dem gueltigen Wert hinaus; der naechste Lauf fragt wieder nach.');
+        return array('lage' => 'belegt', 'themen' => $t);
+    }
+    rk_log_gebremst('altlast_unbekannt', 'MQTT: der Broker liess sich nicht befragen (Brokerhost, '
+        . 'Brokerport und Zugangsdaten in general.json) - die frueher zurueckbehaltenen Werte '
+        . 'unter ' . $praefix . '/ gehen deshalb in jedem Lauf mit leerer Nutzlast unmittelbar '
+        . 'vor dem gueltigen Wert hinaus. Siehe README.', 86400);
+    return array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Die Themen, die die Deinstallation leert: jedes, das eine veroeffentlichte
+ * Fassung je retained gesendet hat - die Tabelle rk_mqtt_retain() und die
+ * Altwerte rk_mqtt_altlast(), je Raum fuer alle RK_RAEUME Nummern (auch ein
+ * frueher eingerichteter Raum kann noch Werte im Broker haben). Was nie
+ * retained ging, bleibt unberuehrt: eine leere Nachricht darauf loeschte
+ * nichts, kaeme aber am Miniserver als leerer Wert an.
+ */
+function rk_mqtt_leer_themen()
+{
+    $aus = array();
+    foreach (array_keys(rk_mqtt_themen()) as $k) {
+        if (!rk_mqtt_retain($k) && !rk_mqtt_altlast($k)) { continue; }
+        if (strpos($k, 'raumN/') === 0) {
+            for ($n = 1; $n <= RK_RAEUME; $n++) {
+                $aus[] = 'raum' . $n . '/' . substr($k, 6);
+            }
+        } else {
+            $aus[] = $k;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Die zurueckbehaltenen Themen leeren - fuer uninstall/uninstall
+ * (raumklima_abruf.php --mqtt-leeren). Schreibt kein Protokoll und legt
+ * nichts an.
+ *
+ * Geloescht wird ueber den UDP-Eingang des Gateways, "retain <thema> " mit
+ * leerer Nutzlast. VOR der ersten Runde und nach jeder wird der Broker
+ * gefragt (rk_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Steht nichts da, geht nichts hinaus. Ist der
+ * Broker nicht zu fragen, gehen alle Themen in jeder Runde hinaus, und die
+ * Ausgabe sagt, dass nicht nachgelesen wurde - der Eingang verwirft unter
+ * Last Datagramme (Regeln/07), ein blosses Senden ist kein Beleg. Bauart
+ * bw_mqtt_leeren() (Beschattungswaechter 0.9.21), zwischen den Datagrammen
+ * die Pause RK_UDP_PAUSE_US dieser Linie.
+ *
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * der Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function rk_mqtt_leeren($runden = 3, $pause_us = 1000000)
+{
+    $c = rk_config(false);
+    $w = trim((string) $c['mqtt_topic'], '/');
+    $z = rk_mqtt_zustand();
+    if (!$z['udpport']) {
+        echo '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
+           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.' . "\n";
+        return 2;
+    }
+    $alle = array();
+    foreach (rk_mqtt_leer_themen() as $t) { $alle[] = $w . '/' . $t; }
+    $n = count($alle);
+    $f = rk_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen unter ' . $w
+           . '/ steht zurueckbehalten - nichts zu leeren.' . "\n";
+        return 0;
+    }
+    $eno = 0;
+    $etxt = '';
+    $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $eno, $etxt, 2);
+    if (!$fp) {
+        echo '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
+           . (int) $z['udpport'] . ') - zurueckbehaltene Themen unter ' . $w
+           . '/ wurden nicht geleert.' . "\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    $gelaufen = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) $pause_us); }
+        $gelaufen = $r;
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            if (@fwrite($fp, 'retain ' . $t . ' ') !== false) { $datagramme++; }
+            usleep(RK_UDP_PAUSE_US);
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = rk_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($fp);
+    echo '<INFO> MQTT: ' . $zu_leeren . ' von ' . $n . ' Themen unter ' . $w . '/ mit leerer Nutzlast '
+       . 'an den UDP-Eingang ' . (int) $z['udpport'] . ' des Gateways gesendet (' . $gelaufen
+       . ' Runde(n), ' . $datagramme . ' Datagramme).' . "\n";
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen steht mehr '
+           . 'zurueckbehalten.' . "\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
+        return 1;
+    }
+    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+       . 'verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit '
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
+    return 0;
 }
 
 function rk_mqtt_themen()
@@ -3657,15 +4201,18 @@ function rk_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
+        /* Dieselbe Wurzelregel wie rk_paths(): Umgebung, dann Suche, danach
+         * nichts. Bis 0.11.10 stand hier der fest verdrahtete Systempfad als
+         * dritte Stufe, und ohne Wurzel hiess der Pfad
+         * '' . '/templates/plugins/html/lang' - ab der Laufwerkswurzel; was
+         * dort lag, galt vor den eigenen Sprachdateien (in WSL gemessen,
+         * Pruefung-Raumklima-0.11.11, Fall T1). Die Wurzel kommt aus
+         * rk_paths(), damit ein Archiv unter einer echten Wurzel auch hier im
+         * eigenen Ordner bleibt. */
+        $home = rk_paths()['home'];
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . rk_sprache() . '.ini', true, INI_SCANNER_RAW);
@@ -3871,10 +4418,17 @@ function rk_fassung()
      * Fassungseintrag im Kopf jeder Sicherungsdatei - und auffallen konnte
      * es nicht, weil im ausgepackten Archiv der erste Kandidat trifft.
      * Der dritte liest die Plugin-Datenbank, die LoxBerry selbst fuehrt. */
-    foreach (array(dirname(dirname(__DIR__)) . '/plugin.cfg',
-                   rk_paths()['home'] . '/config/plugins/'
-                   . rk_paths()['plugin'] . '/plugin.cfg',
-                   __DIR__ . '/plugin.cfg') as $p) {
+    /* Der zweite Kandidat nur mit Wurzel. Bis 0.11.10 hiess er ohne Wurzel
+     * '/config/plugins/<ordner>/plugin.cfg' ab der Laufwerkswurzel, und eine
+     * Datei dort lieferte die Fassung (in WSL gemessen,
+     * Pruefung-Raumklima-0.11.11, Fall T4). */
+    $kandidaten = array(dirname(dirname(__DIR__)) . '/plugin.cfg');
+    if (rk_paths()['home'] !== '') {
+        $kandidaten[] = rk_paths()['home'] . '/config/plugins/'
+                      . rk_paths()['plugin'] . '/plugin.cfg';
+    }
+    $kandidaten[] = __DIR__ . '/plugin.cfg';
+    foreach ($kandidaten as $p) {
         if (!is_file($p)) { continue; }
         foreach (file($p, FILE_IGNORE_NEW_LINES) ?: array() as $z) {
             if (preg_match('/^\s*VERSION\s*=\s*([0-9][0-9A-Za-z.\-]*)/', $z, $m)) {

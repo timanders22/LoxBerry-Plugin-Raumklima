@@ -13,10 +13,47 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.11.10 stand hier BASE="${ARGV5:-$LBHOMEDIR}" und danach der Rueckfall $SELF/../.. -
+# zwei Ebenen ueber dem Skript, auch in einem fremden Baum. Standen weder das
+# fuenfte Argument noch $LBHOMEDIR, arbeitete das Skript gegen einen Baum, der
+# keine LoxBerry-Wurzel ist (in WSL gemessen, Pruefung-Raumklima-0.11.11,
+# Faelle W1 bis W4). Eine LoxBerry-Wurzel traegt immer
+# config/system/general.json (Regeln/06, der Vorfall dieser Linie vom
+# 05.09.2026). Ohne Wurzel: <WARNING>, nichts anlegen, nichts entfernen,
+# Rueckgabe ungleich 0. Die Funktion steht in preupgrade.sh, postinstall.sh
+# und postupgrade.sh wortgleich; Bauart Skoda-Connect-NG 0.9.24.
+rk_wurzel_suchen() {
+    rk_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    rk_i=0
+    while [ -n "$rk_v" ] && [ "$rk_v" != "/" ] && [ "$rk_i" -lt 8 ]; do
+        if [ -d "$rk_v/config/plugins" ] && [ -d "$rk_v/data/plugins" ] \
+           && [ -f "$rk_v/config/system/general.json" ]; then
+            echo "$rk_v"
+            return 0
+        fi
+        rk_v=$(dirname "$rk_v")
+        rk_i=$((rk_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(rk_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht"
+    echo "<WARNING> bestimmen: weder das fuenfte Argument noch \$LBHOMEDIR noch"
+    echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS entfernt."
+    exit 1
 fi
 rm -f "$BASE/data/plugins/$PFOLDER/stand.json"
 

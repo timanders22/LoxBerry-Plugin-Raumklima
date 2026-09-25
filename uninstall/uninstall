@@ -67,13 +67,57 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     exit 0
 fi
 
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen der
+# Konfiguration (dort steht das Praefix). Bis 0.11.10 blieben sie nach dem
+# Deinstallieren im Broker stehen, und nach jedem Neustart von Broker oder
+# Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-Raumklima-0.11.11, Faelle R14 und U7). Geleert wird ueber den Weg
+# der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
+# (rk_mqtt_leeren() in webfrontend/html/rk_lib.php; Bauart Spotpreis-Tibber
+# 0.9.19). Als loxberry, nicht als root; stdin geschlossen, damit su nie auf
+# eine Eingabe wartet. Themen unter einem FRUEHER eingestellten Praefix
+# erreicht das nicht.
+#
+# 'timeout -k 5 60': ohne -k schickt timeout nach Ablauf nur SIGTERM - ein
+# Prozess, der es nicht annimmt, hielt die Deinstallation an, und die
+# Sicherungen darunter blieben liegen; mit '|| true' dahinter erschien ein
+# Abbruch in der Ausgabe des Installers gar nicht (in WSL gemessen,
+# Pruefung-Raumklima-0.11.11, messe_timeout.sh, Faelle K1-K7: 146 s ohne
+# Meldung, der Platzhalter lief danach weiter). Bauart Weissware 0.9.34,
+# uninstall/uninstall Schritt 1b. Das Leeren braucht ohne Broker etwa 6 s,
+# mit vier Rueckfragen hoechstens rund 25 s - 60 s reichen.
+# Rueckgabe 0-2 meldet rk_mqtt_leeren() selbst.
+RK_ABRUF="$BASE/bin/plugins/$PFOLDER/raumklima_abruf.php"
+if command -v php >/dev/null 2>&1 && [ -f "$RK_ABRUF" ]; then
+    RK_RC=0
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout -k 5 60 php "$RK_ABRUF" --mqtt-leeren)" < /dev/null 2>&1 || RK_RC=$?
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 60 php "$RK_ABRUF" --mqtt-leeren \
+            < /dev/null 2>&1 || RK_RC=$?
+    fi
+    case "$RK_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 60 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $RK_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+    esac
+else
+    echo "<INFO> PHP oder raumklima_abruf.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
+
+# Die Marke einer Aktualisierung (<ordner>.upgrade_laeuft) liegt NEBEN dem
+# Datenordner und bleibt liegen, wenn eine Installation abgebrochen ist; eine
+# neu installierte Fassung setzte dann bis zu einer Stunde lang aus.
 WEG=0
 for F in \
     "$BASE/config/plugins/$PFOLDER.backup.json" \
     "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
     "$BASE/config/plugins/$PFOLDER.backup.raumklima.json" \
     "$BASE/config/plugins/$PFOLDER.backup.verlauf.json" \
-    "$BASE/config/plugins/$PFOLDER/geheim.json"
+    "$BASE/config/plugins/$PFOLDER/geheim.json" \
+    "$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 do
     if [ -e "$F" ]; then
         rm -f "$F" && WEG=$((WEG + 1))
