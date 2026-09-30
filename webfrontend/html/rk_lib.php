@@ -1501,7 +1501,7 @@ function rk_holen($url, $mit_zugang = false)
         $ok = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($zuviel) {
             rk_log_gebremst('antwort_zu_gross_' . rk_wirt($url),
                 'Antwort von ' . rk_wirt($url) . ' ueberschreitet '
@@ -1706,7 +1706,7 @@ function rk_ms_holen($ms, $pfad, $zeit = 12)
         $roh = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($roh === false) { return array(0, '', $fehler !== '' ? $fehler : 'keine Antwort'); }
         return array($code, (string) $roh, '');
     }
