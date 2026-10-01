@@ -59,6 +59,12 @@ define('RK_ABRUF_MINDESTABSTAND', 60);
  * 90). Bei 68 Themen sind das 0,34 s je Lauf. */
 define('RK_UDP_PAUSE_US', 5000);
 
+/* M7 (Durchgang 01.10.2026, Entscheidung Nr. 26): nur geaenderte Werte senden,
+ * den vollen Satz alle 30 Minuten. Bei 12 Raeumen gingen bis 0.11.13 je Lauf
+ * 625 Datagramme hinaus, 602 davon unveraendert (gemessen, Bericht mqtt M7) -
+ * rund 99 s Arbeit fuer das Gateway V1 je fuenf Minuten. */
+define('RK_MQTT_VOLLSATZ_S', 1800);
+
 /* Groesste Antwort, die eine Quelle liefern darf. Ein Fuehler antwortet mit
  * einigen hundert Byte, der groesste bekannte Umschlag (Shelly.GetStatus)
  * mit knapp 8 kB. Zwei Megabyte sind das Hundertfache davon und bleiben
@@ -493,7 +499,20 @@ function rk_vorgaben()
  */
 function rk_wert_pruefen($schluessel, $wert)
 {
-    /* zahl: von, bis, ganz | wahl: Liste | adr | thema | text | flag | zeit */
+    $regeln = rk_wert_regeln();
+    if (!isset($regeln[$schluessel])) {
+        return array(null, 'EINST.SICH_FREMD');
+    }
+    return rk_regel_pruefen($regeln[$schluessel], $wert);
+}
+
+/**
+ * Die Regeln je Einstellung - an EINER Stelle fuer Formular, Sicherung und X-3.
+ * zahl: von, bis, ganz, leer erlaubt | wahl: Liste | adr | thema | text |
+ * flag | token | zugang | raeume. Angewandt von rk_regel_pruefen().
+ */
+function rk_wert_regeln()
+{
     static $regeln = null;
     if ($regeln === null) {
         $regeln = array(
@@ -538,19 +557,43 @@ function rk_wert_pruefen($schluessel, $wert)
             'ms_nr'         => array('text'),
         );
     }
-    if (!isset($regeln[$schluessel])) {
-        return array(null, 'EINST.SICH_FREMD');
-    }
-    $r = $regeln[$schluessel];
+    return $regeln;
+}
+
+/**
+ * Eine Regel auf einen Wert anwenden - fuer Formular, Sicherung und X-3
+ * (Durchgang 01.10.2026, C7 und U3).
+ *
+ * Seit dem Durchgang wird nichts mehr still zurechtgebogen (Entscheidungen
+ * Nr. 16 und 19): eine Ganzzahl mit Nachkommastellen, ein leeres Pflichtfeld,
+ * Anfuehrungs- oder Steuerzeichen, ein leeres MQTT-Thema und ein unbekannter
+ * Auswahlwert sind Beanstandungen. Still bleiben nur Leerraum am Rand und die
+ * Kleinschreibung des Themas. Bis 0.11.13 wurde gerundet (600.4 -> 600),
+ * wurden Zeichen entfernt (Wohn "Zimmer" -> Wohn Zimmer), und ein leeres Thema
+ * wurde zu 'raumklima' - jedes MQTT-Abo in Loxone blieb danach stumm
+ * (gemessen, Bericht oberflaeche Nr. 3). Die Raumfelder einer Sicherung
+ * gingen ganz ungeprueft durch und wurden erst beim Lesen still geklemmt
+ * (Bericht code Nr. 7: eine Ruhezeit 25:99 verschwand ohne Meldung).
+ *
+ * Rueckgabe: array(Wert, '') bei Erfolg, array(null, 'FEHLER.<grund>') sonst;
+ * bei 'raeume' im Fehlerfall als drittes Element array(Raumnummer, Feld).
+ */
+function rk_regel_pruefen($r, $wert)
+{
     switch ($r[0]) {
         case 'zahl':
-            if (is_bool($wert) || is_array($wert) || $wert === null) {
+            if (is_bool($wert) || is_array($wert) || is_object($wert) || $wert === null) {
                 return array(null, 'FEHLER.KEINE_ZAHL');
             }
             $s = str_replace(',', '.', trim((string) $wert));
             if ($s === '' && !empty($r[4])) { return array('', ''); }
-            if ($s === '' || !is_numeric($s)) { return array(null, 'FEHLER.KEINE_ZAHL'); }
-            $w = $r[3] ? (int) round((float) $s) : (float) $s;
+            if ($s === '') { return array(null, 'FEHLER.LEER'); }
+            if (!is_numeric($s)) { return array(null, 'FEHLER.KEINE_ZAHL'); }
+            $f = (float) $s;
+            if (!is_finite($f)) { return array(null, 'FEHLER.KEINE_ZAHL'); }
+            /* Eine Ganzzahl mit Nachkommastellen wird beanstandet, nicht gerundet. */
+            if ($r[3] && abs($f - round($f)) > 1e-9) { return array(null, 'FEHLER.GANZZAHL'); }
+            $w = $r[3] ? (int) round($f) : $f;
             if ($w < $r[1] || $w > $r[2]) { return array(null, 'FEHLER.AUSSERHALB'); }
             return array($w, '');
         case 'wahl':
@@ -560,22 +603,35 @@ function rk_wert_pruefen($schluessel, $wert)
             return array($wert, '');
         case 'adr':
             if (!is_string($wert)) { return array(null, 'FEHLER.ADRESSE'); }
-            $s = rk_text_saeubern($wert);
+            $s = trim($wert);
             if ($s === '') { return array('', ''); }
+            if (rk_zeichen_unzulaessig($s)) { return array(null, 'FEHLER.ZEICHEN'); }
             if (!preg_match('#^https?://#i', $s)) { return array(null, 'FEHLER.ADRESSE'); }
             return array($s, '');
         case 'thema':
             if (!is_string($wert)) { return array(null, 'FEHLER.THEMA'); }
-            $s = trim(strtolower(rk_text_saeubern($wert)), '/');
-            if ($s === '') { return array('raumklima', ''); }
+            /* Leerraum am Rand und Grossbuchstaben bleiben still - alles andere
+             * ist eine Beanstandung, auch ein leeres Feld. */
+            $s = trim(strtolower(trim($wert)), '/');
+            if ($s === '') { return array(null, 'FEHLER.THEMA_LEER'); }
             /* + und # sind Filterzeichen und als Ziel unbrauchbar. */
             if (!preg_match('#^[a-z0-9_\-/]+$#', $s)) { return array(null, 'FEHLER.THEMA'); }
             return array($s, '');
         case 'text':
             if (!is_string($wert)) { return array(null, 'FEHLER.UNBEKANNT'); }
-            return array(rk_text_saeubern($wert), '');
+            $s = trim($wert);
+            if (rk_zeichen_unzulaessig($s)) { return array(null, 'FEHLER.ZEICHEN'); }
+            return array($s, '');
+        case 'zeit':
+            if (!is_string($wert)) { return array(null, 'FEHLER.ZEIT'); }
+            $s = trim($wert);
+            if ($s === '') { return array('', ''); }
+            if (!preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $s)) { return array(null, 'FEHLER.ZEIT'); }
+            return array($s, '');
         case 'flag':
-            if (is_array($wert)) { return array(null, 'FEHLER.UNBEKANNT'); }
+            if (!in_array($wert, array(0, 1, true, false, '0', '1'), true)) {
+                return array(null, 'FEHLER.UNBEKANNT');
+            }
             return array(empty($wert) ? 0 : 1, '');
         case 'token':
             if (!is_string($wert)) { return array(null, 'FEHLER.TOKEN'); }
@@ -586,9 +642,11 @@ function rk_wert_pruefen($schluessel, $wert)
             }
             return array($s, '');
         case 'zugang':
-            /* Genau zwei Schluessel, beide Zeichenketten. Ein Feld mit
-             * einem dritten Schluessel kommt aus einer anderen Fassung oder
-             * einem anderen Plugin und wird beanstandet, nicht beschnitten. */
+            /* Genau zwei Schluessel, beide Zeichenketten, hoechstens 256 Zeichen.
+             * Ein Feld mit einem dritten Schluessel kommt aus einer anderen
+             * Fassung oder einem anderen Plugin und wird beanstandet, nicht
+             * beschnitten. Ein Steuerzeichen im Benutzernamen ebenso - es kaeme
+             * im Kopf Authorization nie unversehrt an. */
             if (!is_array($wert)) { return array(null, 'FEHLER.ZUGANG'); }
             $z = array('benutzer' => '', 'passwort' => '');
             foreach ($wert as $k2 => $v2) {
@@ -596,28 +654,24 @@ function rk_wert_pruefen($schluessel, $wert)
                     return array(null, 'FEHLER.ZUGANG');
                 }
                 if (strlen($v2) > 256) { return array(null, 'FEHLER.ZUGANG'); }
+                if ($k2 === 'benutzer' && preg_match('/[\x00-\x1F\x7F]/', $v2)) {
+                    return array(null, 'FEHLER.ZUGANG');
+                }
                 $z[$k2] = $v2;
             }
             return array($z, '');
         case 'raeume':
             if (!is_array($wert)) { return array(null, 'FEHLER.RAEUME'); }
-            $vorg = rk_raum_vorgabe();
-            $out = array();
             /* Mehr Raeume als Plaetze sind eine BEANSTANDUNG, kein stiller
-             * Verlust. Bis 0.11.1 stand hier ein blosses `break`: eine
-             * Sicherung mit 99 Raeumen wurde "uebernommen", uebrig blieben
-             * zwoelf, und niemand erfuhr es. Das widerspricht der eigenen
-             * Vorgabe, die zwei Zeilen weiter unten fuer unbekannte
-             * Schluessel gilt. */
+             * Verlust (seit 0.11.2). */
             if (count($wert) > RK_RAEUME) { return array(null, 'FEHLER.RAEUME_ZUVIEL'); }
-            /* Die Schluessel bleiben, was sie sind. array_values() hat sie
-             * bis 0.11.2 verdichtet: wer den Block eines Raums von Hand aus
-             * der Sicherung entfernte, schob alle folgenden um eins nach
-             * vorn - und der Eingang mit \i;R3TAU= zeigte danach auf einen
-             * anderen Raum, ohne dass ein Wert fehlte. Das ist derselbe
-             * Befund, den 0.10.0 fuer die Oberflaeche behoben hat, nur
-             * ueber den Rueckspielweg. Ein Platz ausserhalb der Tabelle
-             * wird beanstandet, nicht verschoben. */
+            /* Die Schluessel bleiben, was sie sind (seit 0.11.3): ein Platz
+             * ausserhalb der Tabelle wird beanstandet, nicht verschoben. Und
+             * seit dem Durchgang 01.10.2026 traegt jedes Raumfeld dieselbe
+             * Regel wie im Formular (rk_raum_regeln()), dazu die Pruefungen
+             * ueber den ganzen Raum (rk_raum_quer_pruefen()). */
+            $regeln_r = rk_raum_regeln();
+            $out = array();
             foreach ($wert as $i => $r2) {
                 if (!is_int($i) && !ctype_digit((string) $i)) {
                     return array(null, 'FEHLER.RAEUME');
@@ -625,15 +679,99 @@ function rk_wert_pruefen($schluessel, $wert)
                 $i = (int) $i;
                 if ($i < 0 || $i >= RK_RAEUME) { return array(null, 'FEHLER.RAEUME'); }
                 if (!is_array($r2)) { return array(null, 'FEHLER.RAEUME'); }
+                $neu_r = array();
                 foreach ($r2 as $k2 => $v2) {
-                    if (!array_key_exists($k2, $vorg)) { return array(null, 'FEHLER.RAEUME'); }
-                    if (is_array($v2) || is_object($v2)) { return array(null, 'FEHLER.RAEUME'); }
+                    if (!isset($regeln_r[$k2])) {
+                        return array(null, 'FEHLER.RAEUME', array($i + 1, (string) $k2));
+                    }
+                    $e2 = rk_regel_pruefen($regeln_r[$k2], $v2);
+                    if ($e2[1] !== '') { return array(null, $e2[1], array($i + 1, (string) $k2)); }
+                    $neu_r[$k2] = $e2[0];
                 }
-                $out[$i] = $r2;
+                $q = rk_raum_quer_pruefen($neu_r + rk_raum_vorgabe());
+                if ($q !== null) { return array(null, $q[0], array($i + 1, $q[1])); }
+                $out[$i] = $neu_r;
             }
             return array($out, '');
     }
     return array(null, 'EINST.SICH_FREMD');
+}
+
+/** Steuer- oder Anfuehrungszeichen im Text? Sie werden beanstandet, nicht entfernt (U3). */
+function rk_zeichen_unzulaessig($s)
+{
+    return (bool) preg_match('/[\x00-\x1F\x7F"\']/', (string) $s);
+}
+
+/**
+ * Die Regeln je Raumfeld - an EINER Stelle fuer Formular, Sicherung und X-3
+ * (Durchgang 01.10.2026, C7). Die Grenzen sind die des Formulars bis 0.11.13
+ * (htmlauth/index.php) und die der letzten Wache in rk_config().
+ */
+function rk_raum_regeln()
+{
+    return array(
+        'name'         => array('text'),
+        'quelle'       => array('adr'),
+        'quelle_rf'    => array('adr'),
+        'pfad_t'       => array('text'),
+        'pfad_rf'      => array('text'),
+        'frsi'         => array('zahl', 0.05, 1.0, false),
+        'soll_min'     => array('zahl', 0, 100, true),
+        'soll_max'     => array('zahl', 0, 100, true),
+        'art'          => array('wahl', array('aussen', 'keller', 'innen')),
+        'erd_t'        => array('zahl', -20.0, 40.0, false),
+        'einheit_t'    => array('wahl', array('C', 'F')),
+        'einheit_rf'   => array('wahl', array('proz', 'anteil')),
+        'volumen'      => array('zahl', 0.0, 2000.0, false),
+        'fenster'      => array('wahl', array('kipp', 'stoss', 'quer')),
+        't_soll'       => array('zahl', 0.0, 35.0, false),
+        'pfad_co2'     => array('text'),
+        'co2_max'      => array('zahl', 0, 5000, true),
+        'pfad_fenster' => array('text'),
+        'pfad_zuluft'  => array('text'),
+        'wrg_eta'      => array('zahl', 0.0, 100.0, false),
+        'wasser_g'     => array('zahl', 0.0, 20000.0, false),
+        'ruhe_von'     => array('zeit'),
+        'ruhe_bis'     => array('zeit'),
+        'personen'     => array('zahl', 0.0, 20.0, false),
+    );
+}
+
+/**
+ * Die Pruefungen ueber einen ganzen Raum: wer einen Pfad eintraegt, braucht
+ * einen Namen und umgekehrt, und der Feuchtekorridor muss einer sein.
+ * Rueckgabe null oder array(Fehlercode, Feld). Ein ganz leerer Platz ist frei.
+ */
+function rk_raum_quer_pruefen($r)
+{
+    $name = trim((string) $r['name']);
+    $pt = trim((string) $r['pfad_t']);
+    $prf = trim((string) $r['pfad_rf']);
+    if ($name === '' && $pt === '' && $prf === '') { return null; }
+    if ($name === '') { return array('FEHLER.NAME_FEHLT', 'name'); }
+    if ($pt === '' && $prf === '') { return array('FEHLER.PFAD_FEHLT', 'pfad_t'); }
+    if ((float) $r['soll_min'] > 0 && (float) $r['soll_max'] > 0
+        && (float) $r['soll_min'] >= (float) $r['soll_max']) {
+        return array('FEHLER.KORRIDOR', 'soll_min');
+    }
+    return null;
+}
+
+/**
+ * Der kurze Grund zu einem Fehlercode ('FEHLER.LEER' -> "leer") - ohne den Wert.
+ * Mit der Regel nennt ein Zahlenfeld ausserhalb seines Bereichs die Grenzen.
+ */
+function rk_grund($code, $regel = null)
+{
+    $kurz = (string) $code;
+    $p = strpos($kurz, '.');
+    if ($p !== false) { $kurz = substr($kurz, $p + 1); }
+    if ($kurz === 'AUSSERHALB' && is_array($regel) && isset($regel[0], $regel[2]) && $regel[0] === 'zahl') {
+        return sprintf(rk_t('GRUND.AUSSERHALB_VB'), (string) $regel[1], (string) $regel[2]);
+    }
+    $t = rk_t('GRUND.' . $kurz);
+    return $t === 'GRUND.' . $kurz ? $kurz : $t;
 }
 
 /**
@@ -717,8 +855,28 @@ function rk_json_schreiben($pfad, $daten, $rechte = null)
 function rk_config_lage($setzen = null)
 {
     static $lage = 'ok';
-    if ($setzen !== null) { $lage = (string) $setzen; }
+    if ($setzen !== null) {
+        $lage = (string) $setzen;
+        rk_config_lage_anfang($lage);
+    }
     return $lage;
+}
+
+/**
+ * Der erste Zustand dieser Anfrage, der nicht 'ok' war (Durchgang 01.10.2026, U9).
+ *
+ * Regeln/05: eine Zeile, die den Zustand der Konfiguration meldet, merkt ihn
+ * sich, bevor die Selbstheilung ihn beseitigt. Bis 0.11.13 heilte der erste
+ * rk_config()-Aufruf aus der Zweitschrift, der naechste setzte 'ok' - der
+ * Hinweis ALLG.CFG_ZWEITSCHRIFT erschien nie, und die Pruefzeile meldete
+ * "gelesen und in Ordnung" (gemessen, Bericht oberflaeche Nr. 11).
+ * Fuer die Anzeige; was geschrieben werden darf, entscheidet rk_config_lage().
+ */
+function rk_config_lage_anfang($merken = null)
+{
+    static $erste = null;
+    if ($merken !== null && $merken !== 'ok' && $erste === null) { $erste = (string) $merken; }
+    return $erste !== null ? $erste : rk_config_lage();
 }
 
 /**
@@ -813,7 +971,19 @@ function rk_config($heilen = true)
                  * die selbstgeheilte raumklima.json stand danach auf 0644 -
                  * mit dem Aktionstoken darin. rk_json_schreiben() haengt die
                  * Rechte ans Anlegen und schreibt unteilbar. */
-                rk_json_schreiben($p['config'], $zdaten, 0600);
+                /* U9 (Durchgang 01.10.2026): die Heilung sagt es einmal - bis
+                 * 0.11.13 stand dafuer keine Zeile im Protokoll, und ein Verlust
+                 * der Konfiguration blieb unsichtbar. */
+                if (rk_json_schreiben($p['config'], $zdaten, 0600)) {
+                    rk_log_gebremst('cfg_geheilt', 'Die Konfiguration fehlte oder war leer und wurde aus '
+                        . 'der Zweitschrift ' . basename($p['sicherung']) . ' wiederhergestellt '
+                        . '(Aktionstoken erhalten). Nach einem Update ist das der uebliche Weg; sonst '
+                        . 'bitte nachsehen, wer die Datei entfernt hat.', 3600);
+                } else {
+                    rk_log_gebremst('cfg_heilung_fehl', 'Die Konfiguration fehlt, und die Zweitschrift '
+                        . 'liess sich nicht zurueckschreiben (Rechte am Ordner ' . $p['configdir']
+                        . '?). Bis dahin gilt der Stand der Zweitschrift.', 3600);
+                }
             }
         } else {
             rk_config_lage('leer');
@@ -1041,11 +1211,25 @@ function rk_sicherung_schreiben($cfg)
 function rk_config_speichern($cfg)
 {
     $p = rk_paths();
+    /* M3 (Durchgang 01.10.2026): das bisherige Praefix VOR dem Schreiben lesen.
+     * Eine Konfiguration ohne Schluessel mqtt_topic sendete unter der Vorgabe. */
+    $vorher = rk_json_lesen($p['config']);
+    $alt_pr = '';
+    if (is_array($vorher) && $vorher) {
+        $alt_pr = (isset($vorher['mqtt_topic']) && is_string($vorher['mqtt_topic']))
+            ? trim($vorher['mqtt_topic'], '/') : 'raumklima';
+    }
+    $neu_pr = isset($cfg['mqtt_topic']) ? trim((string) $cfg['mqtt_topic'], '/') : '';
     if (!rk_json_schreiben($p['config'], $cfg, 0600)) { return false; }
     if (rk_config_lage() !== 'kaputt') {
         rk_sicherung_schreiben($cfg);
         rk_config_lage('ok');
     }
+    if ($alt_pr !== '' && $neu_pr !== '' && $alt_pr !== $neu_pr) {
+        rk_praefix_alt_merken($alt_pr, $neu_pr);
+    }
+    /* M5: die Abodatei folgt dem geltenden Praefix. */
+    rk_abo_datei($neu_pr !== '' ? $neu_pr : 'raumklima', true);
     return true;
 }
 
@@ -1143,8 +1327,25 @@ function rk_token()
         return is_string($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
     }
     if (trim((string) $cfg['aktionstoken']) === '') {
+        /* C6 (Durchgang 01.10.2026): bis 0.11.13 wurde hier still gewuerfelt -
+         * auch auf einer eingerichteten Anlage, deren Token etwa eine
+         * Sicherung mit leerem Token geleert hatte. Danach bekam jede Adresse
+         * in Loxone 403, und im Protokoll stand nichts (gemessen, Bericht
+         * oberflaeche Nr. 5). Jetzt steht es dort, und ein Token, das sich
+         * nicht speichern laesst, wird nicht als gueltig angezeigt. */
+        $bestand = rk_json_lesen(rk_paths()['config']);
         $cfg['aktionstoken'] = rk_token_erzeugen();
-        rk_config_speichern($cfg);
+        if (!rk_config_speichern($cfg)) {
+            rk_log_gebremst('token_nicht_gespeichert', 'Ein Aktionstoken liess sich nicht speichern - '
+                . 'die Konfiguration ist nicht schreibbar. Es wird keine Adresse angezeigt.', 3600);
+            return '';
+        }
+        if (is_array($bestand) && array_diff_key($bestand, array('aktionstoken' => 1))) {
+            rk_log('Das Aktionstoken war leer und wurde neu erzeugt. Jede in Loxone eingetragene '
+                . 'Adresse (Vorlage, virtuelle Eingaenge) ist damit ungueltig und muss neu eingetragen werden.');
+        } else {
+            rk_log('Aktionstoken erstmals angelegt.');
+        }
     }
     return (string) $cfg['aktionstoken'];
 }
@@ -1528,7 +1729,19 @@ function rk_holen($url, $mit_zugang = false)
          * ob php-curl geladen ist, ob eine Quelle den Lauf umbringen kann.
          * Ein Byte mehr als die Grenze wird geholt, damit sich "genau voll"
          * von "abgeschnitten" unterscheiden laesst. */
-        $text = @file_get_contents($url, false, $ctx, 0, RK_ANTWORT_MAX + 1);
+        /* Bauart A (Durchgang 01.10.2026, C5): fopen() und stream_get_meta_data()
+         * statt der vordefinierten Kopfzeilen-Variable von PHP. PHP 8.5 meldet
+         * diese schon beim Uebersetzen als ueberholt (Pruefkette: zwei Meldungen
+         * je Einbindung), PHP 9 soll sie abschaffen - dann hiesse jeder Code 0,
+         * und eine Fehlerseite mit 404 oder 500 ginge wieder als Daten durch
+         * (der stumme Raum ohne Meldung aus 0.11.2). Bauform ap_http_abruf()
+         * (APC-UPS 1.2.17). 'ignore_errors' liefert auch bei 4xx/5xx einen
+         * Datenstrom; es gilt die letzte Statuszeile (rk_http_code()). */
+        $fp = @fopen($url, 'rb', false, $ctx);
+        if ($fp === false) { return array(null, 'NICHT_ERREICHBAR'); }
+        $meta = @stream_get_meta_data($fp);
+        $text = @stream_get_contents($fp, RK_ANTWORT_MAX + 1);
+        @fclose($fp);
         if (is_string($text) && strlen($text) > RK_ANTWORT_MAX) {
             rk_log_gebremst('antwort_zu_gross_' . rk_wirt($url),
                 'Antwort von ' . rk_wirt($url) . ' ueberschreitet '
@@ -1536,12 +1749,7 @@ function rk_holen($url, $mit_zugang = false)
                 . 'wirklich JSON?', 3600);
             return array(null, 'ANTWORT_ZU_GROSS');
         }
-        $code = 0;
-        if (isset($http_response_header)) {
-            foreach ($http_response_header as $z) {
-                if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
-            }
-        }
+        $code = rk_http_code($meta);
         if ($text === false) { return array(null, 'NICHT_ERREICHBAR'); }
     }
     if ($code === 401 || $code === 403) { return array(null, 'ZUGANG_ABGELEHNT'); }
@@ -1715,15 +1923,26 @@ function rk_ms_holen($ms, $pfad, $zeit = 12)
     $ctx = stream_context_create(array('http' => array(
         'timeout' => (int) $zeit, 'header' => implode("\r\n", $kopf),
         'ignore_errors' => true, 'follow_location' => 0, 'max_redirects' => 1)));
-    $roh = @file_get_contents($url, false, $ctx);
+    /* Bauart A (Durchgang 01.10.2026, C5): wie in rk_holen(). */
+    $fp = @fopen($url, 'rb', false, $ctx);
+    if ($fp === false) { return array(0, '', 'keine Antwort'); }
+    $meta = @stream_get_meta_data($fp);
+    $roh = @stream_get_contents($fp);
+    @fclose($fp);
     if ($roh === false) { return array(0, '', 'keine Antwort'); }
+    return array(rk_http_code($meta), (string) $roh, '');
+}
+
+/** Der HTTP-Code aus den Kopfzeilen eines Datenstroms; die letzte Statuszeile gilt (C5). */
+function rk_http_code($meta)
+{
     $code = 0;
-    if (isset($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
-        }
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
     }
-    return array($code, (string) $roh, '');
+    return $code;
 }
 
 /**
@@ -2551,6 +2770,60 @@ function rk_stand()
 }
 
 /**
+ * Das Abbild zur LESEZEIT (Durchgang 01.10.2026, C1 und C2) - fuer den Endpunkt.
+ *
+ * Entscheidung Nr. 4: OK ist 0, sobald ALTER groesser ist als das Dreifache
+ * des Takts; ALTER bleibt daneben. Bis 0.11.13 stand im Endpunkt OK=1 neben
+ * ALTER=7200 (Takt 300) - ein toter Cron sah aus wie ein gesunder (gemessen,
+ * Bericht code Nr. 1). Und das Alter je Raum (RALTER) wurde beim Abruf
+ * eingefroren: R1RALTER=0 neben ALTER=7200, der Baustein "Raum stumm" griff
+ * nie (Nr. 2, Regeln/03 "Alter zur Lesezeit"). Beides wird jetzt aus den
+ * gespeicherten Zeitstempeln gerechnet: ts fuer ALTER, letzt_ts je Raum.
+ * Ueber MQTT gehen die Werte beim Lauf hinaus und tragen das Alter dieses
+ * Augenblicks; dort rechnet der Miniserver mit ts selbst.
+ */
+function rk_stand_lesezeit($stand, $takt = null)
+{
+    if (!is_array($stand)) { $stand = array(); }
+    if ($takt === null) {
+        $c = rk_config(false);
+        $takt = isset($c['takt']) ? (int) $c['takt'] : 300;
+    }
+    $takt = max(300, min(3600, (int) $takt));
+    $jetzt = time();
+    $alter = !empty($stand['ts']) ? max(0, $jetzt - (int) $stand['ts']) : -1;
+    $stand['alter'] = $alter;
+    $stand['ok'] = (!empty($stand['ok']) && $alter >= 0 && $alter <= 3 * $takt) ? 1 : 0;
+    if (isset($stand['raeume']) && is_array($stand['raeume'])) {
+        foreach ($stand['raeume'] as $nr => $e) {
+            if (!is_array($e)) { continue; }
+            $lt = isset($e['letzt_ts']) ? (int) $e['letzt_ts'] : 0;
+            $stand['raeume'][$nr]['alter'] = $lt > 0 ? max(0, $jetzt - $lt) : -1;
+        }
+    }
+    return $stand;
+}
+
+/**
+ * Deckt eine gespeicherte Vorhersage die laufende Stunde? Dann die Vorhersage
+ * (ts => Werte, aufsteigend), sonst ein leeres Feld (Durchgang 01.10.2026, C9).
+ */
+function rk_vorher_deckt($v, $jetzt)
+{
+    if (!is_array($v) || !$v) { return array(); }
+    $aus = array();
+    foreach ($v as $ts => $w) {
+        if (!is_numeric($ts) || !is_array($w) || !isset($w['t'], $w['rf'])) { continue; }
+        $aus[(int) $ts] = $w;
+    }
+    ksort($aus);
+    foreach (array_keys($aus) as $ts) {
+        if ($ts <= (int) $jetzt && (int) $jetzt < $ts + 3600) { return $aus; }
+    }
+    return array();
+}
+
+/**
  * Alles abrufen und rechnen. Rueckgabe: das Abbild, das auch geschrieben
  * wird. $erzwingen umgeht den Takt.
  */
@@ -2681,16 +2954,37 @@ function rk_abrufen($erzwingen = false)
         $stand['meldungen']['aussen'] = 'KEIN_STANDORT';
     } elseif ($cfg['aussen_art'] === 'meteo') {
         list($d, $m) = rk_holen(rk_meteo_url($cfg['breite'], $cfg['laenge'], 2));
-        if ($d === null) {
-            $stand['meldungen']['aussen'] = $m;
+        if ($d !== null) {
+            list($vorher, $m) = rk_meteo_lesen($d);
+        }
+        if ($m === '') {
+            $stand['vorher_ts'] = $jetzt;
         } else {
-            list($vorher, $m2) = rk_meteo_lesen($d);
-            if ($m2 !== '') {
-                $stand['meldungen']['aussen'] = $m2;
+            /* C9 (Durchgang 01.10.2026): ein einzelner Aussetzer bei Open-Meteo
+             * verwarf bis 0.11.13 die gueltige 48-h-Vorhersage aus dem vorigen
+             * Lauf - allen Raeumen der Art "aussen" fehlten fuer einen Takt
+             * Schimmelwarnung und Empfehlung (ampel 2 -> -1, schimmel 1 -> -1,
+             * best_in 0 -> -1; gemessen, Bericht code Nr. 9), und in Loxone
+             * flatterte die Warnung. Jetzt gilt die gespeicherte Vorhersage
+             * weiter, solange sie die laufende Stunde deckt; die Meldung sagt
+             * es, das Protokoll nennt Grund und Alter. */
+            $vorher = rk_vorher_deckt(isset($alt['vorher']) ? $alt['vorher'] : null, $jetzt);
+            if ($vorher) {
+                $stand['vorher_ts'] = isset($alt['vorher_ts']) ? (int) $alt['vorher_ts'] : 0;
+                $stand['meldungen']['aussen'] = 'VORHERSAGE_ALT';
+                rk_log_gebremst('vorhersage_alt', 'Open-Meteo: ' . $m . ' - die zuletzt geholte '
+                    . 'Vorhersage gilt weiter ('
+                    . ($stand['vorher_ts'] > 0 ? 'geholt vor ' . max(0, $jetzt - $stand['vorher_ts']) . ' s'
+                                               : 'Alter unbekannt')
+                    . '), solange sie die laufende Stunde deckt.', 3600);
             } else {
-                $jetztwert = rk_meteo_jetzt($vorher, $jetzt);
-                if ($jetztwert !== null) { $stand['aussen'] = $jetztwert; }
+                $vorher = array();
+                $stand['meldungen']['aussen'] = $m;
             }
+        }
+        if ($vorher) {
+            $jetztwert = rk_meteo_jetzt($vorher, $jetzt);
+            if ($jetztwert !== null) { $stand['aussen'] = $jetztwert; }
         }
     } else {
         /* Zugangsdaten NUR an einen Wirt, der auch die Fuehler traegt -
@@ -2705,7 +2999,8 @@ function rk_abrufen($erzwingen = false)
                            $cfg['aussen_einheit_t']);
             $rf = rk_rf_prozent(rk_zahl_aus(rk_pfad($d, $cfg['aussen_rf'])),
                                 $cfg['aussen_einheit_rf']);
-            if (rk_t_gueltig($t) && $rf !== null && $rf > 0.0 && $rf <= 100.0) {
+            /* RK_RF_MIN wie im Raum (C3): unter 1 % ist es ein Fuehler am Anschlag. */
+            if (rk_t_gueltig($t) && $rf !== null && $rf >= RK_RF_MIN && $rf <= 100.0) {
                 $stand['aussen'] = array('t' => (float) $t, 'rf' => (float) $rf);
             } else {
                 $stand['meldungen']['aussen'] = 'PFAD_LEER';
@@ -2917,7 +3212,8 @@ function rk_abrufen($erzwingen = false)
     foreach ($stand['meldungen'] as $k => $m) {
         rk_log_gebremst('quelle_' . $k, 'Quelle ' . $k . ': ' . $m);
     }
-    rk_mqtt_senden($stand);
+    /* M2 braucht den vorigen Stand: welcher Raum war beim letzten Lauf noch da. */
+    rk_mqtt_senden($stand, $alt);
     return $stand;
 }
 
@@ -3002,9 +3298,16 @@ function rk_mqtt_zustand()
  * kennen. Datenstroeme statt socket_* - die Erweiterung 'sockets' ist nicht
  * garantiert geladen, und ein Aufruf ohne sie ist ein Fatal error.
  */
-function rk_mqtt_senden($stand)
+function rk_mqtt_senden($stand, $alt_stand = null, $voll_erzwingen = false)
 {
     $cfg = rk_config();
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    $p = rk_paths();
+    /* M5 (Durchgang 01.10.2026): die Abodatei folgt dem Praefix - in jedem
+     * Lauf nachgesehen, geschrieben nur, wenn sie abweicht. */
+    rk_abo_datei($praefix, true);
+    /* M3/M4: Altwerte neben dem eigenen Versand (altes Praefix, MQTT aus). */
+    rk_mqtt_nebenwege($cfg);
     if (empty($cfg['mqtt_ein'])) { return false; }
     $z = rk_mqtt_zustand();
     if (!$z['udpport']) {
@@ -3017,16 +3320,13 @@ function rk_mqtt_senden($stand)
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
     $paare = rk_mqtt_werte($stand);
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
     /* Die Altwerte: Themen, die bis 0.11.10 retained hinausgingen und jetzt
-     * fluechtig gehen (rk_mqtt_altlast()). Eine Umstellung loescht nichts -
-     * der alte Wert stuende im Broker weiter und kaeme nach jedem Neustart
-     * von Broker oder Gateway zurueck. Welche noch stehen, sagt der Broker
+     * fluechtig gehen (rk_mqtt_altlast()). Welche noch stehen, sagt der Broker
      * (rk_mqtt_altlast_pruefen()); jedes davon bekommt eine leere
      * retain-Nutzlast UNMITTELBAR vor seinem gueltigen Wert, als Nachbarzeile
-     * im selben Lauf. Jedes Altthema hat in jedem Lauf einen Wert (Zahlen aus
-     * rk_mqtt_werte()) - eine leere Nachricht ohne Wert dahinter entsteht hier
-     * nicht; sie kaeme am Miniserver als leerer Wert an (Regeln/07). */
+     * im selben Lauf - auch wenn der Wert sich nicht geaendert hat (M7). Eine
+     * leere Nachricht ohne Wert dahinter kaeme am Miniserver als leerer Wert an
+     * (Regeln/07). */
     $alt = array();
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }
@@ -3039,8 +3339,34 @@ function rk_mqtt_senden($stand)
         return false;
     }
     $weg = array_flip(rk_mqtt_altlast_pruefen($praefix, $alt)['themen']);
+    /* M2: ausgetragene Raumplaetze bekommen einmal "-" retained. */
+    $striche = rk_mqtt_ausgetragen($praefix, $paare, $alt_stand);
+
+    /* M7: Aenderungsversand. Der Merker haelt je Thema die zuletzt gesendete
+     * Form (Befehlswort und Wert). Voll gesendet wird alle RK_MQTT_VOLLSATZ_S,
+     * nach einem Update (purge_installation raeumt den Merker mit ab), nach
+     * einem Praefixwechsel, nach dem Wiedereinschalten (rk_mqtt_nebenwege()
+     * loescht ihn, solange MQTT aus ist) und auf Knopfdruck im Reiter Test.
+     * Das Lebenszeichen und ok gehen in jedem Lauf (rk_mqtt_immer()). */
+    $merk_pfad = $p['datadir'] . '/mqtt_gesendet.json';
+    list($merk, $mlage) = rk_json_lage($merk_pfad);
+    $jetzt = time();
+    $voll_ts = ($mlage === 'ok' && isset($merk['voll_ts'])) ? (int) $merk['voll_ts'] : 0;
+    $voll = $voll_erzwingen || $mlage !== 'ok'
+        || !isset($merk['praefix']) || (string) $merk['praefix'] !== $praefix
+        || !isset($merk['werte']) || !is_array($merk['werte'])
+        || $voll_ts <= 0 || ($jetzt - $voll_ts) >= RK_MQTT_VOLLSATZ_S || ($jetzt - $voll_ts) < 0;
+    $vorher = $voll ? array() : $merk['werte'];
+    $neu = array();
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }   // lieber nichts als eine erfundene 0
+        $verb = rk_mqtt_behalten($k, $v, $paare) ? 'retain ' : 'publish ';
+        $wert = rk_mqtt_wert_saeubern($v);
+        $neu[$k] = $verb . $wert;
+        if (!$voll && !isset($weg[$k]) && !rk_mqtt_immer($k)
+            && isset($vorher[$k]) && $vorher[$k] === $neu[$k]) {
+            continue;
+        }
         if (isset($weg[$k])) {
             /* Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau
              * die Form, die das Gateway als Loeschung liest (Regeln/07,
@@ -3048,14 +3374,31 @@ function rk_mqtt_senden($stand)
             @fwrite($s, 'retain ' . $praefix . '/' . $k . ' ');
             usleep(RK_UDP_PAUSE_US);
         }
-        @fwrite($s, (rk_mqtt_behalten($k, $v) ? 'retain ' : 'publish ')
-                  . $praefix . '/' . $k . ' ' . rk_mqtt_wert_saeubern($v));
+        @fwrite($s, $verb . $praefix . '/' . $k . ' ' . $wert);
         /* Siehe RK_UDP_PAUSE_US: ohne Pause verwirft der Eingang stumm,
          * und fwrite() meldet trotzdem Erfolg. */
         usleep(RK_UDP_PAUSE_US);
     }
+    foreach ($striche as $t) {
+        /* Entscheidung Nr. 5/8: "-" retained, nie eine leere Nutzlast. */
+        @fwrite($s, 'retain ' . $praefix . '/' . $t . ' -');
+        usleep(RK_UDP_PAUSE_US);
+    }
     fclose($s);
+    if (!rk_json_schreiben($merk_pfad, array('praefix' => $praefix,
+            'voll_ts' => $voll ? $jetzt : $voll_ts, 'werte' => $neu))) {
+        /* Ohne Merker sendet der naechste Lauf voll - das ist die sichere Richtung. */
+        rk_log_gebremst('mqtt_merker', 'MQTT: der Merker ' . basename($merk_pfad) . ' liess sich nicht '
+            . 'schreiben; jeder Lauf sendet deshalb den vollen Satz.', 3600);
+    }
     return true;
+}
+
+/** Geht dieses Thema in JEDEM Lauf hinaus? Das Lebenszeichen und ok (M7). */
+function rk_mqtt_immer($thema)
+{
+    $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
+    return in_array($t, array('ok', 'ts', 'lauf_ts', 'zaehler', 'alter', 'raumN/ok', 'raumN/alter'), true);
 }
 
 /** Alle Werte flach, so wie sie veroeffentlicht werden. */
@@ -3213,11 +3556,32 @@ function rk_mqtt_retain($thema)
  * bleibt der letzte echte Wert (Entscheidung des Hausherrn vom 25.09.2026,
  * Bauart Robonect 1.1.12 und KODI-NG 1.2.10). Themen und Werte bleiben gleich.
  */
-function rk_mqtt_behalten($thema, $wert)
+function rk_mqtt_behalten($thema, $wert, $paare = null)
 {
     if (!rk_mqtt_retain($thema)) { return false; }
     $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
     if (($t === 'raumN/ampel' || $t === 'raumN/schimmel') && is_numeric($wert) && (float) $wert < 0) {
+        return false;
+    }
+    if (!is_array($paare)) { return true; }
+    /* M1 (Durchgang 01.10.2026, Entscheidungen Nr. 8 und 26): schweigt der
+     * Fuehler eines Raums (raumN/ok = 0), gehen seine Zustaende FLUECHTIG
+     * hinaus - Loxone sieht sie wie bisher, im Broker bleibt der letzte
+     * gemessene Stand. Bis 0.11.13 ueberschrieb der Ausfallzweig retained
+     * feucht/kuehlen mit 0 und schwuel/kuehlfrei mit -1 (gemessen, Bericht
+     * mqtt M1). Ausnahmen: der Name (kein Messwert) und kuehlfrei = -1 - die
+     * gesperrte Kuehlfreigabe ist die sichere Richtung und bleibt retained. */
+    if (preg_match('#^(raum[0-9]+)/#', (string) $thema, $m)) {
+        if ($t !== 'raumN/name' && isset($paare[$m[1] . '/ok']) && (int) $paare[$m[1] . '/ok'] === 0) {
+            return ($t === 'raumN/kuehlfrei' && is_numeric($wert) && (int) $wert === -1);
+        }
+        return true;
+    }
+    /* Die Summen nur retained, wenn kein Raum ohne Aussage ist - sonst sagte
+     * der Broker nach einem Neustart "0 Raeume feucht" neben raum1/feucht 1. */
+    if (in_array($t, array('lueften', 'schimmel', 'feucht', 'trocken', 'kuehlen', 'co2', 'fenster',
+                           'schwuel', 'sperre', 'vereist'), true)
+        && isset($paare['ohne']) && (int) $paare['ohne'] > 0) {
         return false;
     }
     return true;
@@ -3269,7 +3633,7 @@ function rk_mqtt_altlast($thema)
  */
 function rk_mqtt_behalten_liste(array $themen)
 {
-    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $aus = array('lage' => 'unbekannt', 'belegt' => array(), 'werte' => array());
     $soll = array();
     foreach ($themen as $t) {
         if ((string) $t !== '') { $soll[(string) $t] = true; }
@@ -3389,6 +3753,7 @@ function rk_mqtt_behalten_liste(array $themen)
                     // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
                     if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
                         $aus['belegt'][$t] = true;
+                        $aus['werte'][$t] = $wert;
                         if (count($aus['belegt']) === count($soll)) { break; }
                     }
                 }
@@ -3397,6 +3762,7 @@ function rk_mqtt_behalten_liste(array $themen)
                 $aus['lage'] = 'ok';
             } else {
                 $aus['belegt'] = array();
+                $aus['werte'] = array();
             }
         }
         @fwrite($s, chr(0xE0) . chr(0));
@@ -3458,10 +3824,29 @@ function rk_mqtt_altlast_pruefen($praefix, array $liste)
             . 'unmittelbar vor dem gueltigen Wert hinaus; der naechste Lauf fragt wieder nach.');
         return array('lage' => 'belegt', 'themen' => $t);
     }
+    /* M6 (Durchgang 01.10.2026): hoechstens EINMAL JE STUNDE. Bis 0.11.13 gingen
+     * die 13 leeren retain-Nachrichten in jedem Lauf hinaus, ohne Ende - und
+     * jede kommt am Miniserver als kurzer leerer Wert an (gemessen, Bericht
+     * mqtt M6; Bauart Bewaesserung 0.9.35 M4). Eine Uhr, die zurueckgesprungen
+     * ist (negativer Abstand), sperrt nicht. */
+    $udp_am = $p['datadir'] . '/retain_udp_am';
+    $zuletzt = is_file($udp_am) ? (int) trim((string) @file_get_contents($udp_am)) : 0;
+    $abstand = time() - $zuletzt;
+    if ($zuletzt > 0 && $abstand >= 0 && $abstand < 3600) {
+        return array('lage' => 'unbekannt', 'themen' => array());
+    }
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $zeit = time() . "\n";
+    if (@file_put_contents($udp_am, $zeit) !== strlen($zeit)) {
+        /* Ohne Zeitmerker lieber gar nicht als in jedem Lauf. */
+        rk_log_gebremst('altlast_zeitmerker', 'MQTT: der Zeitmerker ' . basename($udp_am)
+            . ' liess sich nicht schreiben - die frueher zurueckbehaltenen Werte werden nicht abgeraeumt.', 86400);
+        return array('lage' => 'unbekannt', 'themen' => array());
+    }
     rk_log_gebremst('altlast_unbekannt', 'MQTT: der Broker liess sich nicht befragen (Brokerhost, '
         . 'Brokerport und Zugangsdaten in general.json) - die frueher zurueckbehaltenen Werte '
-        . 'unter ' . $praefix . '/ gehen deshalb in jedem Lauf mit leerer Nutzlast unmittelbar '
-        . 'vor dem gueltigen Wert hinaus. Siehe README.', 86400);
+        . 'unter ' . $praefix . '/ gehen deshalb hoechstens einmal je Stunde mit leerer Nutzlast '
+        . 'unmittelbar vor dem gueltigen Wert hinaus.', 86400);
     return array('lage' => 'unbekannt', 'themen' => $liste);
 }
 
@@ -3511,31 +3896,62 @@ function rk_mqtt_leeren($runden = 3, $pause_us = 1000000)
 {
     $c = rk_config(false);
     $w = trim((string) $c['mqtt_topic'], '/');
+    list($rc, $zeilen) = rk_mqtt_leeren_kern($w, $runden, $pause_us, false);
+    foreach ($zeilen as $zl) { echo $zl, "\n"; }
+    /* M3 (Durchgang 01.10.2026): auch die vorgemerkten frueheren Praefixe, die
+     * noch nicht nachweislich leer sind. Bis 0.11.13 blieben unter einem alten
+     * Praefix nach der Deinstallation 42 Themen stehen (gemessen, Bericht mqtt
+     * M3). */
+    foreach (rk_praefix_alt_liste() as $ap => $info) {
+        $ap = (string) $ap;
+        if ($ap === '' || $ap === $w || !empty($info['geleert'])) { continue; }
+        echo '<INFO> MQTT: das frueher eingestellte Praefix ' . $ap . '/ wird ebenfalls geleert.' . "\n";
+        list($rc2, $z2) = rk_mqtt_leeren_kern($ap, $runden, $pause_us, false);
+        foreach ($z2 as $zl) { echo $zl, "\n"; }
+        $rc = max($rc, $rc2);
+    }
+    return $rc;
+}
+
+/**
+ * Der Kern von rk_mqtt_leeren() fuer EIN Praefix; Rueckgabe array(rc, Zeilen).
+ * $nur_broker: ohne Antwort des Brokers wird nichts gesendet (rc 2) - so
+ * raeumen der Lauf (altes Praefix, MQTT aus) ab, denn eine leere Nachricht
+ * ohne Wert dahinter kaeme am Miniserver als leerer Wert an (Regeln/07).
+ */
+function rk_mqtt_leeren_kern($w, $runden = 3, $pause_us = 1000000, $nur_broker = false)
+{
+    $zeilen = array();
     $z = rk_mqtt_zustand();
     if (!$z['udpport']) {
-        echo '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
-           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.' . "\n";
-        return 2;
+        $zeilen[] = '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
+           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.';
+        return array(2, $zeilen);
     }
     $alle = array();
     foreach (rk_mqtt_leer_themen() as $t) { $alle[] = $w . '/' . $t; }
     $n = count($alle);
     $f = rk_mqtt_behalten_liste($alle);
     $nachgelesen = ($f['lage'] === 'ok');
+    if (!$nachgelesen && $nur_broker) {
+        $zeilen[] = '<INFO> MQTT: der Broker liess sich nicht befragen - unter ' . $w . '/ wurde nichts '
+           . 'geleert.';
+        return array(2, $zeilen);
+    }
     $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
     if ($nachgelesen && !$offen) {
-        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen unter ' . $w
-           . '/ steht zurueckbehalten - nichts zu leeren.' . "\n";
-        return 0;
+        $zeilen[] = '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen unter ' . $w
+           . '/ steht zurueckbehalten - nichts zu leeren.';
+        return array(0, $zeilen);
     }
     $eno = 0;
     $etxt = '';
     $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $eno, $etxt, 2);
     if (!$fp) {
-        echo '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
+        $zeilen[] = '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
            . (int) $z['udpport'] . ') - zurueckbehaltene Themen unter ' . $w
-           . '/ wurden nicht geleert.' . "\n";
-        return 1;
+           . '/ wurden nicht geleert.';
+        return array(1, $zeilen);
     }
     $zu_leeren = count($offen);
     $datagramme = 0;
@@ -3559,24 +3975,228 @@ function rk_mqtt_leeren($runden = 3, $pause_us = 1000000)
         }
     }
     fclose($fp);
-    echo '<INFO> MQTT: ' . $zu_leeren . ' von ' . $n . ' Themen unter ' . $w . '/ mit leerer Nutzlast '
+    $zeilen[] = '<INFO> MQTT: ' . $zu_leeren . ' von ' . $n . ' Themen unter ' . $w . '/ mit leerer Nutzlast '
        . 'an den UDP-Eingang ' . (int) $z['udpport'] . ' des Gateways gesendet (' . $gelaufen
-       . ' Runde(n), ' . $datagramme . ' Datagramme).' . "\n";
+       . ' Runde(n), ' . $datagramme . ' Datagramme).';
     if ($nachgelesen && !$offen) {
-        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen steht mehr '
-           . 'zurueckbehalten.' . "\n";
-        return 0;
+        $zeilen[] = '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen steht mehr '
+           . 'zurueckbehalten.';
+        return array(0, $zeilen);
     }
     if ($nachgelesen) {
-        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+        $zeilen[] = '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
-        return 1;
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).';
+        return array(1, $zeilen);
     }
-    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+    $zeilen[] = '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
        . 'verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit '
-       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
-    return 0;
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.';
+    return array(0, $zeilen);
+}
+
+/** Die vorgemerkten frueheren Praefixe: array(praefix => array('ts', 'geleert')) (M3). */
+function rk_praefix_alt_liste()
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return array(); }
+    $d = rk_json_lesen($p['datadir'] . '/mqtt_praefix_alt.json');
+    return (isset($d['praefixe']) && is_array($d['praefixe'])) ? $d['praefixe'] : array();
+}
+
+/**
+ * M3 (Durchgang 01.10.2026): ein gewechseltes Praefix vormerken. Der naechste
+ * Lauf raeumt die zurueckbehaltenen Themen darunter ab und liest beim Broker
+ * nach (rk_mqtt_nebenwege()), die Deinstallation leert es mit. Hoechstens vier
+ * Eintraege; wird ein vorgemerktes Praefix wieder eingestellt, faellt es aus
+ * der Liste. Bauart Bewaesserung 0.9.35 (bw_praefix_alt_merken()), hier als
+ * Liste, damit zwei Wechsel vor dem naechsten Lauf keines verlieren.
+ */
+function rk_praefix_alt_merken($alt, $neu)
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return false; }
+    $liste = rk_praefix_alt_liste();
+    unset($liste[$neu]);
+    unset($liste[$alt]);
+    $liste[$alt] = array('ts' => time(), 'geleert' => 0);
+    while (count($liste) > 4) {
+        $weg = null;
+        foreach ($liste as $k => $v) {
+            if (!empty($v['geleert'])) { $weg = $k; break; }
+        }
+        if ($weg === null) { reset($liste); $weg = key($liste); }
+        unset($liste[$weg]);
+    }
+    if (!rk_json_schreiben($p['datadir'] . '/mqtt_praefix_alt.json', array('praefixe' => $liste))) {
+        rk_log('MQTT: das alte Praefix ' . $alt . '/ liess sich nicht vormerken - seine '
+            . 'zurueckbehaltenen Themen bleiben im Broker.');
+        return false;
+    }
+    rk_log('MQTT-Praefix gewechselt: ' . $alt . '/ ist vorgemerkt; der naechste Lauf raeumt die '
+        . 'zurueckbehaltenen Themen darunter ab (mit Nachlesen beim Broker).');
+    return true;
+}
+
+/**
+ * M3/M4 (Durchgang 01.10.2026, Entscheidung Nr. 26): Altwerte neben dem eigenen
+ * Versand abraeumen - nur mit Antwort des Brokers.
+ *
+ * Altes Praefix: bis 0.11.13 blieben darunter nach einem Wechsel 42 retained
+ * Themen stehen, auch nach der Deinstallation (gemessen, Bericht mqtt M3).
+ * MQTT aus: alle 70 retained Themen blieben stehen (M4). Jetzt wird je Fall
+ * EINMAL geleert und nachgelesen; der Merker haengt am Erfolg, sonst versucht
+ * es der naechste Lauf wieder (eine Protokollzeile je Stunde). Solange MQTT aus
+ * ist, faellt auch der Merker des Aenderungsversands weg - nach dem
+ * Wiedereinschalten geht der volle Satz hinaus (M7).
+ */
+function rk_mqtt_nebenwege($cfg)
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return; }
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    $liste = rk_praefix_alt_liste();
+    $geaendert = false;
+    foreach ($liste as $ap => $info) {
+        $ap = (string) $ap;
+        if ($ap === '' || $ap === $praefix || !empty($info['geleert'])) { continue; }
+        list($rc, $zeilen) = rk_mqtt_leeren_kern($ap, 3, 1000000, true);
+        if ($rc === 0) {
+            $liste[$ap]['geleert'] = 1;
+            $liste[$ap]['geleert_ts'] = time();
+            $geaendert = true;
+            rk_log('MQTT: altes Praefix ' . $ap . '/ abgeraeumt - ' . strip_tags(end($zeilen)));
+        } else {
+            rk_log_gebremst('praefix_alt_' . substr(md5($ap), 0, 8), 'MQTT: altes Praefix ' . $ap
+                . '/ noch nicht abgeraeumt - ' . strip_tags(end($zeilen))
+                . ' Neuer Versuch im naechsten Lauf.', 3600);
+        }
+    }
+    if ($geaendert && !rk_json_schreiben($p['datadir'] . '/mqtt_praefix_alt.json', array('praefixe' => $liste))) {
+        rk_log_gebremst('praefix_alt_merker', 'MQTT: der Merker mqtt_praefix_alt.json liess sich nicht '
+            . 'fortschreiben.', 3600);
+    }
+    $aus_datei = $p['datadir'] . '/mqtt_aus_geleert';
+    if (empty($cfg['mqtt_ein'])) {
+        @unlink($p['datadir'] . '/mqtt_gesendet.json');
+        $kennung = 'aus|' . $praefix;
+        if (!is_file($aus_datei) || trim((string) @file_get_contents($aus_datei)) !== $kennung) {
+            list($rc, $zeilen) = rk_mqtt_leeren_kern($praefix, 3, 1000000, true);
+            if ($rc === 0) {
+                if (@file_put_contents($aus_datei, $kennung . "\n") === strlen($kennung) + 1) {
+                    rk_log('MQTT ist ausgeschaltet: ' . strip_tags(end($zeilen)));
+                } else {
+                    rk_log_gebremst('mqtt_aus_merker', 'MQTT ist ausgeschaltet und abgeraeumt; der Merker '
+                        . basename($aus_datei) . ' liess sich nicht schreiben.', 3600);
+                }
+            } else {
+                rk_log_gebremst('mqtt_aus_leeren', 'MQTT ist ausgeschaltet, die zurueckbehaltenen Themen '
+                    . 'unter ' . $praefix . '/ sind noch nicht abgeraeumt - ' . strip_tags(end($zeilen))
+                    . ' Neuer Versuch im naechsten Lauf.', 3600);
+            }
+        }
+    } elseif (is_file($aus_datei)) {
+        @unlink($aus_datei);
+    }
+}
+
+/**
+ * M2 (Durchgang 01.10.2026, Entscheidungen Nr. 8 und 16): welche retained
+ * Themen ausgetragener Raumplaetze bekommen in diesem Lauf "-"?
+ *
+ * Bis 0.11.13 wurde nur ueber eingetragene Raeume gesendet; die 15 retained
+ * Themen eines entfernten Raums (darunter lueften 1, schimmel 1) blieben im
+ * Broker und kamen nach jedem Neustart wieder (gemessen, Bericht mqtt M2).
+ * Gefragt wird der Broker; was dort mit einem anderen Wert als "-" steht,
+ * bekommt "-" retained. Steht nichts mehr (oder nur "-"), entsteht der Merker
+ * - nur aus der Antwort des Brokers, mit Praefix und Plaetzen in der Kennung
+ * (Bauart rk_mqtt_altlast_pruefen()). Ist der Broker nicht zu fragen, gilt nur
+ * der Uebergang: ein Raum, der beim letzten Lauf noch da war.
+ * Rueckgabe: Themen ohne Praefix.
+ */
+function rk_mqtt_ausgetragen($praefix, array $paare, $alt_stand = null)
+{
+    $frei = array();
+    for ($n = 1; $n <= RK_RAEUME; $n++) {
+        if (!isset($paare['raum' . $n . '/name'])) { $frei[] = $n; }
+    }
+    if (!$frei) { return array(); }
+    $p = rk_paths();
+    $merker = $p['datadir'] . '/retain_ausgetragen_bestaetigt';
+    $kennung = 'strich-bestaetigt ' . $praefix . ': ' . implode(',', $frei);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) { return array(); }
+    $felder = array();
+    foreach (array_keys(rk_mqtt_themen()) as $k) {
+        if (strpos($k, 'raumN/') === 0 && rk_mqtt_retain($k)) { $felder[] = substr($k, 6); }
+    }
+    $voll = array();
+    foreach ($frei as $n) {
+        foreach ($felder as $f) { $voll[] = $praefix . '/raum' . $n . '/' . $f; }
+    }
+    $antwort = rk_mqtt_behalten_liste($voll);
+    $l = strlen($praefix) + 1;
+    if ($antwort['lage'] === 'ok') {
+        $zu = array();
+        foreach ($antwort['werte'] as $t => $w) {
+            if ($w !== '-') { $zu[] = substr($t, $l); }
+        }
+        if (!$zu) {
+            if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+            if (@file_put_contents($merker, $kennung . "\n") !== false) {
+                rk_log('MQTT: fuer die freien Raumplaetze (' . implode(',', $frei) . ') unter ' . $praefix
+                    . '/ steht im Broker nichts mehr ausser "-" (vom Broker bestaetigt).');
+            }
+            return array();
+        }
+        rk_log_gebremst('ausgetragen_strich', 'MQTT: ' . count($zu) . ' zurueckbehaltene Themen '
+            . 'ausgetragener Raumplaetze (' . implode(', ', array_slice($zu, 0, 4))
+            . (count($zu) > 4 ? ', ...' : '') . ') bekommen "-" retained.', 3600);
+        return $zu;
+    }
+    $zu = array();
+    if (is_array($alt_stand) && isset($alt_stand['raeume']) && is_array($alt_stand['raeume'])) {
+        foreach (array_keys($alt_stand['raeume']) as $nr) {
+            if (!in_array((int) $nr, $frei, true)) { continue; }
+            foreach ($felder as $f) { $zu[] = 'raum' . (int) $nr . '/' . $f; }
+        }
+    }
+    if ($zu) {
+        rk_log_gebremst('ausgetragen_ohne_broker', 'MQTT: ein Raum wurde ausgetragen; der Broker liess '
+            . 'sich nicht befragen - seine zurueckbehaltenen Themen bekommen einmal "-" retained.', 3600);
+    }
+    return $zu;
+}
+
+/**
+ * Die Abodatei des MQTT-Gateways (Durchgang 01.10.2026, M5).
+ *
+ * config/plugins/<ordner>/mqtt_subscriptions.cfg mit '<praefix>/#'. Das Plugin
+ * liefert sie mit ('raumklima/#'); beim Speichern und in jedem Lauf wird sie
+ * auf das geltende Praefix nachgefuehrt, nur wenn sie abweicht, und das steht
+ * im Protokoll. Bis 0.11.13 gab es sie nicht, und unter Gateway V1 kam ohne
+ * Handeintrag nichts am Miniserver an - die Oberflaeche nannte das selbst "die
+ * haeufigste Fehlerursache ueberhaupt" (Bericht mqtt M5; Regeln/07, das
+ * Gateway liest die Plugin-Datei). Bauart bw_abo_datei() (Bewaesserung 0.9.35).
+ * Rueckgabe array(Pfad, traegt die Datei das Abo).
+ */
+function rk_abo_datei($praefix, $schreiben = false)
+{
+    $p = rk_paths();
+    $pfad = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $soll = trim((string) $praefix, '/') . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $p['home'] !== '' && $soll !== '/#' && $roh !== $soll . "\n" && is_dir($p['configdir'])) {
+        if (@file_put_contents($pfad, $soll . "\n") === strlen($soll) + 1) {
+            @chmod($pfad, 0644);
+            rk_log('MQTT: Gateway-Abo gesetzt: ' . $soll . ' (' . basename($pfad) . ').');
+            $da = true;
+        } else {
+            rk_log_gebremst('abo_datei', 'MQTT: die Abodatei ' . basename($pfad) . ' liess sich nicht '
+                . 'schreiben - das Abo ' . $soll . ' bitte von Hand im Gateway eintragen.', 3600);
+        }
+    }
+    return array($pfad, $da);
 }
 
 function rk_mqtt_themen()
@@ -3694,12 +4314,29 @@ function rk_abo_text()
         return rk_t('MQTT.ABO_V2') . ' '
              . sprintf(rk_t('MQTT.ABO_GEMESSEN'), $f);
     }
+    /* M5 (Durchgang 01.10.2026): traegt die Abodatei das Abo, ist kein
+     * Handeintrag noetig, und es steht keine Pflicht da (X-6). */
+    if (rk_abo_da()) {
+        $c = rk_config(false);
+        $abo = sprintf(rk_t('MQTT.ABO_DATEI'), 'mqtt_subscriptions.cfg',
+                       rk_e(trim((string) $c['mqtt_topic'], '/') . '/#'));
+        return $f === 1 ? $abo . ' ' . sprintf(rk_t('MQTT.ABO_GEMESSEN'), $f)
+                        : rk_t('MQTT.ABO_UNBEKANNT') . ' ' . $abo . ' ' . rk_t('MQTT.ABO_V2');
+    }
     if ($f === 1) {
         return rk_t('MQTT.ABO_PFLICHT') . ' ' . rk_t('MQTT.ABO_HILFE') . ' '
              . sprintf(rk_t('MQTT.ABO_GEMESSEN'), $f);
     }
     return rk_t('MQTT.ABO_UNBEKANNT') . ' ' . rk_t('MQTT.ABO_PFLICHT') . ' '
          . rk_t('MQTT.ABO_HILFE') . ' ' . rk_t('MQTT.ABO_V2');
+}
+
+/** Traegt die Abodatei das Abo des geltenden Praefixes? (M5) */
+function rk_abo_da()
+{
+    $c = rk_config(false);
+    list($pfad, $da) = rk_abo_datei(trim((string) $c['mqtt_topic'], '/'));
+    return $da;
 }
 
 /* ==================================================================
@@ -3782,18 +4419,27 @@ function rk_xml_virtual_in_http($kopf, $cmds)
  * TROCKENREST 240 h (Wasser / Leistung ist ungedeckelt), KOSTEN 5000 Wh
  * (Volumen bis 2000 m3, rund 26 800 Wh bei 40 K), EINTRAG 2000 g/h und
  * TROCKNEN 5000 g/h (beide wachsen mit dem Volumen).
+ *
+ * Durchgang 01.10.2026 (C4): auch die Temperatur- und Feuchtefelder waren
+ * enger als das Rechenbare (RK_T_MIN..RK_T_MAX = -60..80 Grad). Dachboden
+ * 45 Grad/60 % ergab ENTH 141,95 (Grenze 120), Bad 40/85 % ABS 43,33 (40),
+ * -35 Grad lag unter T/OBERT -30, Sauna 70 Grad ueber 60 (gemessen, Bericht
+ * code Nr. 4) - in Loxone jeweils 0. Jetzt: Temperaturen -60..80, VLMIN bis
+ * 90 (Taupunkt plus vl_zuschlag bis 10), Abstaende -140..140, absolute
+ * Feuchte 0..300, Enthalpie -70..1600 kJ/kg. Wer die Vorlage vor dem Update
+ * importiert hat, importiert sie neu.
  */
 function rk_felder()
 {
     return array(
-        'T'        => array('C',    -30,  60, 'RK_FELD.T',        '<v.1> °C'),
+        'T'        => array('C',    -60,  80, 'RK_FELD.T',        '<v.1> °C'),
         'RF'       => array('%',      0, 100, 'RK_FELD.RF',       '<v.0> %'),
-        'TAU'      => array('C',    -40,  40, 'RK_FELD.TAU',      '<v.1> °C'),
-        'ABS'      => array('g/m3',   0,  40, 'RK_FELD.ABS',      '<v.2> g/m³'),
-        'OBERT'    => array('C',    -30,  60, 'RK_FELD.OBERT',    '<v.1> °C'),
+        'TAU'      => array('C',    -60,  80, 'RK_FELD.TAU',      '<v.1> °C'),
+        'ABS'      => array('g/m3',   0, 300, 'RK_FELD.ABS',      '<v.2> g/m³'),
+        'OBERT'    => array('C',    -60,  80, 'RK_FELD.OBERT',    '<v.1> °C'),
         'OBERRF'   => array('%',      0, 100, 'RK_FELD.OBERRF',   '<v.0> %'),
         'LUEFTEN'  => array('',       0,   1, 'RK_FELD.LUEFTEN',  ''),
-        'GEWINN'   => array('g/m3', -40,  40, 'RK_FELD.GEWINN',   '<v.2> g/m³'),
+        'GEWINN'   => array('g/m3', -300, 300, 'RK_FELD.GEWINN',  '<v.2> g/m³'),
         /* -1 heisst "keine Aussage moeglich", wie bei AMPEL. MinVal muss
          * deshalb -1 sein: mit 0 schneidet Loxone die -1 ab und zeigt
          * genau die 0, die hier vermieden werden soll. */
@@ -3802,11 +4448,11 @@ function rk_felder()
         'TROCKEN'  => array('',       0,   1, 'RK_FELD.TROCKEN',  ''),
         'BESTIN'   => array('min',   -1, 2880, 'RK_FELD.BESTIN',  '<v.0> min'),
         'BESTSTD'  => array('h',     -1,  23, 'RK_FELD.BESTSTD',  '<v.0> h'),
-        'SPREAD'   => array('K',    -40,  60, 'RK_FELD.SPREAD',   '<v.1> K'),
-        'VLMIN'    => array('C',    -40,  40, 'RK_FELD.VLMIN',    '<v.1> °C'),
+        'SPREAD'   => array('K',   -140, 140, 'RK_FELD.SPREAD',   '<v.1> K'),
+        'VLMIN'    => array('C',    -60,  90, 'RK_FELD.VLMIN',    '<v.1> °C'),
         'RALTER'   => array('s',     -1, 8640000, 'RK_FELD.RALTER', '<v.0> s'),
         'STEHT'    => array('',       0,   1, 'RK_FELD.STEHT',    ''),
-        'ENTH'     => array('kJ/kg',  0, 120, 'RK_FELD.ENTH',     '<v.1> kJ/kg'),
+        'ENTH'     => array('kJ/kg', -70, 1600, 'RK_FELD.ENTH',   '<v.1> kJ/kg'),
         /* -1 heisst "keine Aussage moeglich" - siehe rk_ampel(). MinVal
          * musste dafuer von 0 auf -1 wandern; Loxone zieht daraus die
          * Plausibilitaetsgrenze, und eine -1 unter einer Untergrenze 0
@@ -3815,7 +4461,7 @@ function rk_felder()
         'NASS24'   => array('h',     -1,  24, 'RK_FELD.NASS24',   '<v.1> h'),
         'NASS7T'   => array('h',     -1, 168, 'RK_FELD.NASS7T',   '<v.1> h'),
         'KUEHLEN'  => array('',       0,   1, 'RK_FELD.KUEHLEN',  ''),
-        'KUEHLG'   => array('K',    -40,  40, 'RK_FELD.KUEHLG',   '<v.1> K'),
+        'KUEHLG'   => array('K',   -140, 140, 'RK_FELD.KUEHLG',   '<v.1> K'),
         'DAUER'    => array('min',   -1,  60, 'RK_FELD.DAUER',    '<v.0> min'),
         'KOSTEN'   => array('Wh',    -1, 99999, 'RK_FELD.KOSTEN', '<v.0> Wh'),
         'ERFOLG'   => array('%',     -1, 100, 'RK_FELD.ERFOLG',   '<v.0> %'),
@@ -3828,13 +4474,13 @@ function rk_felder()
         'SCHWUEL'  => array('',      -1,   1, 'RK_FELD.SCHWUEL',  ''),
         'TROCKNEN' => array('g/h', -99999, 99999, 'RK_FELD.TROCKNEN', '<v.0> g/h'),
         'TROCKENREST' => array('h',  -1, 99999, 'RK_FELD.TROCKENREST', '<v.1> h'),
-        'ZULUFT'   => array('C',    -30,  60, 'RK_FELD.ZULUFT',   '<v.1> °C'),
+        'ZULUFT'   => array('C',    -60,  80, 'RK_FELD.ZULUFT',   '<v.1> °C'),
         'WRG'      => array('%',     -1, 100, 'RK_FELD.WRG',      '<v.0> %'),
-        'FORTLUFT' => array('C',    -60,  60, 'RK_FELD.FORTLUFT', '<v.1> °C'),
+        'FORTLUFT' => array('C',    -60,  80, 'RK_FELD.FORTLUFT', '<v.1> °C'),
         'VEREIST'  => array('',       0,   1, 'RK_FELD.VEREIST',  ''),
         'RUHE'     => array('',      -1,   1, 'RK_FELD.RUHE',     ''),
         'ZWANG'    => array('',       0,   1, 'RK_FELD.ZWANG',    ''),
-        'TREND'    => array('g/m3h', -20,  20, 'RK_FELD.TREND',   '<v.2> g/m³h'),
+        'TREND'    => array('g/m3h', -300, 300, 'RK_FELD.TREND',  '<v.2> g/m³h'),
         'DUSCHE'   => array('',       0,   1, 'RK_FELD.DUSCHE',   ''),
         'KUEHLFREI' => array('',     -1,   1, 'RK_FELD.KUEHLFREI', ''),
         'KBESTIN'  => array('min',   -1, 2880, 'RK_FELD.KBESTIN', '<v.0> min'),
@@ -3880,7 +4526,31 @@ function rk_kachelname($vorsatz, $feldschluessel)
     $k = str_replace('RK_FELD.', 'RK_KACHEL.', (string) $feldschluessel);
     $kurz = rk_klartext($k);
     if ($kurz === '' || $kurz === $k) { $kurz = rk_klartext($feldschluessel); }
-    return trim(trim((string) $vorsatz) . ' ' . $kurz);
+    /* U15 (Durchgang 01.10.2026): hoechstens 40 Zeichen (Klasse 9). Mit dem
+     * Raumnamen "Schlafzimmer Eltern Nord" hatten 8 von 125 Kommentaren mehr,
+     * der laengste 45 (gemessen, Bericht oberflaeche Nr. 17). Gekuerzt wird der
+     * Raumteil, mit einem Auslassungszeichen; gezaehlt wird in Zeichen, nicht
+     * in Byte. */
+    $vorsatz = trim((string) $vorsatz);
+    $platz = 40 - rk_zeichen($kurz) - 1;
+    if ($vorsatz !== '' && rk_zeichen($vorsatz) > $platz) {
+        $vorsatz = rtrim(rk_zeichen_kuerzen($vorsatz, max(1, $platz - 1))) . "\xE2\x80\xA6";
+    }
+    return trim($vorsatz . ' ' . $kurz);
+}
+
+/** Zeichen einer UTF-8-Zeichenkette - ohne mbstring. */
+function rk_zeichen($s)
+{
+    $n = preg_match_all('/./us', (string) $s);
+    return $n === false ? strlen((string) $s) : (int) $n;
+}
+
+/** Die ersten $n Zeichen einer UTF-8-Zeichenkette - ohne mbstring. */
+function rk_zeichen_kuerzen($s, $n)
+{
+    if (preg_match('/^.{0,' . max(0, (int) $n) . '}/us', (string) $s, $m)) { return $m[0]; }
+    return substr((string) $s, 0, max(0, (int) $n));
 }
 
 function rk_klartext($schluessel)
@@ -3941,10 +4611,10 @@ function rk_vorlage()
     }
     // Aussen und Zusammenfassung
     foreach (array(
-        'AT'   => array('C',   -50, 60, 'RK_FELD.AT',   '<v.1> °C'),
+        'AT'   => array('C',   -60, 80, 'RK_FELD.AT',   '<v.1> °C'),
         'ARF'  => array('%',     0, 100, 'RK_FELD.ARF', '<v.0> %'),
-        'ATAU' => array('C',   -50, 40, 'RK_FELD.ATAU', '<v.1> °C'),
-        'AABS' => array('g/m3',  0, 40, 'RK_FELD.AABS', '<v.2> g/m³'),
+        'ATAU' => array('C',   -60, 80, 'RK_FELD.ATAU', '<v.1> °C'),
+        'AABS' => array('g/m3',  0, 300, 'RK_FELD.AABS', '<v.2> g/m³'),
         'NLUEFT' => array('',    0, 99, 'RK_FELD.NLUEFT', ''),
         'NSCHIMMEL' => array('', 0, 99, 'RK_FELD.NSCHIMMEL', ''),
         /* MinVal -1, nicht 0: rk_zeile() liefert -1, solange nie eine
@@ -3978,7 +4648,7 @@ function rk_vorlage()
         'NSPERRE' => array('',   0, 99, 'RK_FELD.NSPERRE', ''),
         'NVEREIST' => array('',  0, 99, 'RK_FELD.NVEREIST', ''),
         'HEIZFALL' => array('', -1,  1, 'RK_FELD.HEIZFALL', ''),
-        'AMITTEL' => array('C', -50, 60, 'RK_FELD.AMITTEL', '<v.1> °C'),
+        'AMITTEL' => array('C', -60, 80, 'RK_FELD.AMITTEL', '<v.1> °C'),
     ) as $feld => $info) {
         $cmds[] = array(
             'title'   => 'RK_' . $feld,
@@ -4104,6 +4774,9 @@ function rk_bausteine()
 /** Die Statuszeile fuer den Miniserver. */
 function rk_zeile($stand)
 {
+    /* C1/C2 (Durchgang 01.10.2026): OK und RALTER zur Lesezeit - siehe
+     * rk_stand_lesezeit(). Mehrfach angewandt aendert sich nichts. */
+    $stand = rk_stand_lesezeit($stand);
     /* Neue Felder haengen HINTEN an. Sie in die Mitte zu setzen verschoebe
      * die Reihenfolge der bestehenden - und jede beim Anwender eingetragene
      * Befehlserkennung zeigte danach auf einen anderen Wert. */
@@ -4114,7 +4787,7 @@ function rk_zeile($stand)
         isset($stand['schimmel_n']) ? (int) $stand['schimmel_n'] : 0,
         isset($stand['feucht_n']) ? (int) $stand['feucht_n'] : 0,
         isset($stand['trocken_n']) ? (int) $stand['trocken_n'] : 0,
-        (!empty($stand['ts'])) ? max(0, time() - (int) $stand['ts']) : -1,
+        (int) $stand['alter'],
         isset($stand['ohne_n']) ? (int) $stand['ohne_n'] : 0,
         isset($stand['steht_n']) ? (int) $stand['steht_n'] : 0,
         isset($stand['kuehl_n']) ? (int) $stand['kuehl_n'] : 0,
@@ -4256,13 +4929,19 @@ function rk_t($schluessel)
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
  *                  Zugangsdaten|null).
  */
-function rk_sicherung_lesen($roh)
+function rk_sicherung_lesen($roh, &$namen = null)
 {
+    /* $namen (Durchgang 01.10.2026, X-3): je beanstandetem Schluessel der kurze
+     * Grund, nie der Wert - fuer die Warnung am Knopf "Einstellungen sichern"
+     * und den Kopf _warnung. Fuenfter Rueckgabewert: Hinweise zum Token (C6). */
     $mangel = array();
+    $namen = array();
+    $hinweise = array();
     $zugang = null;
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(rk_t('EINST.SICH_KEIN_JSON')), 0, null);
+        $namen['_'] = rk_grund('FEHLER.KEIN_JSON');
+        return array(null, array(rk_t('EINST.SICH_KEIN_JSON')), 0, null, array());
     }
     $neu = rk_vorgaben();
     $anzahl = 0;
@@ -4272,78 +4951,111 @@ function rk_sicherung_lesen($roh)
          * $neu vorbei und werden getrennt zurueckgegeben. */
         if ($k === 'zugang') {
             list($z, $f) = rk_wert_pruefen('zugang', $w);
-            if ($f !== '') { $mangel[] = rk_sicherung_mangeltext($k, '', $f); continue; }
+            if ($f !== '') {
+                $mangel[] = rk_sicherung_mangeltext($k, '', $f);
+                $namen[$k] = rk_grund($f);
+                continue;
+            }
             $zugang = $z;
             $anzahl++;
             continue;
         }
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-         *
-         * Ohne diese zwei Zeilen weist die Funktion die Datei ab, die zwei
-         * Zeilen vorher dieselbe Bibliothek erzeugt hat. Vorab gemessen am
-         * 28.08.2026, bevor der Kopf ueberhaupt eingebaut war:
-         *   ABGEWIESEN: Unbekannte Einstellung in der Datei: _hinweis
-         *   ABGEWIESEN: Unbekannte Einstellung in der Datei: _stand
-         * Wer der Sicherungsdatei etwas hinzufuegt, das keine Einstellung
-         * ist, ergaenzt im selben Zug die Leseseite. */
+        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet (seit 28.08.2026),
+         * ebenso _warnung (X-3). */
         if ($k !== '' && $k[0] === '_') { continue; }
 
-        list($wert, $fehler) = rk_wert_pruefen($k, $w);
-        if ($fehler !== '') {
-            $mangel[] = rk_sicherung_mangeltext($k, $w, $fehler);
+        $erg = rk_wert_pruefen($k, $w);
+        if ($erg[1] !== '') {
+            $wo = isset($erg[2]) ? $erg[2] : null;
+            $mangel[] = rk_sicherung_mangeltext($k, $w, $erg[1], $wo);
+            $namen[$wo ? sprintf(rk_t('EINST.SICH_RAUMFELD_KURZ'), (int) $wo[0], $wo[1]) : $k]
+                = rk_grund($erg[1]);
             continue;
         }
-        $neu[$k] = $wert;
+        /* C6 (Durchgang 01.10.2026): ein LEERES Aktionstoken wird nicht
+         * uebernommen. Bis 0.11.13 hiess das "37 Werte uebernommen", der
+         * naechste Seitenaufruf wuerfelte still ein neues Token, und jede
+         * Adresse in Loxone bekam 403 (gemessen, Berichte code Nr. 6 und
+         * oberflaeche Nr. 5). Jetzt bleibt das geltende Token stehen, und die
+         * Meldung sagt es; gibt es keines, entsteht eines mit Protokollzeile. */
+        if ($k === 'aktionstoken' && $erg[0] === '') {
+            $geltend = rk_token_lesen();
+            $hinweise[] = $geltend !== '' ? 'TOKEN_BEHALTEN' : 'TOKEN_NEU';
+            $neu[$k] = $geltend;
+            $anzahl++;
+            continue;
+        }
+        $neu[$k] = $erg[0];
         $anzahl++;
     }
-    /* Nur wenn wirklich nichts Bekanntes DRINSTAND. Standen bekannte
-     * Schluessel da und wurden ihre Werte beanstandet, ist $anzahl
-     * ebenfalls 0 - der Satz waere dann unwahr. */
+    /* Ueber zwei Felder: die Ausschaltschwelle liegt unter der
+     * Einschaltschwelle - rk_config() hat sie bis 0.11.13 still angeglichen. */
+    if (!$mangel && (float) $neu['kuehlfrei_aus'] > (float) $neu['kuehlfrei_ein']) {
+        $mangel[] = rk_t('EINST.SICH_KUEHLFREI');
+        $namen['kuehlfrei_aus'] = rk_grund('FEHLER.KUEHLFREI');
+    }
+    /* Nur wenn wirklich nichts Bekanntes DRINSTAND. */
     if ($anzahl === 0 && !$mangel) {
         $mangel[] = rk_t('EINST.SICH_LEER');
+        $namen['_'] = rk_grund('FEHLER.LEER');
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall
+     * (VolkswagenID 0.9.11, 03.09.2026; am 07.09.2026 ueber den Bestand
+     * ausgerollt). Verglichen wird gegen die VORGABEN: was ausserhalb der
+     * Konfigurationsdatei liegt - Zugangsdaten in einer eigenen Datei -,
+     * darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(rk_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
+            $namen[$fk] = rk_grund('FEHLER.FEHLT');
         }
     }
     if ($fehlend) {
-        $mangel[] = sprintf(rk_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+        /* Roh, nicht maskiert: maskiert wird EINMAL, bei der Ausgabe (U6). */
+        $mangel[] = sprintf(rk_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
+                 $mangel ? array() : $hinweise);
 }
 
-/** Der Klartext zu einer Beanstandung - mit Schluessel UND Wert. */
-function rk_sicherung_mangeltext($k, $w, $fehler)
+/**
+ * Der Klartext zu einer Beanstandung - mit Schluessel, Wert und Grund.
+ *
+ * ROH, nicht maskiert (Durchgang 01.10.2026, U6): die Oberflaeche maskiert
+ * jede Meldung EINMAL bei der Ausgabe. Bis 0.11.13 stand hier zusaetzlich
+ * htmlspecialchars(), und der Anwender las "a&amp;b&lt;c&gt;" statt des
+ * Werts aus seiner Datei (gemessen, Bericht oberflaeche Nr. 8). Ein
+ * Aktionstoken erscheint nur mit seiner Laenge.
+ */
+function rk_sicherung_mangeltext($k, $w, $fehler, $wo = null)
 {
-    $ks = htmlspecialchars($k, ENT_QUOTES, 'UTF-8');
-    if (is_array($w) || is_object($w)) { $ws = '(Feld)'; }
-    elseif (is_bool($w)) { $ws = $w ? 'true' : 'false'; }
-    elseif ($w === null) { $ws = 'null'; }
-    else { $ws = htmlspecialchars(substr((string) $w, 0, 60), ENT_QUOTES, 'UTF-8'); }
-    if ($fehler === 'EINST.SICH_FREMD') {
-        return sprintf(rk_t('EINST.SICH_FREMD'), $ks);
+    if ($wo) {
+        $roh = (is_array($w) && isset($w[$wo[0] - 1]) && is_array($w[$wo[0] - 1])
+                && array_key_exists($wo[1], $w[$wo[0] - 1])) ? $w[$wo[0] - 1][$wo[1]] : null;
+        $rr = rk_raum_regeln();
+        return sprintf(rk_t('EINST.SICH_RAUMFELD'), (int) $wo[0], $wo[1],
+                       rk_sicherung_wert_text($wo[1], $roh),
+                       rk_grund($fehler, isset($rr[$wo[1]]) ? $rr[$wo[1]] : null));
     }
-    return sprintf(rk_t('EINST.SICH_WERT'), $ks, $ws);
+    if ($fehler === 'EINST.SICH_FREMD') {
+        return sprintf(rk_t('EINST.SICH_FREMD'), $k);
+    }
+    $wr = rk_wert_regeln();
+    return sprintf(rk_t('EINST.SICH_WERT'), $k, rk_sicherung_wert_text($k, $w),
+                   rk_grund($fehler, isset($wr[$k]) ? $wr[$k] : null));
+}
+
+/** Ein Wert fuer eine Beanstandung: gekuerzt, ein Token nur als Laenge. */
+function rk_sicherung_wert_text($k, $w)
+{
+    if (is_array($w) || is_object($w)) { return '(Feld)'; }
+    if (is_bool($w)) { return $w ? 'true' : 'false'; }
+    if ($w === null) { return 'null'; }
+    if ($k === 'aktionstoken' || $k === 'zugang') {
+        return sprintf(rk_t('EINST.SICH_LAENGE'), strlen((string) $w));
+    }
+    return rk_zeichen_kuerzen((string) $w, 60);
 }
 
 /**
@@ -4395,8 +5107,38 @@ function rk_sicherung_bauen($cfg, $zugang = null)
         $voll['zugang'] = array('benutzer' => (string) $zugang['benutzer'],
                                 'passwort' => (string) $zugang['passwort']);
     }
-    return json_encode($kopf + $voll,
+    $js = json_encode($kopf + $voll,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) { return false; }
+    /* X-3 (Durchgang 01.10.2026): wuerde das eigene Zurueckspielen diese Datei
+     * abweisen, sagt es der Kopf - mit den Namen der Einstellungen, nie mit
+     * ihren Werten. Geliefert wird trotzdem vollstaendig. Bis 0.11.13 nahm das
+     * Formular ein Passwort mit 300 Zeichen, die Sicherung warnte nicht, und
+     * erst auf dem zweiten LoxBerry stellte sich heraus, dass die Datei
+     * wertlos war (gemessen, Bericht oberflaeche Nr. 6). "_warnung" beginnt
+     * mit "_" und wird beim Zurueckspielen uebergangen. */
+    $namen = array();
+    rk_sicherung_lesen($js, $namen);
+    if ($namen) {
+        $kopf['_warnung'] = sprintf(rk_t('EINST.SICH_WARNKOPF'), implode(', ', array_keys($namen)));
+        $js = json_encode($kopf + $voll,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    return $js;
+}
+
+/**
+ * X-3: Welche gespeicherten Werte wuerde das eigene Zurueckspielen abweisen?
+ * Rueckgabe array(Name => Grund), leer = keine. Dieselbe Pruefung wie beim
+ * Zurueckspielen, angewandt auf das Erzeugnis von rk_sicherung_bauen().
+ */
+function rk_sicherung_maengel($cfg, $zugang = null)
+{
+    $js = rk_sicherung_bauen($cfg, $zugang);
+    if ($js === false) { return array('_' => rk_grund('FEHLER.KEIN_JSON')); }
+    $namen = array();
+    rk_sicherung_lesen($js, $namen);
+    return $namen;
 }
 
 /**

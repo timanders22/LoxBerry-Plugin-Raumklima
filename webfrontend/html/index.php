@@ -11,7 +11,12 @@
  *   ?token=...&aktion=status     Alle Werte als Textzeilen (die Vorlage)
  *   ?token=...&aktion=json       Dasselbe als JSON
  *   ?token=...&aktion=abrufen    Sofort neu holen und ausgeben
- *   ?token=...&aktion=raum&nr=3  Nur ein Raum (als JSON)
+ *   ?token=...&aktion=raum&nr=3  Nur ein Raum (als JSON); nr nur aus Ziffern, sonst 400
+ *
+ * OK wird zur Lesezeit 0, sobald die letzte erfolgreiche Messung aelter ist
+ * als das Dreifache des Takts (Entscheidung Nr. 4); ALTER und RALTER werden
+ * zur Lesezeit gerechnet (rk_stand_lesezeit()). Jeder Ausgang schreibt eine
+ * gebremste Protokollzeile mit dem Anrufer (rk_ep_log()).
  *
  * Jede andere Aktion wird mit 400 abgewiesen, BEVOR etwas geholt oder
  * geschrieben wird.
@@ -34,6 +39,25 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 @ini_set('display_errors', '0');
 
 require_once __DIR__ . '/rk_lib.php';
+
+/* C10 (Durchgang 01.10.2026, Regeln/03): jeder Ausgang dieses Endpunkts
+ * schreibt eine Protokollzeile mit der Adresse des Anrufers - Erfolg,
+ * Abweisung, Bremse. Bis 0.11.13 blieb das Protokoll nach elf Aufrufen leer
+ * (gemessen, Bericht code Nr. 10): "der Miniserver fragt nicht" war von "er
+ * wird abgewiesen" nicht zu unterscheiden. Nie das Token, von einem
+ * abgewiesenen Wert nur die Laenge. Gebremst je Ausgang und Anrufer, weil der
+ * Miniserver alle 300 s fragt; geschrieben nur, wenn der Datenordner schon
+ * besteht - ein unangemeldeter Aufruf legt keinen an. */
+function rk_ep_log($ausgang, $text, $sekunden)
+{
+    $p = rk_paths();
+    if ($p['home'] === '' || !is_dir($p['datadir'])) { return; }
+    $wer = (isset($_SERVER['REMOTE_ADDR']) && is_string($_SERVER['REMOTE_ADDR']))
+        ? preg_replace('/[^0-9A-Fa-f:.]/', '', $_SERVER['REMOTE_ADDR']) : '';
+    if ($wer === '') { $wer = '?'; }
+    rk_log_gebremst('ep_' . $ausgang . '_' . $wer, 'Endpunkt: ' . $text . ' (Anrufer ' . $wer . ').',
+                    $sekunden);
+}
 
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
@@ -70,11 +94,15 @@ if (isset($_GET['selftest'])) {
     if ($soll === '') {
         header('HTTP/1.1 403 Forbidden');
         echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        rk_ep_log('selftest403', 'Selbsttest, noch kein Wortzeichen eingerichtet', 600);
     } elseif (!hash_equals($soll, $token)) {
         header('HTTP/1.1 403 Forbidden');
         echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        rk_ep_log('selftest403', 'Selbsttest abgewiesen, falsches Wortzeichen (Laenge '
+            . strlen($token) . ')', 600);
     } else {
         echo "SELFTEST;OK=1;TOKEN=OK\n";
+        rk_ep_log('selftest', 'Selbsttest bestanden', 3600);
     }
     exit;
 }
@@ -82,6 +110,8 @@ if (isset($_GET['selftest'])) {
 if ($soll === '' || !hash_equals($soll, $token)) {
     header('HTTP/1.1 403 Forbidden');
     echo "FEHLER;GRUND=TOKEN\n";
+    rk_ep_log('403', 'abgewiesen (403), ' . ($soll === '' ? 'noch kein Wortzeichen eingerichtet'
+        : 'falsches oder fehlendes Wortzeichen, Laenge ' . strlen($token)), 600);
     exit;
 }
 
@@ -92,6 +122,7 @@ if (isset($_GET['aktion']) && !is_string($_GET['aktion'])) {
     header('HTTP/1.1 400 Bad Request');
     echo "FEHLER;GRUND=AKTION_UNBEKANNT
 ";
+    rk_ep_log('400', 'abgewiesen (400), die Aktion ist keine Zeichenkette', 600);
     exit;
 }
 $aktion = isset($_GET['aktion']) ? strtolower($_GET['aktion']) : 'status';
@@ -108,6 +139,7 @@ $aktion = isset($_GET['aktion']) ? strtolower($_GET['aktion']) : 'status';
 if (!in_array($aktion, array('status', 'json', 'abrufen', 'raum'), true)) {
     header('HTTP/1.1 400 Bad Request');
     echo "FEHLER;GRUND=AKTION_UNBEKANNT\n";
+    rk_ep_log('400', 'abgewiesen (400), unbekannte Aktion (Laenge ' . strlen($aktion) . ')', 600);
     exit;
 }
 
@@ -123,34 +155,52 @@ if ($aktion === 'abrufen') {
     if ($alt && $letzt > 0 && $abst >= 0 && $abst < RK_ABRUF_MINDESTABSTAND) {
         header('X-Raumklima-Abruf: gebremst, naechster Lauf in '
                . (RK_ABRUF_MINDESTABSTAND - $abst) . ' s');
-        rk_log_gebremst('abruf_gebremst', 'Endpunkt: aktion=abrufen kam ' . $abst
+        rk_ep_log('abruf_gebremst', 'aktion=abrufen kam ' . $abst
             . ' s nach dem letzten Lauf und wurde gebremst (Mindestabstand '
-            . RK_ABRUF_MINDESTABSTAND . ' s); geliefert wurde der letzte Stand.', 3600);
+            . RK_ABRUF_MINDESTABSTAND . ' s); geliefert wurde der letzte Stand', 3600);
         $stand = $alt;
     } else {
         $stand = rk_abrufen(true);
+        rk_ep_log('abrufen', 'aktion=abrufen, neu geholt', 3600);
     }
     $aktion = 'status';
 } else {
     $stand = rk_stand();
     if (!$stand) { $stand = rk_abrufen(false); }
 }
+/* C1/C2 (Durchgang 01.10.2026): OK und RALTER zur Lesezeit - fuer json und
+ * raum hier, fuer die Antwortzeile ebenso in rk_zeile(). */
+$stand = rk_stand_lesezeit($stand);
 
 if ($aktion === 'json') {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($stand, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    rk_ep_log('json', 'aktion=json beantwortet', 3600);
     exit;
 }
 
 if ($aktion === 'raum') {
-    $nr = isset($_GET['nr']) ? (int) $_GET['nr'] : 0;
+    /* C11 (Durchgang 01.10.2026, Regeln/03): zuerst is_string, dann nur
+     * Ziffern. Bis 0.11.13 lieferten nr[]=9 und nr=1abc beide Raum 1 (HTTP 200)
+     * - ein unbrauchbarer Parameter wurde still zu einer Raumnummer. */
+    $nr_roh = isset($_GET['nr']) ? $_GET['nr'] : '';
+    if (!is_string($nr_roh) || !ctype_digit($nr_roh)) {
+        header('HTTP/1.1 400 Bad Request');
+        echo "FEHLER;GRUND=NR_UNGUELTIG\n";
+        rk_ep_log('400nr', 'abgewiesen (400), Raumnummer unbrauchbar (Laenge '
+            . (is_string($nr_roh) ? strlen($nr_roh) : 0) . ')', 600);
+        exit;
+    }
+    $nr = (int) $nr_roh;
     if (!isset($stand['raeume'][$nr])) {
         header('HTTP/1.1 404 Not Found');
         echo "FEHLER;GRUND=RAUM_UNBEKANNT\n";
+        rk_ep_log('404', 'Raum ' . $nr . ' unbekannt (404)', 600);
         exit;
     }
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($stand['raeume'][$nr], JSON_UNESCAPED_UNICODE);
+    rk_ep_log('raum', 'aktion=raum beantwortet', 3600);
     exit;
 }
 
@@ -158,3 +208,4 @@ if ($aktion === 'raum') {
  * an dieser Stelle waere sie jetzt ein toter Zweig - und ein toter Zweig
  * ist schlimmer als ein fehlender, weil er erledigt aussieht. */
 echo rk_zeile($stand);
+rk_ep_log('status', 'aktion=status beantwortet', 3600);

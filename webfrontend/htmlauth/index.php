@@ -74,6 +74,187 @@ if (!function_exists('rk_e')) {
     function rk_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 }
 
+/* ==================================================================
+ * X-2 (Durchgang 01.10.2026, Regeln/04): nach einer Beanstandung stehen die
+ * eingetippten Werte wieder im Formular, das beanstandete Feld ist markiert.
+ * Bis 0.11.13 zeigte der GET nach der Umleitung die gespeicherten Werte, kein
+ * Feld war markiert, und unter 325 Feldern war das falsche zu suchen
+ * (gemessen, Bericht oberflaeche Nr. 2). Die Eingaben reisen mit der
+ * Einmalmeldung (0600, Datenordner, 120 s), nur fuer das beanstandete
+ * Formular, nie ein Kennwort. Bauart ACTiKamera 1.9.26.
+ * ================================================================== */
+
+/** Die Raumspalten des Formulars: Raumschluessel => array(Feldname, Bezeichnung). */
+function rk_ui_raumspalten()
+{
+    return array(
+        'name'         => array('r_name', rk_t('EINST.NAME')),
+        'pfad_t'       => array('r_pfad_t', rk_t('EINST.PFAD_T')),
+        'pfad_rf'      => array('r_pfad_rf', rk_t('EINST.PFAD_RF')),
+        'pfad_co2'     => array('r_pfad_co2', rk_t('EINST.PFAD_CO2')),
+        'pfad_fenster' => array('r_pfad_fenster', rk_t('EINST.PFAD_FENSTER')),
+        'pfad_zuluft'  => array('r_pfad_zuluft', rk_t('EINST.PFAD_ZULUFT')),
+        'quelle'       => array('r_quelle', rk_t('EINST.EIGENE_QUELLE')),
+        'quelle_rf'    => array('r_quelle_rf', rk_t('EINST.QUELLE_RF')),
+        'einheit_t'    => array('r_einheit_t', rk_t('EINST.EINHEIT')),
+        'einheit_rf'   => array('r_einheit_rf', rk_t('EINST.EINHEIT')),
+        'frsi'         => array('r_frsi', 'fRsi'),
+        'soll_min'     => array('r_min', rk_t('EINST.SOLL_MIN')),
+        'soll_max'     => array('r_max', rk_t('EINST.SOLL_MAX')),
+        'art'          => array('r_art', rk_t('EINST.ART')),
+        'erd_t'        => array('r_erd_t', rk_t('EINST.ERD_T')),
+        'volumen'      => array('r_volumen', rk_t('EINST.VOLUMEN')),
+        'fenster'      => array('r_fenster', rk_t('EINST.FENSTERART')),
+        't_soll'       => array('r_t_soll', rk_t('EINST.T_SOLL')),
+        'co2_max'      => array('r_co2_max', rk_t('EINST.CO2_MAX')),
+        'wrg_eta'      => array('r_wrg_eta', rk_t('EINST.WRG_ETA')),
+        'wasser_g'     => array('r_wasser_g', rk_t('EINST.WASSER_G')),
+        'ruhe_von'     => array('r_ruhe_von', rk_t('EINST.RUHE_VON')),
+        'ruhe_bis'     => array('r_ruhe_bis', rk_t('EINST.RUHE_BIS')),
+        'personen'     => array('r_personen', rk_t('EINST.PERSONEN')),
+    );
+}
+
+/** Die einzelnen Felder des Reiters Einstellungen: Schluessel => Sprachschluessel. */
+function rk_ui_einzelfelder()
+{
+    return array(
+        'quelle'        => 'EINST.QUELLE',
+        'takt'          => 'EINST.TAKT',
+        'aussen_art'    => 'EINST.AUSSEN_ART',
+        'breite'        => 'EINST.BREITE',
+        'laenge'        => 'EINST.LAENGE',
+        'aussen_quelle' => 'EINST.AUSSEN_QUELLE',
+        'aussen_t'      => 'EINST.AUSSEN_T',
+        'aussen_rf'     => 'EINST.AUSSEN_RF',
+        'aussen_einheit_t'  => 'EINST.EINHEIT',
+        'aussen_einheit_rf' => 'EINST.EINHEIT',
+        'mindest'       => 'EINST.MINDEST',
+        't_min'         => 'EINST.T_MIN',
+        'af_unter'      => 'EINST.AF_UNTER',
+        'vorschau'      => 'EINST.VORSCHAU',
+        'steht_min'     => 'EINST.STEHT_MIN',
+        'hyst'          => 'EINST.HYST',
+        'dauer_min'     => 'EINST.DAUER_MIN',
+        'regen_max'     => 'EINST.REGEN_MAX',
+        'kuehl_spanne'  => 'EINST.KUEHL_SPANNE',
+        'wind_max'      => 'EINST.WIND_MAX',
+        'wand_abstand'  => 'EINST.WAND_ABSTAND',
+        'schwuel_x'     => 'EINST.SCHWUEL_X',
+        'co2_t_min'     => 'EINST.CO2_T_MIN',
+        'zwang_std'     => 'EINST.ZWANG_STD',
+        'vl_zuschlag'   => 'EINST.VL_ZUSCHLAG',
+        'kuehlfrei_ein' => 'EINST.KUEHLFREI_EIN',
+        'kuehlfrei_aus' => 'EINST.KUEHLFREI_AUS',
+        'heizgrenze'    => 'EINST.HEIZGRENZE',
+        'trend_min'     => 'EINST.TREND_MIN',
+        'co2_ltr'       => 'EINST.CO2_LTR',
+        'co2_aussen'    => 'EINST.CO2_AUSSEN',
+    );
+}
+
+/** Die Felder eines Formulars, deren Eingaben zurueckreisen duerfen (ohne Kennwort). */
+function rk_eingabe_felder($formular)
+{
+    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_topic'); }
+    if ($formular !== 'einst') { return array(); }
+    $aus = array();
+    foreach (rk_ui_raumspalten() as $sp) {
+        for ($i = 0; $i < RK_RAEUME; $i++) { $aus[] = $sp[0] . '[' . $i . ']'; }
+    }
+    return array_merge($aus, array_keys(rk_ui_einzelfelder()),
+                       array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'));
+}
+
+/** Ein Wert aus $_POST - auch fuer 'r_min[3]'. null = nicht mitgeschickt. */
+function rk_post_wert($feld)
+{
+    /* Ziffern gehoeren in den Namen: r_co2_max, r_pfad_co2. */
+    if (preg_match('/^([a-z0-9_]+)\[(\d+)\]$/', (string) $feld, $m)) {
+        return (isset($_POST[$m[1]]) && is_array($_POST[$m[1]]) && array_key_exists($m[2], $_POST[$m[1]]))
+            ? $_POST[$m[1]][$m[2]] : null;
+    }
+    return isset($_POST[$feld]) ? $_POST[$feld] : null;
+}
+
+/** Die abgewiesenen Eingaben EINES Formulars einsammeln (X-2). */
+function rk_eingaben_sammeln($formular, array $falsch)
+{
+    $werte = array();
+    foreach (rk_eingabe_felder($formular) as $f) {
+        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen'), true)) {
+            $werte[$f] = !empty($_POST[$f]) ? '1' : '0';
+            continue;
+        }
+        $v = rk_post_wert($f);
+        if (!is_string($v) || strlen($v) > 1024 || !preg_match('//u', $v)) { continue; }
+        $werte[$f] = $v;
+    }
+    $markierbar = array_merge(rk_eingabe_felder($formular), array('zug_passwort'));
+    $fa = array();
+    foreach ($falsch as $f) {
+        if (in_array($f, $markierbar, true) && !in_array($f, $fa, true)) { $fa[] = $f; }
+    }
+    return array('formular' => (string) $formular, 'werte' => $werte, 'falsch' => $fa);
+}
+
+/** Die zurueckgereisten Eingaben fuer diesen Seitenaufbau setzen bzw. lesen. */
+function rk_eingaben_aktiv($setzen = null)
+{
+    static $e = array('formular' => '', 'werte' => array(), 'falsch' => array());
+    if (is_array($setzen)) {
+        $f = (isset($setzen['formular']) && is_string($setzen['formular'])) ? $setzen['formular'] : '';
+        $erlaubt = rk_eingabe_felder($f);
+        $markierbar = array_merge($erlaubt, array('zug_passwort'));
+        $w = array();
+        $fa = array();
+        foreach ((isset($setzen['werte']) && is_array($setzen['werte'])) ? $setzen['werte'] : array() as $k => $v) {
+            if (is_string($k) && in_array($k, $erlaubt, true) && is_string($v)) { $w[$k] = $v; }
+        }
+        foreach ((isset($setzen['falsch']) && is_array($setzen['falsch'])) ? $setzen['falsch'] : array() as $k) {
+            if (is_string($k) && in_array($k, $markierbar, true)) { $fa[] = $k; }
+        }
+        $e = array('formular' => $erlaubt ? $f : '', 'werte' => $w, 'falsch' => $fa);
+    }
+    return $e;
+}
+
+/** Der Wert fuer ein Formularfeld: die zurueckgereiste Eingabe oder der gespeicherte. */
+function rk_ein($feld, $gespeichert)
+{
+    $e = rk_eingaben_aktiv();
+    return array_key_exists((string) $feld, $e['werte']) ? $e['werte'][(string) $feld] : (string) $gespeichert;
+}
+
+/** Ein Haken: die zurueckgereiste Eingabe oder der gespeicherte Stand. */
+function rk_haken($feld, $gespeichert)
+{
+    $e = rk_eingaben_aktiv();
+    $an = array_key_exists((string) $feld, $e['werte']) ? ($e['werte'][(string) $feld] === '1') : (bool) $gespeichert;
+    return $an ? ' checked' : '';
+}
+
+/** Das Merkmal am beanstandeten Feld: rot umrandet und fuer Vorleseprogramme markiert. */
+function rk_mark($feld)
+{
+    $e = rk_eingaben_aktiv();
+    return in_array((string) $feld, $e['falsch'], true) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
+/**
+ * Abrufen und sagen, ob wirklich abgerufen wurde (U11). rk_abrufen() liefert
+ * waehrend einer Aktualisierung oder bei besetzter Sperre den letzten Stand
+ * zurueck; bis 0.11.13 stand dann trotzdem "Abgerufen" da.
+ * Rueckgabe array(gelaufen, Stand).
+ */
+function rk_ui_abrufen()
+{
+    $t0 = time();
+    $s = rk_abrufen(true);
+    if (!is_array($s)) { $s = array(); }
+    return array(isset($s['lauf_ts']) && (int) $s['lauf_ts'] >= $t0, $s);
+}
+
 /* Die Positivliste fuer activetab entsteht HIERAUS.
  *
  * Nicht mehr: die Leiste weiter unten ist ausgeschrieben, und das ist
@@ -103,6 +284,14 @@ if (isset($_POST['activetab']) && preg_match($rk_muster, (string) $_POST['active
 $rk_meldungen = array();
 $rk_fehler = array();      // gesammelt, nicht ueberschrieben
 $rk_testausgabe = '';
+/* U11 (Durchgang 01.10.2026): eigene Listen. Bis 0.11.13 stand jede Stoerung -
+ * ein Abruf ohne Standort, ein Schreibfehler, ein stummer Miniserver - unter der
+ * Ueberschrift der Beanstandungsliste "Das konnte so nicht uebernommen werden"
+ * (Regeln/04; gemessen, Bericht oberflaeche Nr. 13). $rk_fehler traegt jetzt nur
+ * Beanstandungen einer Eingabe oder Datei. */
+$rk_stoerung = array();         // "Der Vorgang ist nicht gelungen"
+$rk_abrufhinweise = array();    // "Hinweise zum Abruf"
+$rk_eingaben = null;            // X-2
 $rk_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 /* Merkt sich, dass ein POST kam - auch wenn der Wachposten ihn abweist.
  * Auch dann endet die Anfrage mit einer Umleitung. */
@@ -192,6 +381,11 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
     $rk_zug_drin = is_array($rk_zug)
         && ((string) $rk_zug['benutzer'] !== '' || (string) $rk_zug['passwort'] !== '');
     $rk_js = rk_sicherung_bauen(rk_config(), $rk_zug);
+    /* X-3: die Datei kommt vollstaendig, auch wenn das eigene Zurueckspielen
+     * sie abweisen wuerde - dann traegt sie "_warnung", und das Protokoll sagt es. */
+    if (is_string($rk_js) && strpos($rk_js, '"_warnung"') !== false) {
+        rk_log('Die Sicherung traegt eine Warnung: das Zurueckspielen wuerde sie abweisen (X-3).');
+    }
     if ($rk_zug_drin) {
         rk_log('Einstellungen gesichert - MIT Zugangsdaten der Quelle.');
     } else {
@@ -204,7 +398,7 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
         echo $rk_js;
         exit;
     }
-    $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+    $rk_stoerung[] = rk_t('EINST.SICH_SCHREIBFEHLER');
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -225,7 +419,7 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
     } elseif ((int) $_FILES['rk_sicherung']['size'] > 262144) {
         $rk_fehler[] = rk_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($rk_neu, $rk_mangel, $rk_n, $rk_zug) = rk_sicherung_lesen(
+        list($rk_neu, $rk_mangel, $rk_n, $rk_zug, $rk_hinw) = rk_sicherung_lesen(
             (string) @file_get_contents($_FILES['rk_sicherung']['tmp_name']));
         if ($rk_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
@@ -234,6 +428,14 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
                             . implode(' ', $rk_mangel);
         } elseif (rk_config_speichern($rk_neu)) {
             $rk_meldungen[] = sprintf(rk_t('EINST.SICH_UEBERNOMMEN'), $rk_n);
+            /* C6 (Durchgang 01.10.2026): ein leeres Aktionstoken in der Datei -
+             * das geltende blieb stehen, und das wird gesagt. */
+            if (in_array('TOKEN_BEHALTEN', (array) $rk_hinw, true)) {
+                $rk_meldungen[] = rk_t('EINST.SICH_TOKEN_BEHALTEN');
+            }
+            if (in_array('TOKEN_NEU', (array) $rk_hinw, true)) {
+                $rk_meldungen[] = rk_t('EINST.SICH_TOKEN_NEU');
+            }
             /* Die Zugangsdaten wandern nach geheim.json, NICHT in die
              * Konfiguration. Und es wird gesagt, ob welche dabei waren -
              * beides, weil beides eine Aussage ist. */
@@ -242,15 +444,19 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
                     $rk_meldungen[] = rk_t('EINST.SICH_MIT_ZUGANG');
                     rk_log('Zugangsdaten aus der Sicherungsdatei uebernommen.');
                 } else {
-                    $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+                    $rk_stoerung[] = rk_t('EINST.SICH_ZUGANG_FEHL');
                 }
             }
             /* Was mit dem Abruf geschehen ist. Ohne diesen Satz sucht der
              * Anwender auf dem zweiten LoxBerry lange nach dem Grund fuer
-             * HTTP 401. */
-            $rk_s = rk_abrufen(true);
-            $rk_meldungen[] = empty($rk_s['meldungen'])
-                ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+             * HTTP 401. Und nur, wenn wirklich abgerufen wurde (U11). */
+            list($rk_lief, $rk_s) = rk_ui_abrufen();
+            if (!$rk_lief) {
+                $rk_stoerung[] = rk_t('ALLG.NICHT_ABGERUFEN');
+            } else {
+                $rk_meldungen[] = empty($rk_s['meldungen'])
+                    ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+            }
             $rk_g0 = rk_geheim();
             if ($rk_g0['benutzer'] === '' && $rk_g0['passwort'] === '') {
                 $rk_meldungen[] = rk_t('EINST.SICH_OHNE_ZUGANG');
@@ -258,7 +464,7 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
             rk_log('Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
                    . (int) $rk_n . ' Werte).');
         } else {
-            $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+            $rk_stoerung[] = rk_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
     $rk_tab = 'tab-settings';
@@ -281,7 +487,7 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
     $rk_cfg0 = rk_config();
     $rk_ms = rk_miniserver_gewaehlt($rk_cfg0);
     if ($rk_ms === null) {
-        $rk_fehler[] = rk_t('MELD.MS_KEINER');
+        $rk_stoerung[] = rk_t('MELD.MS_KEINER');
     } else {
         list($rk_ok, $rk_meld, $rk_msr, $rk_bau) = rk_struktur_holen($rk_ms);
         if (!$rk_ok) {
@@ -291,8 +497,9 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
              * (redet das Plugin http oder https, und gegen welchen Port),
              * fehlten. Ein LoxBerry mit Preferhttps=1 meldete "antwortet
              * nicht", ohne zu verraten, wohin er gefragt hat. */
-            $rk_fehler[] = sprintf(rk_t('EINST.MS_FEHLER'),
-                rk_e($rk_ms['name'] . ' (' . rtrim(rk_ms_url($rk_ms, ''), '/') . ')'),
+            /* U6 (Durchgang 01.10.2026): roh - maskiert wird einmal bei der Ausgabe. */
+            $rk_stoerung[] = sprintf(rk_t('EINST.MS_FEHLER'),
+                $rk_ms['name'] . ' (' . rtrim(rk_ms_url($rk_ms, ''), '/') . ')',
                 rk_t($rk_meld));
         } else {
             $rk_kat = isset($_POST['ms_kategorie']) ? rk_text_saeubern($_POST['ms_kategorie']) : '';
@@ -375,8 +582,8 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                     foreach ($rk_ass['proben'][$rk_g] as $rk_pr) {
                         if ($rk_ass['probe'] === null) { $rk_ass['probe'] = $rk_pr; }
                         if (!$rk_pr['ok']) {
-                            $rk_fehler[] = sprintf(rk_t('EINST.MS_PROBE_FEHL2'),
-                                rk_e($rk_pr['name']), rk_t($rk_pr['meld']));
+                            $rk_stoerung[] = sprintf(rk_t('EINST.MS_PROBE_FEHL2'),
+                                $rk_pr['name'], rk_t($rk_pr['meld']));
                         }
                     }
                 }
@@ -399,7 +606,7 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                         (int) $rk_ass['mehrdeutig']);
                 }
                 if ($rk_ass['kein_platz'] > 0) {
-                    $rk_fehler[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
+                    $rk_stoerung[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
                         (int) $rk_ass['kein_platz'], RK_RAEUME);
                 }
             }
@@ -461,7 +668,7 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                          * stand hier nur die Zahl der geschriebenen Raeume,
                          * und der Ueberhang fiel wortlos weg. */
                         if ($rk_ass['kein_platz'] > 0) {
-                            $rk_fehler[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
+                            $rk_stoerung[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'),
                                 (int) $rk_ass['kein_platz'], RK_RAEUME);
                         }
                         if ($rk_ass['mehrdeutig'] > 0) {
@@ -483,7 +690,7 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                                                           'passwort' => $rk_ms['pass']))) {
                                 $rk_meldungen[] = rk_t('EINST.MS_ZUGANG_GESETZT');
                             } else {
-                                $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+                                $rk_stoerung[] = rk_t('EINST.SICH_ZUGANG_FEHL');
                             }
                         } elseif ($rk_g2['benutzer'] !== ''
                                   && $rk_g2['benutzer'] !== $rk_ms['user']) {
@@ -494,18 +701,22 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                              * ersetzt, die alle 24 Abrufe mit 401 beendeten
                              * - und die Meldung nannte nur "Abruf
                              * fehlgeschlagen". */
-                            $rk_fehler[] = sprintf(rk_t('EINST.MS_ZUGANG_FREMD'),
-                                rk_e($rk_g2['benutzer']), rk_e($rk_ms['user']));
+                            $rk_stoerung[] = sprintf(rk_t('EINST.MS_ZUGANG_FREMD'),
+                                $rk_g2['benutzer'], $rk_ms['user']);
                         }
                         rk_log('Einrichtungs-Assistent: ' . $rk_n2 . ' Raum/Raeume vom '
                                . 'Miniserver uebernommen (Pfad T '
                                . $rk_ass['probe']['pfad'] . ', ' . $rk_ass['kein_platz']
                                . ' ohne Platz, ' . $rk_ass['mehrdeutig'] . ' mehrdeutig).');
-                        $rk_s2 = rk_abrufen(true);
-                        $rk_meldungen[] = empty($rk_s2['meldungen'])
-                            ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+                        list($rk_lief2, $rk_s2) = rk_ui_abrufen();
+                        if (!$rk_lief2) {
+                            $rk_stoerung[] = rk_t('ALLG.NICHT_ABGERUFEN');
+                        } else {
+                            $rk_meldungen[] = empty($rk_s2['meldungen'])
+                                ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+                        }
                     } else {
-                        $rk_fehler[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+                        $rk_stoerung[] = rk_t('EINST.SICH_SCHREIBFEHLER');
                     }
                 }
             }
@@ -517,7 +728,7 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
 if ($rk_post && isset($_POST['vorlage'])) {
     list($rk_name, $rk_inhalt) = rk_vorlage();
     if ($rk_inhalt === '') {
-        $rk_fehler[] = rk_t('LOX.FEHLER_VORLAGE');
+        $rk_stoerung[] = rk_t('LOX.FEHLER_VORLAGE');
         $rk_tab = 'tab-loxone';
     } else {
         header('Content-Type: application/xml; charset=utf-8');
@@ -535,330 +746,202 @@ if ($rk_post && isset($_POST['vorlage'])) {
  *
  * Bis 0.9.8 baute dieser Handler jeden Wert aus $_POST neu. Ein Speichern
  * im Reiter MQTT schickt aber weder Raeume noch Quellen mit - sie kamen als
- * leer an und wurden als Loeschung uebernommen. Gemessen am 24.08.2026:
- * ein Klick loeschte alle zwoelf Raeume, die gemeinsame Quelle, die eigene
- * Wetterquelle samt Pfaden und stellte die Aussenart auf 'meteo' zurueck.
- * Umgekehrt schaltete ein Speichern im Reiter Einstellungen das
- * Veroeffentlichen ab und setzte das MQTT-Thema auf die Vorgabe.
- *
- * In Loxone faellt das nicht auf: virtuelle Eingaenge behalten ihren letzten
- * Wert, in der App sieht danach alles normal aus.
- *
+ * leer an und wurden als Loeschung uebernommen (gemessen am 24.08.2026).
  * Deshalb traegt jedes Formular ein verstecktes Feld, das sagt, wofuer es
  * zustaendig ist. Angefasst wird nur, was wirklich mitkam.
+ *
+ * Durchgang 01.10.2026 (U1-U3, Entscheidungen Nr. 16 und 19): ERST wird jedes
+ * Feld geprueft, und bei einer einzigen Beanstandung wird NICHTS geschrieben -
+ * weder raumklima.json noch geheim.json. Bis 0.11.13 stand
+ * `elseif (rk_config_speichern($rk_cfg))` hinter den Pruefungen, ohne nach
+ * $rk_fehler zu sehen: die Seite meldete "gespeichert" und die Beanstandung
+ * untereinander, und im Reiter MQTT ging mqtt_ein still auf 0, wenn nur das
+ * Thema falsch war (gemessen, Bericht oberflaeche Nr. 1). Still
+ * zurechtgebogen wird nichts mehr - die Regeln stehen in rk_regel_pruefen(),
+ * dieselben wie fuer die Sicherung. Die eingetippten Werte reisen mit der
+ * Einmalmeldung zurueck, das falsche Feld ist markiert (X-2).
  */
 if ($rk_post && isset($_POST['speichern'])) {
     $rk_cfg = rk_config();
     $rk_hat_einst = isset($_POST['feld_einst']);
     $rk_hat_mqtt  = isset($_POST['feld_mqtt']);
-
-    /* Kleine Helfer. Nur Steuerzeichen und Anfuehrungszeichen entfernen -
-     * ein hartes preg_replace auf eine Positivliste zerstoert eingefuegte
-     * Werte (belegt am ACTi-Plugin am 26.07.2026). */
-    $rk_sauber = function ($s) {
-        return trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $s));
-    };
-    $rk_feld = function ($name, $i) use ($rk_sauber) {
-        $a = isset($_POST[$name]) ? (array) $_POST[$name] : array();
-        return isset($a[$i]) ? $rk_sauber($a[$i]) : '';
-    };
-    /* Eine Zahl pruefen statt sie stillschweigend zurechtzubiegen. Die
-     * Hausregel ist eindeutig: abweisen und sagen, was falsch war. */
-    $rk_zahl = function ($roh, $von, $bis, $bezeichnung, $ganz = false)
-                use (&$rk_fehler) {
-        $roh = trim((string) $roh);
-        $roh = str_replace(',', '.', $roh);      // deutsche Kommaschreibweise
-        if ($roh === '') { return null; }
-        if (!is_numeric($roh)) {
-            $rk_fehler[] = sprintf(rk_t('FEHLER.KEINE_ZAHL'), $bezeichnung, $roh);
-            return null;
-        }
-        $w = $ganz ? (int) round((float) $roh) : (float) $roh;
-        if ($w < $von || $w > $bis) {
-            $rk_fehler[] = sprintf(rk_t('FEHLER.AUSSERHALB'), $bezeichnung, $roh, $von, $bis);
-            return null;
-        }
-        return $w;
-    };
-    /* Eine Adresse muss http oder https sein. Wer nur "gateway/status"
-     * eintraegt, bekommt es gesagt statt einer stummen leeren Tabelle.
-     *
-     * Rueckgabe null heisst "abgewiesen, alten Wert behalten" - eine
-     * beanstandete Eingabe darf die gespeicherte Adresse nicht wegwerfen.
-     * Ein absichtlich LEER gelassenes Feld loescht dagegen weiterhin. */
-    $rk_adresse = function ($roh, $bezeichnung) use (&$rk_fehler, $rk_sauber) {
-        $roh = $rk_sauber($roh);
-        if ($roh === '') { return ''; }
-        if (!preg_match('#^https?://#i', $roh)) {
-            $rk_fehler[] = sprintf(rk_t('FEHLER.ADRESSE'), $bezeichnung, $roh);
-            return null;
-        }
-        return $roh;
-    };
-    /* Eine Auswahl uebernehmen, aber nur einen bekannten Wert. */
-    $rk_wahl = function ($name, $erlaubt, $alt) {
-        if (!isset($_POST[$name])) { return $alt; }
-        $w = (string) $_POST[$name];
-        return in_array($w, $erlaubt, true) ? $w : $alt;
+    $rk_falsch = array();
+    $rk_g_neu = null;
+    /* Ein Feld pruefen. $regel ist ein Schluessel fuer rk_wert_pruefen() oder
+     * eine Regel fuer rk_regel_pruefen(). Rueckgabe array(gut, Wert). Die
+     * Eingabe steht in der Beanstandung - ausser bei einem Kennwort. */
+    $rk_pruefe = function ($regel, $feld, $bez) use (&$rk_fehler, &$rk_falsch) {
+        $roh = rk_post_wert($feld);
+        $erg = is_string($regel) ? rk_wert_pruefen($regel, $roh) : rk_regel_pruefen($regel, $roh);
+        if ($erg[1] === '') { return array(true, $erg[0]); }
+        $rk_falsch[] = $feld;
+        $rk_wr = rk_wert_regeln();
+        $rk_rg = is_string($regel) ? (isset($rk_wr[$regel]) ? $rk_wr[$regel] : null) : $regel;
+        $rk_fehler[] = sprintf(rk_t('FEHLER.FELD_GRUND'), $bez,
+            is_string($roh) ? rk_zeichen_kuerzen($roh, 60) : '(Feld)', rk_grund($erg[1], $rk_rg));
+        return array(false, null);
     };
 
     /* ================= Felder des Reiters Einstellungen ================= */
     if ($rk_hat_einst) {
+        $rk_regeln_r = rk_raum_regeln();
+        $rk_spalten = rk_ui_raumspalten();
         $rk_neu = array();
         for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
-            /* Grundlage ist der GESPEICHERTE Raum, nicht die Vorgabe: eine
-             * abgewiesene Zahl faellt sonst auf 0,70 statt auf den Wert
-             * zurueck, der vorher dastand. */
+            /* Grundlage ist der GESPEICHERTE Raum, nicht die Vorgabe. */
             $rk_r = $rk_cfg['raeume'][$rk_i];
-            $rk_r['name']    = $rk_feld('r_name', $rk_i);
-            $rk_r['pfad_t']  = $rk_feld('r_pfad_t', $rk_i);
-            $rk_r['pfad_rf'] = $rk_feld('r_pfad_rf', $rk_i);
-            $rk_r['pfad_co2'] = $rk_feld('r_pfad_co2', $rk_i);
-            $rk_r['pfad_fenster'] = $rk_feld('r_pfad_fenster', $rk_i);
-            $rk_r['pfad_zuluft'] = $rk_feld('r_pfad_zuluft', $rk_i);
-            /* Die Ruhezeit: leer heisst "keine". Eine unleserliche Angabe
-             * wird BEANSTANDET, nicht stillschweigend geleert - sonst waere
-             * ein Tippfehler von einer bewussten Loeschung nicht zu
-             * unterscheiden, und der Fensterantrieb liefe nachts weiter. */
-            foreach (array('ruhe_von' => 'EINST.RUHE_VON',
-                           'ruhe_bis' => 'EINST.RUHE_BIS') as $rk_rz => $rk_rzb) {
-                $rk_rv = $rk_feld('r_' . $rk_rz, $rk_i);
-                if ($rk_rv === '') { $rk_r[$rk_rz] = ''; continue; }
-                if (preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $rk_rv)) {
-                    $rk_r[$rk_rz] = $rk_rv;
-                } else {
-                    $rk_fehler[] = sprintf(rk_t('FEHLER.UHRZEIT'),
-                        rk_t('EINST.RAUM') . ' ' . ($rk_i + 1) . ' / ' . rk_t($rk_rzb),
-                        $rk_rv);
-                }
+            $rk_bez0 = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
+            foreach ($rk_spalten as $rk_k => $rk_sp) {
+                $rk_f = $rk_sp[0] . '[' . $rk_i . ']';
+                if (rk_post_wert($rk_f) === null) { continue; }   // nicht mitgeschickt: bleibt
+                list($rk_gut, $rk_w) = $rk_pruefe($rk_regeln_r[$rk_k], $rk_f, $rk_bez0 . ' / ' . $rk_sp[1]);
+                if ($rk_gut) { $rk_r[$rk_k] = $rk_w; }
             }
-
-            $rk_bez = rk_t('EINST.RAUM') . ' ' . ($rk_i + 1);
-            $rk_a = $rk_adresse($rk_feld('r_quelle', $rk_i), $rk_bez);
-            if ($rk_a !== null) { $rk_r['quelle'] = $rk_a; }
-            $rk_a = $rk_adresse($rk_feld('r_quelle_rf', $rk_i),
-                                $rk_bez . ' / ' . rk_t('EINST.QUELLE_RF'));
-            if ($rk_a !== null) { $rk_r['quelle_rf'] = $rk_a; }
-
-            $rk_leer = ($rk_r['name'] === '' && $rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '');
-
-            $rk_w = $rk_zahl($rk_feld('r_frsi', $rk_i), 0.05, 1.0, $rk_bez . ' / fRsi');
-            if ($rk_w !== null) { $rk_r['frsi'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_min', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MIN'), true);
-            if ($rk_w !== null) { $rk_r['soll_min'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_max', $rk_i), 0, 100, $rk_bez . ' / ' . rk_t('EINST.SOLL_MAX'), true);
-            if ($rk_w !== null) { $rk_r['soll_max'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_erd_t', $rk_i), -20, 40, $rk_bez . ' / ' . rk_t('EINST.ERD_T'));
-            if ($rk_w !== null) { $rk_r['erd_t'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_volumen', $rk_i), 0, 2000,
-                             $rk_bez . ' / ' . rk_t('EINST.VOLUMEN'));
-            if ($rk_w !== null) { $rk_r['volumen'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_t_soll', $rk_i), 0, 35,
-                             $rk_bez . ' / ' . rk_t('EINST.T_SOLL'));
-            if ($rk_w !== null) { $rk_r['t_soll'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_co2_max', $rk_i), 0, 5000,
-                             $rk_bez . ' / ' . rk_t('EINST.CO2_MAX'), true);
-            if ($rk_w !== null) { $rk_r['co2_max'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_wrg_eta', $rk_i), 0, 100,
-                             $rk_bez . ' / ' . rk_t('EINST.WRG_ETA'));
-            if ($rk_w !== null) { $rk_r['wrg_eta'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_wasser_g', $rk_i), 0, 20000,
-                             $rk_bez . ' / ' . rk_t('EINST.WASSER_G'));
-            if ($rk_w !== null) { $rk_r['wasser_g'] = $rk_w; }
-            $rk_w = $rk_zahl($rk_feld('r_personen', $rk_i), 0, 20,
-                             $rk_bez . ' / ' . rk_t('EINST.PERSONEN'));
-            if ($rk_w !== null) { $rk_r['personen'] = $rk_w; }
-            $rk_rf = isset($_POST['r_fenster'][$rk_i]) ? (string) $_POST['r_fenster'][$rk_i] : '';
-            if (in_array($rk_rf, array('kipp', 'stoss', 'quer'), true)) { $rk_r['fenster'] = $rk_rf; }
-
-            $rk_ra = isset($_POST['r_art'][$rk_i]) ? (string) $_POST['r_art'][$rk_i] : '';
-            if (in_array($rk_ra, array('aussen', 'keller', 'innen'), true)) { $rk_r['art'] = $rk_ra; }
-            $rk_re = isset($_POST['r_einheit_t'][$rk_i]) ? (string) $_POST['r_einheit_t'][$rk_i] : '';
-            if (in_array($rk_re, array('C', 'F'), true)) { $rk_r['einheit_t'] = $rk_re; }
-            $rk_re = isset($_POST['r_einheit_rf'][$rk_i]) ? (string) $_POST['r_einheit_rf'][$rk_i] : '';
-            if (in_array($rk_re, array('proz', 'anteil'), true)) { $rk_r['einheit_rf'] = $rk_re; }
-
-            if (!$rk_leer) {
-                if ($rk_r['name'] === '') {
-                    $rk_fehler[] = sprintf(rk_t('FEHLER.NAME_FEHLT'), $rk_i + 1);
-                }
-                if ($rk_r['pfad_t'] === '' && $rk_r['pfad_rf'] === '') {
-                    $rk_fehler[] = sprintf(rk_t('FEHLER.PFAD_FEHLT'), $rk_i + 1);
-                }
-                if ($rk_r['soll_min'] > 0 && $rk_r['soll_max'] > 0
-                    && $rk_r['soll_min'] >= $rk_r['soll_max']) {
-                    $rk_fehler[] = sprintf(rk_t('FEHLER.KORRIDOR'), $rk_i + 1);
-                }
+            /* Name ohne Pfad, Pfad ohne Name, Korridor verkehrt - dieselbe
+             * Pruefung wie beim Zurueckspielen (rk_raum_quer_pruefen()). */
+            $rk_q = rk_raum_quer_pruefen($rk_r);
+            if ($rk_q !== null) {
+                $rk_fehler[] = sprintf(rk_t($rk_q[0]), $rk_i + 1);
+                $rk_falsch[] = $rk_spalten[$rk_q[1]][0] . '[' . $rk_i . ']';
             }
             $rk_neu[$rk_i] = $rk_r;
         }
         $rk_cfg['raeume'] = $rk_neu;
 
-        /* --- Gemeinsames --- */
-        $rk_a = $rk_adresse(isset($_POST['quelle']) ? $_POST['quelle'] : '', rk_t('EINST.QUELLE'));
-        if ($rk_a !== null) { $rk_cfg['quelle'] = $rk_a; }
-        $rk_w = $rk_zahl(isset($_POST['takt']) ? $_POST['takt'] : '', 300, 3600, rk_t('EINST.TAKT'), true);
-        if ($rk_w !== null) { $rk_cfg['takt'] = $rk_w; }
-
-        $rk_cfg['aussen_art'] = $rk_wahl('aussen_art', array('meteo', 'eigen'), $rk_cfg['aussen_art']);
-        /* Ein mitgeschicktes, leeres Feld heisst: kein Standort (seit 0.11.7).
-         * $rk_zahl gibt fuer leer null zurueck, und null hiess bisher
-         * "unveraendert" - der Standort liess sich gar nicht leeren. Nur
-         * wenn das Feld WIRKLICH mitkam: ein anderes Formular leert nichts. */
-        if (isset($_POST['breite']) && trim((string) $_POST['breite']) === '') {
-            $rk_cfg['breite'] = '';
-        } else {
-            $rk_w = $rk_zahl(isset($_POST['breite']) ? $_POST['breite'] : '', -90, 90, rk_t('EINST.BREITE'));
-            if ($rk_w !== null) { $rk_cfg['breite'] = $rk_w; }
+        /* --- Gemeinsames, Aussenluft und Bewertung --- */
+        foreach (rk_ui_einzelfelder() as $rk_k => $rk_bez) {
+            if (rk_post_wert($rk_k) === null) { continue; }
+            list($rk_gut, $rk_w) = $rk_pruefe($rk_k, $rk_k, rk_t($rk_bez));
+            if ($rk_gut) { $rk_cfg[$rk_k] = $rk_w; }
         }
-        if (isset($_POST['laenge']) && trim((string) $_POST['laenge']) === '') {
-            $rk_cfg['laenge'] = '';
-        } else {
-            $rk_w = $rk_zahl(isset($_POST['laenge']) ? $_POST['laenge'] : '', -180, 180, rk_t('EINST.LAENGE'));
-            if ($rk_w !== null) { $rk_cfg['laenge'] = $rk_w; }
-        }
-        $rk_a = $rk_adresse(isset($_POST['aussen_quelle']) ? $_POST['aussen_quelle'] : '',
-                            rk_t('EINST.AUSSEN_QUELLE'));
-        if ($rk_a !== null) { $rk_cfg['aussen_quelle'] = $rk_a; }
-        if (isset($_POST['aussen_t'])) { $rk_cfg['aussen_t'] = $rk_sauber($_POST['aussen_t']); }
-        if (isset($_POST['aussen_rf'])) { $rk_cfg['aussen_rf'] = $rk_sauber($_POST['aussen_rf']); }
-        $rk_cfg['aussen_einheit_t'] = $rk_wahl('aussen_einheit_t', array('C', 'F'),
-                                               $rk_cfg['aussen_einheit_t']);
-        $rk_cfg['aussen_einheit_rf'] = $rk_wahl('aussen_einheit_rf', array('proz', 'anteil'),
-                                                $rk_cfg['aussen_einheit_rf']);
         if ($rk_cfg['aussen_art'] === 'eigen' && $rk_cfg['aussen_quelle'] === '') {
             $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_QUELLE');
+            $rk_falsch[] = 'aussen_quelle';
         }
-
-        /* ---------------------------------------------------------------
-         * Die Zahlenfelder der Bewertung - durch DIESELBE Wache wie die
-         * Sicherungsdatei.
-         *
-         * Bis 0.10.1 stand die Positivliste zweimal da: einmal hier als
-         * Grenzen im Aufruf, einmal gar nicht (die Sicherung uebernahm
-         * jeden Wert ungeprueft). Jetzt kommt beides aus
-         * rk_wert_pruefen(); die Grenzen stehen an genau einer Stelle,
-         * und wer ein Feld ergaenzt, ergaenzt sie dort.
-         * --------------------------------------------------------------- */
-        $rk_zahlfelder = array(
-            'mindest'      => 'EINST.MINDEST',
-            't_min'        => 'EINST.T_MIN',
-            'af_unter'     => 'EINST.AF_UNTER',
-            'vorschau'     => 'EINST.VORSCHAU',
-            'steht_min'    => 'EINST.STEHT_MIN',
-            'hyst'         => 'EINST.HYST',
-            'dauer_min'    => 'EINST.DAUER_MIN',
-            'regen_max'    => 'EINST.REGEN_MAX',
-            'kuehl_spanne' => 'EINST.KUEHL_SPANNE',
-            /* ---- neu in 0.11.0 ---- */
-            'wind_max'      => 'EINST.WIND_MAX',
-            'wand_abstand'  => 'EINST.WAND_ABSTAND',
-            'schwuel_x'     => 'EINST.SCHWUEL_X',
-            'co2_t_min'     => 'EINST.CO2_T_MIN',
-            'zwang_std'     => 'EINST.ZWANG_STD',
-            'vl_zuschlag'   => 'EINST.VL_ZUSCHLAG',
-            'kuehlfrei_ein' => 'EINST.KUEHLFREI_EIN',
-            'kuehlfrei_aus' => 'EINST.KUEHLFREI_AUS',
-            'heizgrenze'    => 'EINST.HEIZGRENZE',
-            'trend_min'     => 'EINST.TREND_MIN',
-            'co2_ltr'       => 'EINST.CO2_LTR',
-            'co2_aussen'    => 'EINST.CO2_AUSSEN',
-        );
-        foreach ($rk_zahlfelder as $rk_k => $rk_bez) {
-            if (!isset($_POST[$rk_k])) { continue; }
-            $rk_roh = trim((string) $_POST[$rk_k]);
-            /* Ein leer gelassenes Feld heisst "unveraendert", nicht "0". */
-            if ($rk_roh === '') { continue; }
-            list($rk_w, $rk_m) = rk_wert_pruefen($rk_k, $rk_roh);
-            if ($rk_m === '') { $rk_cfg[$rk_k] = $rk_w; }
-            else { $rk_fehler[] = sprintf(rk_t('FEHLER.FELD'), rk_t($rk_bez), $rk_roh); }
+        /* Die Ausschaltschwelle liegt unter der Einschaltschwelle. Bis 0.11.13
+         * glich rk_config() sie still an (Nr. 19). */
+        if ((float) $rk_cfg['kuehlfrei_aus'] > (float) $rk_cfg['kuehlfrei_ein']) {
+            $rk_fehler[] = rk_t('FEHLER.KUEHLFREI');
+            $rk_falsch[] = 'kuehlfrei_aus';
+            $rk_falsch[] = 'kuehlfrei_ein';
         }
         /* Ein Haken schickt nichts mit, wenn er aus ist - das darf hier
          * gelesen werden, weil das Formular sich als zustaendig gemeldet hat. */
         $rk_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
 
-        /* --- Zugangsdaten: eigene Datei, 0600 --- */
-        $rk_g = rk_geheim();
-        if (isset($_POST['zug_benutzer'])) {
-            $rk_g['benutzer'] = $rk_sauber($_POST['zug_benutzer']);
+        /* --- Zugangsdaten: eigene Datei, 0600 ---
+         * U4 (Durchgang 01.10.2026): hoechstens 256 Zeichen wie beim
+         * Zurueckspielen; bis 0.11.13 nahm das Formular ein Passwort mit 300
+         * Zeichen, und die eigene Sicherung wurde danach abgewiesen (gemessen,
+         * Bericht oberflaeche Nr. 6). Ein leeres Kennwortfeld heisst
+         * "unveraendert"; ein Kennwort reist nie mit der Einmalmeldung. */
+        $rk_g_neu = rk_geheim();
+        $rk_b = rk_post_wert('zug_benutzer');
+        if ($rk_b !== null) {
+            if (!is_string($rk_b) || strlen(trim($rk_b)) > 256 || preg_match('/[\x00-\x1F\x7F]/', $rk_b)) {
+                $rk_falsch[] = 'zug_benutzer';
+                $rk_fehler[] = sprintf(rk_t('FEHLER.FELD_GRUND'), rk_t('EINST.ZUG_BENUTZER'),
+                    is_string($rk_b) ? rk_zeichen_kuerzen($rk_b, 60) : '(Feld)', rk_grund('FEHLER.ZUGANG'));
+            } else {
+                $rk_g_neu['benutzer'] = trim($rk_b);
+            }
         }
-        if (isset($_POST['zug_passwort']) && (string) $_POST['zug_passwort'] !== '') {
-            // Ein leeres Feld heisst "unveraendert", nicht "loeschen".
-            $rk_g['passwort'] = (string) $_POST['zug_passwort'];
+        $rk_pw = rk_post_wert('zug_passwort');
+        if ($rk_pw !== null && (!is_string($rk_pw) || strlen($rk_pw) > 256)) {
+            $rk_falsch[] = 'zug_passwort';
+            $rk_fehler[] = sprintf(rk_t('FEHLER.PASSWORT_LANG'), is_string($rk_pw) ? strlen($rk_pw) : 0);
+        } elseif (is_string($rk_pw) && $rk_pw !== '') {
+            $rk_g_neu['passwort'] = $rk_pw;
         }
         if (!empty($_POST['zug_loeschen'])) {
-            $rk_g = array('benutzer' => '', 'passwort' => '');
-        }
-        /* Den Rueckgabewert ansehen. Die beiden anderen Aufrufstellen
-         * dieser Datei taten es seit 0.11.1, diese nicht - und sie ist die
-         * einzige, an der ein Anwender im Normalbetrieb Benutzername und
-         * Passwort eintraegt. Scheiterte das Schreiben an Rechten oder
-         * voller Platte, meldete die Seite trotzdem "gespeichert", und die
-         * Quelle antwortete danach mit 401. Dasselbe galt fuer den Haken
-         * "Zugangsdaten loeschen": er wirkte scheinbar, das Passwort blieb
-         * auf der Platte. */
-        if (!rk_geheim_speichern($rk_g)) {
-            $rk_fehler[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+            $rk_g_neu = array('benutzer' => '', 'passwort' => '');
         }
     }
 
     /* ===================== Felder des Reiters MQTT ===================== */
     if ($rk_hat_mqtt) {
         $rk_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
-        $rk_thema_neu = strtolower($rk_sauber(isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
-        $rk_thema_neu = trim($rk_thema_neu, '/');
-        if ($rk_thema_neu === '') {
-            $rk_cfg['mqtt_topic'] = 'raumklima';
-        } elseif (!preg_match('#^[a-z0-9_\-/]+$#', $rk_thema_neu)) {
-            // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
-            $rk_fehler[] = sprintf(rk_t('FEHLER.THEMA'), $rk_thema_neu);
-        } else {
-            $rk_cfg['mqtt_topic'] = $rk_thema_neu;
-        }
+        /* Ein leeres Thema wird beanstandet, nicht still zu 'raumklima' (U3):
+         * jedes MQTT-Abo in Loxone bliebe danach stumm. */
+        list($rk_gut, $rk_w) = $rk_pruefe('mqtt_topic', 'mqtt_topic', rk_t('MQTT.THEMA'));
+        if ($rk_gut) { $rk_cfg['mqtt_topic'] = $rk_w; }
     }
 
     if (!$rk_hat_einst && !$rk_hat_mqtt) {
         /* Kein Formular hat sich gemeldet. Lieber nichts speichern als
          * alles ueberschreiben - genau daran ist 0.9.8 gescheitert. */
         $rk_fehler[] = rk_t('FEHLER.KEIN_FORMULAR');
-    } elseif (rk_config_speichern($rk_cfg)) {
-        $rk_meldungen[] = rk_t('ALLG.GESPEICHERT');
-        rk_log('Einstellungen gespeichert (' . ($rk_hat_einst ? 'Einstellungen' : '')
-               . ($rk_hat_einst && $rk_hat_mqtt ? '+' : '') . ($rk_hat_mqtt ? 'MQTT' : '') . ').');
+    } elseif ($rk_fehler) {
+        /* U1/U2: nichts gespeichert, die Eingaben reisen zurueck. */
+        array_unshift($rk_fehler, rk_t('ALLG.NICHTS_GESPEICHERT'));
+        $rk_eingaben = rk_eingaben_sammeln($rk_hat_einst ? 'einst' : 'mqtt', $rk_falsch);
+        rk_log('Speichern beanstandet (' . count($rk_falsch) . ' Feld(er)) - es wurde nichts gespeichert.');
     } else {
-        $rk_fehler[] = rk_t('FEHLER.SPEICHERN');
+        $rk_g_gut = true;
+        if ($rk_hat_einst && $rk_g_neu !== rk_geheim()) {
+            /* Den Rueckgabewert ansehen (seit 0.11.2): scheitert das Schreiben,
+             * wird auch die Konfiguration nicht geschrieben. */
+            $rk_g_gut = rk_geheim_speichern($rk_g_neu);
+            if (!$rk_g_gut) { $rk_stoerung[] = rk_t('FEHLER.GEHEIM_SCHREIBEN'); }
+        }
+        if (!$rk_g_gut) {
+            rk_log('Speichern: geheim.json liess sich nicht schreiben - es wurde nichts gespeichert.');
+        } elseif (rk_config_speichern($rk_cfg)) {
+            $rk_meldungen[] = rk_t('ALLG.GESPEICHERT');
+            rk_log('Einstellungen gespeichert (' . ($rk_hat_einst ? 'Einstellungen' : '')
+                   . ($rk_hat_einst && $rk_hat_mqtt ? '+' : '') . ($rk_hat_mqtt ? 'MQTT' : '') . ').');
+        } else {
+            $rk_stoerung[] = rk_t('FEHLER.SPEICHERN');
+        }
     }
     $rk_tab = isset($_POST['activetab']) && preg_match($rk_muster, (string) $_POST['activetab'])
         ? (string) $_POST['activetab'] : 'tab-settings';
 }
 
-/* ---------------- Jetzt abrufen ---------------- */
+/* ---------------- Jetzt abrufen ----------------
+ * U11 (Durchgang 01.10.2026): "Abgerufen" nur, wenn wirklich abgerufen wurde,
+ * und die Meldungen der Quellen unter "Hinweise zum Abruf" - nicht unter der
+ * Ueberschrift der Beanstandungen. */
 if ($rk_post && isset($_POST['abrufen'])) {
-    $rk_s = rk_abrufen(true);
-    if (!empty($rk_s['meldungen'])) {
-        foreach ($rk_s['meldungen'] as $rk_k => $rk_m) {
-            $rk_fehler[] = $rk_k . ': ' . rk_t('MELD.' . $rk_m);
-        }
+    list($rk_lief, $rk_s) = rk_ui_abrufen();
+    if (!$rk_lief) {
+        $rk_stoerung[] = rk_t('ALLG.NICHT_ABGERUFEN');
     } else {
         $rk_meldungen[] = rk_t('ALLG.ABGERUFEN');
+        foreach ((array) (isset($rk_s['meldungen']) ? $rk_s['meldungen'] : array()) as $rk_k => $rk_m) {
+            $rk_abrufhinweise[] = $rk_k . ': ' . rk_t('MELD.' . $rk_m);
+        }
     }
 }
 
-/* ---------------- Neues Wortzeichen ---------------- */
+/* ---------------- Neues Wortzeichen ----------------
+ * U7 (Durchgang 01.10.2026): der Rueckgabewert wird angesehen. Bis 0.11.13
+ * meldete die Seite "Ein neues Wortzeichen wurde erzeugt", auch wenn die
+ * Konfiguration nicht schreibbar war und das alte Token galt (gemessen,
+ * Bericht oberflaeche Nr. 9) - der Anwender importierte die Vorlage neu und
+ * suchte den Fehler danach an der falschen Stelle. */
 if ($rk_post && isset($_POST['token_neu'])) {
     $rk_cfg = rk_config();
     $rk_cfg['aktionstoken'] = rk_token_erzeugen();
-    rk_config_speichern($rk_cfg);
-    $rk_meldungen[] = rk_t('LOX.TOKEN_NEU_OK');
-    rk_log('Neues Wortzeichen erzeugt.');
+    if (rk_config_speichern($rk_cfg)) {
+        $rk_meldungen[] = rk_t('LOX.TOKEN_NEU_OK');
+        rk_log('Neues Wortzeichen erzeugt.');
+    } else {
+        $rk_stoerung[] = rk_t('LOX.TOKEN_NEU_FEHL');
+        rk_log('Neues Wortzeichen: die Konfiguration liess sich nicht schreiben - das bisherige gilt weiter.');
+    }
     $rk_tab = 'tab-loxone';
 }
 
-/* ---------------- Protokoll leeren ---------------- */
+/* ---------------- Protokoll leeren ----------------
+ * U8 (Durchgang 01.10.2026): "geleert" nur, wenn geleert wurde. */
 if ($rk_post && isset($_POST['log_leeren'])) {
-    @file_put_contents($rk_p['log'], '');
-    rk_log('Protokoll geleert.');
-    $rk_meldungen[] = rk_t('LOG.GELEERT');
+    if (@file_put_contents($rk_p['log'], '') === false) {
+        $rk_stoerung[] = rk_t('LOG.NICHT_GELEERT');
+    } else {
+        rk_log('Protokoll geleert.');
+        $rk_meldungen[] = rk_t('LOG.GELEERT');
+    }
     $rk_tab = 'tab-log';
 }
 
@@ -877,13 +960,15 @@ if ($rk_post && isset($_POST['test'])) {
  * Neuladen-Risiko als eine verlorene Fehlermeldung. */
 if ($rk_war_post) {
     if (rk_flash_schreiben(array('tab' => $rk_tab, 'meldungen' => $rk_meldungen,
-                                 'fehler' => $rk_fehler, 'testausgabe' => $rk_testausgabe,
-                                 'ass' => $rk_ass))) {
+                                 'fehler' => $rk_fehler, 'stoerung' => $rk_stoerung,
+                                 'abruf' => $rk_abrufhinweise, 'testausgabe' => $rk_testausgabe,
+                                 'ass' => $rk_ass, 'eingaben' => $rk_eingaben))) {
         header('Location: index.php?form=' . rawurlencode(substr($rk_tab, 4)), true, 303);
         exit;
     }
     rk_log_gebremst('flash_schreiben', 'Die Einmalmeldung liess sich nicht schreiben; '
         . 'die Seite wird ohne Umleitung angezeigt.', 3600);
+    if (is_array($rk_eingaben)) { rk_eingaben_aktiv($rk_eingaben); }
 } else {
     /* NUR beim GET: beim POST ist die Fehlerliste zugleich der Sammler,
      * mit dem die Handler pruefen - eine alte Meldung darin verhinderte
@@ -893,6 +978,12 @@ if ($rk_war_post) {
         $rk_meldungen = isset($rk_flash['meldungen']) ? (array) $rk_flash['meldungen'] : array();
         $rk_fehler = isset($rk_flash['fehler']) ? (array) $rk_flash['fehler'] : array();
         $rk_testausgabe = isset($rk_flash['testausgabe']) ? (string) $rk_flash['testausgabe'] : '';
+        $rk_stoerung = isset($rk_flash['stoerung']) ? (array) $rk_flash['stoerung'] : array();
+        $rk_abrufhinweise = isset($rk_flash['abruf']) ? (array) $rk_flash['abruf'] : array();
+        /* X-2: nur nach einer Beanstandung, und nur fuer diesen einen GET. */
+        if (isset($rk_flash['eingaben']) && is_array($rk_flash['eingaben'])) {
+            rk_eingaben_aktiv($rk_flash['eingaben']);
+        }
         if (isset($rk_flash['tab']) && preg_match($rk_muster, (string) $rk_flash['tab'])) {
             $rk_tab = (string) $rk_flash['tab'];
         }
@@ -936,7 +1027,9 @@ function rk_z($v, $nach = 1, $einheit = '')
 
 $rk_rahmen = class_exists('LBWeb', false);
 $rk_ft = rk_e(rk_formtoken());
-$rk_lage = rk_config_lage();
+/* U9 (Durchgang 01.10.2026): der erste Zustand dieser Anfrage - sonst hat die
+ * Selbstheilung ihn beseitigt, bevor er angezeigt wird. */
+$rk_lage = rk_config_lage_anfang();
 
 if ($rk_rahmen) {
     LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
@@ -1064,6 +1157,10 @@ if ($rk_rahmen) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* Ergaenzung zum Vorlagenblock (Durchgang 01.10.2026, X-2): ein beanstandetes
+   Feld ist rot umrandet; aria-invalid sagt es Vorleseprogrammen. Bauart
+   ACTiKamera 1.9.26. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 
 </style>
 
@@ -1074,6 +1171,12 @@ if ($rk_rahmen) {
 <?php } ?>
 <?php if ($rk_fehler) { ?>
 <div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_fehler)) ?></div>
+<?php } ?>
+<?php if ($rk_stoerung) { ?>
+<div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.NICHT_GELUNGEN')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_stoerung)) ?></div>
+<?php } ?>
+<?php if ($rk_abrufhinweise) { ?>
+<div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.H_ABRUF')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_abrufhinweise)) ?></div>
 <?php } ?>
 <?php
 /* Jeder Zustand, den der Code erzeugen kann, braucht seinen Satz. Bis
@@ -1151,6 +1254,14 @@ if ($rk_lage === 'kaputt') { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $rk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<?php /* U13 (Durchgang 01.10.2026): EINE gesammelte Legende oben im Reiter
+         (Regeln/04). Bis 0.11.13 standen drei Einzellegenden ueber einzelnen
+         Reihen, und ueber der Sicherungsreihe nannte die naechste nur Orange
+         (gemessen, Bericht oberflaeche Nr. 15). */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= rk_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
 
 <h2><?= rk_e(rk_t('EINST.H_LAGE')) ?></h2>
 <div class="sm-step"><?= rk_t('EINST.LAGE_ERKLAERUNG') ?></div>
@@ -1220,9 +1331,6 @@ if ($rk_lage === 'kaputt') { ?>
 <div class="sm-hinweis"><?= rk_t('EINST.NOCH_NICHTS') ?></div>
 <?php } ?>
 
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= rk_t('LEGENDE.LESEN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1237,10 +1345,6 @@ if ($rk_lage === 'kaputt') { ?>
 <?php if (!$rk_mslist) { ?>
 <div class="sm-warnung"><?= rk_t('EINST.MS_KEINER_LANG') ?></div>
 <?php } else { ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= rk_t('LEGENDE.LESEN') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
@@ -1351,7 +1455,7 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 
 <div class="sm-feld">
   <label for="rk_quelle"><?= rk_e(rk_t('EINST.QUELLE')) ?></label>
-  <input data-role="none" type="text" id="rk_quelle" name="quelle" value="<?= rk_e($rk_cfg['quelle']) ?>" placeholder="http://gateway-im-heimnetz/get_livedata_info">
+  <input data-role="none" type="text" id="rk_quelle" name="quelle" value="<?= rk_e(rk_ein('quelle', $rk_cfg['quelle'])) ?>"<?= rk_mark('quelle') ?> placeholder="http://gateway-im-heimnetz/get_livedata_info">
   <p class="sm-hilfe"><?= rk_t('EINST.QUELLE_HILFE') ?></p>
 </div>
 
@@ -1372,21 +1476,21 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
 <tr>
   <td><?= $rk_i + 1 ?></td>
-  <td><input data-role="none" type="text" size="14" name="r_name[<?= $rk_i ?>]" value="<?= rk_e($rk_r['name']) ?>"></td>
-  <td><input data-role="none" type="text" size="20" name="r_pfad_t[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_t']) ?>"></td>
-  <td><input data-role="none" type="text" size="20" name="r_pfad_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_rf']) ?>"></td>
-  <td><input data-role="none" type="text" size="16" name="r_pfad_co2[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_co2']) ?>"></td>
-  <td><input data-role="none" type="text" size="16" name="r_pfad_fenster[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_fenster']) ?>"></td>
-  <td><input data-role="none" type="text" size="16" name="r_pfad_zuluft[<?= $rk_i ?>]" value="<?= rk_e($rk_r['pfad_zuluft']) ?>"></td>
-  <td><input data-role="none" type="text" size="18" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle']) ?>"></td>
-  <td><input data-role="none" type="text" size="18" name="r_quelle_rf[<?= $rk_i ?>]" value="<?= rk_e($rk_r['quelle_rf']) ?>"></td>
-  <td><select data-role="none" name="r_einheit_t[<?= $rk_i ?>]">
-    <option value="C"<?= $rk_r['einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
-    <option value="F"<?= $rk_r['einheit_t'] === 'F' ? ' selected' : '' ?>>&deg;F</option>
+  <td><input data-role="none" type="text" size="14" name="r_name[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_name[' . $rk_i . ']', $rk_r['name'])) ?>"<?= rk_mark('r_name[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="20" name="r_pfad_t[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_pfad_t[' . $rk_i . ']', $rk_r['pfad_t'])) ?>"<?= rk_mark('r_pfad_t[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="20" name="r_pfad_rf[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_pfad_rf[' . $rk_i . ']', $rk_r['pfad_rf'])) ?>"<?= rk_mark('r_pfad_rf[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_co2[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_pfad_co2[' . $rk_i . ']', $rk_r['pfad_co2'])) ?>"<?= rk_mark('r_pfad_co2[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_fenster[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_pfad_fenster[' . $rk_i . ']', $rk_r['pfad_fenster'])) ?>"<?= rk_mark('r_pfad_fenster[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="16" name="r_pfad_zuluft[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_pfad_zuluft[' . $rk_i . ']', $rk_r['pfad_zuluft'])) ?>"<?= rk_mark('r_pfad_zuluft[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="18" name="r_quelle[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_quelle[' . $rk_i . ']', $rk_r['quelle'])) ?>"<?= rk_mark('r_quelle[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="18" name="r_quelle_rf[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_quelle_rf[' . $rk_i . ']', $rk_r['quelle_rf'])) ?>"<?= rk_mark('r_quelle_rf[' . $rk_i . ']') ?>></td>
+  <td><select data-role="none" name="r_einheit_t[<?= $rk_i ?>]"<?= rk_mark('r_einheit_t[' . $rk_i . ']') ?>>
+    <option value="C"<?= rk_ein('r_einheit_t[' . $rk_i . ']', $rk_r['einheit_t']) === 'C' ? ' selected' : '' ?>>&deg;C</option>
+    <option value="F"<?= rk_ein('r_einheit_t[' . $rk_i . ']', $rk_r['einheit_t']) === 'F' ? ' selected' : '' ?>>&deg;F</option>
   </select>
-  <select data-role="none" name="r_einheit_rf[<?= $rk_i ?>]">
-    <option value="proz"<?= $rk_r['einheit_rf'] === 'proz' ? ' selected' : '' ?>>%</option>
-    <option value="anteil"<?= $rk_r['einheit_rf'] === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
+  <select data-role="none" name="r_einheit_rf[<?= $rk_i ?>]"<?= rk_mark('r_einheit_rf[' . $rk_i . ']') ?>>
+    <option value="proz"<?= rk_ein('r_einheit_rf[' . $rk_i . ']', $rk_r['einheit_rf']) === 'proz' ? ' selected' : '' ?>>%</option>
+    <option value="anteil"<?= rk_ein('r_einheit_rf[' . $rk_i . ']', $rk_r['einheit_rf']) === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
   </select></td>
 </tr>
 <?php } ?>
@@ -1416,28 +1520,28 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
 <tr>
   <td><?= $rk_i + 1 ?><?= $rk_r['name'] !== '' ? ' ' . rk_e($rk_r['name']) : '' ?></td>
-  <td><input data-role="none" type="text" size="4" name="r_frsi[<?= $rk_i ?>]" value="<?= rk_e($rk_r['frsi']) ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="r_min[<?= $rk_i ?>]" value="<?= rk_e($rk_r['soll_min']) ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="r_max[<?= $rk_i ?>]" value="<?= rk_e($rk_r['soll_max']) ?>"></td>
-  <td><select data-role="none" name="r_art[<?= $rk_i ?>]">
-    <option value="aussen"<?= $rk_r['art'] === 'aussen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_AUSSEN')) ?></option>
-    <option value="keller"<?= $rk_r['art'] === 'keller' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_KELLER')) ?></option>
-    <option value="innen"<?= $rk_r['art'] === 'innen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_INNEN')) ?></option>
+  <td><input data-role="none" type="text" size="4" name="r_frsi[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_frsi[' . $rk_i . ']', $rk_r['frsi'])) ?>"<?= rk_mark('r_frsi[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="r_min[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_min[' . $rk_i . ']', $rk_r['soll_min'])) ?>"<?= rk_mark('r_min[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="r_max[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_max[' . $rk_i . ']', $rk_r['soll_max'])) ?>"<?= rk_mark('r_max[' . $rk_i . ']') ?>></td>
+  <td><select data-role="none" name="r_art[<?= $rk_i ?>]"<?= rk_mark('r_art[' . $rk_i . ']') ?>>
+    <option value="aussen"<?= rk_ein('r_art[' . $rk_i . ']', $rk_r['art']) === 'aussen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_AUSSEN')) ?></option>
+    <option value="keller"<?= rk_ein('r_art[' . $rk_i . ']', $rk_r['art']) === 'keller' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_KELLER')) ?></option>
+    <option value="innen"<?= rk_ein('r_art[' . $rk_i . ']', $rk_r['art']) === 'innen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_INNEN')) ?></option>
   </select></td>
-  <td><input data-role="none" type="text" size="4" name="r_erd_t[<?= $rk_i ?>]" value="<?= rk_e($rk_r['erd_t']) ?>"></td>
-  <td><input data-role="none" type="text" size="4" name="r_volumen[<?= $rk_i ?>]" value="<?= rk_e($rk_r['volumen']) ?>"></td>
-  <td><select data-role="none" name="r_fenster[<?= $rk_i ?>]">
-    <option value="kipp"<?= $rk_r['fenster'] === 'kipp' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_KIPP')) ?></option>
-    <option value="stoss"<?= $rk_r['fenster'] === 'stoss' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_STOSS')) ?></option>
-    <option value="quer"<?= $rk_r['fenster'] === 'quer' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_QUER')) ?></option>
+  <td><input data-role="none" type="text" size="4" name="r_erd_t[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_erd_t[' . $rk_i . ']', $rk_r['erd_t'])) ?>"<?= rk_mark('r_erd_t[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="4" name="r_volumen[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_volumen[' . $rk_i . ']', $rk_r['volumen'])) ?>"<?= rk_mark('r_volumen[' . $rk_i . ']') ?>></td>
+  <td><select data-role="none" name="r_fenster[<?= $rk_i ?>]"<?= rk_mark('r_fenster[' . $rk_i . ']') ?>>
+    <option value="kipp"<?= rk_ein('r_fenster[' . $rk_i . ']', $rk_r['fenster']) === 'kipp' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_KIPP')) ?></option>
+    <option value="stoss"<?= rk_ein('r_fenster[' . $rk_i . ']', $rk_r['fenster']) === 'stoss' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_STOSS')) ?></option>
+    <option value="quer"<?= rk_ein('r_fenster[' . $rk_i . ']', $rk_r['fenster']) === 'quer' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.F_QUER')) ?></option>
   </select></td>
-  <td><input data-role="none" type="text" size="4" name="r_t_soll[<?= $rk_i ?>]" value="<?= rk_e($rk_r['t_soll']) ?>"></td>
-  <td><input data-role="none" type="text" size="5" name="r_co2_max[<?= $rk_i ?>]" value="<?= rk_e($rk_r['co2_max']) ?>"></td>
-  <td><input data-role="none" type="text" size="4" name="r_wrg_eta[<?= $rk_i ?>]" value="<?= rk_e($rk_r['wrg_eta']) ?>"></td>
-  <td><input data-role="none" type="text" size="5" name="r_wasser_g[<?= $rk_i ?>]" value="<?= rk_e($rk_r['wasser_g']) ?>"></td>
-  <td><input data-role="none" type="text" size="5" name="r_ruhe_von[<?= $rk_i ?>]" value="<?= rk_e($rk_r['ruhe_von']) ?>" placeholder="22:00"></td>
-  <td><input data-role="none" type="text" size="5" name="r_ruhe_bis[<?= $rk_i ?>]" value="<?= rk_e($rk_r['ruhe_bis']) ?>" placeholder="06:00"></td>
-  <td><input data-role="none" type="text" size="3" name="r_personen[<?= $rk_i ?>]" value="<?= rk_e($rk_r['personen']) ?>"></td>
+  <td><input data-role="none" type="text" size="4" name="r_t_soll[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_t_soll[' . $rk_i . ']', $rk_r['t_soll'])) ?>"<?= rk_mark('r_t_soll[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="5" name="r_co2_max[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_co2_max[' . $rk_i . ']', $rk_r['co2_max'])) ?>"<?= rk_mark('r_co2_max[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="4" name="r_wrg_eta[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_wrg_eta[' . $rk_i . ']', $rk_r['wrg_eta'])) ?>"<?= rk_mark('r_wrg_eta[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="5" name="r_wasser_g[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_wasser_g[' . $rk_i . ']', $rk_r['wasser_g'])) ?>"<?= rk_mark('r_wasser_g[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="5" name="r_ruhe_von[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_ruhe_von[' . $rk_i . ']', $rk_r['ruhe_von'])) ?>"<?= rk_mark('r_ruhe_von[' . $rk_i . ']') ?> placeholder="22:00"></td>
+  <td><input data-role="none" type="text" size="5" name="r_ruhe_bis[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_ruhe_bis[' . $rk_i . ']', $rk_r['ruhe_bis'])) ?>"<?= rk_mark('r_ruhe_bis[' . $rk_i . ']') ?> placeholder="06:00"></td>
+  <td><input data-role="none" type="text" size="3" name="r_personen[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_personen[' . $rk_i . ']', $rk_r['personen'])) ?>"<?= rk_mark('r_personen[' . $rk_i . ']') ?>></td>
 </tr>
 <?php } ?>
 </table>
@@ -1449,31 +1553,31 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <h3><?= rk_e(rk_t('EINST.H_ZUGANG')) ?></h3>
 <div class="sm-feld">
   <label for="rk_zb"><?= rk_e(rk_t('EINST.ZUG_BENUTZER')) ?></label>
-  <input data-role="none" type="text" id="rk_zb" name="zug_benutzer" value="<?= rk_e($rk_g['benutzer']) ?>">
+  <input data-role="none" type="text" id="rk_zb" name="zug_benutzer" value="<?= rk_e(rk_ein('zug_benutzer', $rk_g['benutzer'])) ?>"<?= rk_mark('zug_benutzer') ?>>
 </div>
 <div class="sm-feld">
   <label for="rk_zp"><?= rk_e(rk_t('EINST.ZUG_PASSWORT')) ?></label>
-  <input data-role="none" type="password" id="rk_zp" name="zug_passwort" value="" autocomplete="new-password">
+  <input data-role="none" type="password" id="rk_zp" name="zug_passwort" value=""<?= rk_mark('zug_passwort') ?> autocomplete="new-password">
   <p class="sm-hilfe"><?= sprintf(rk_t('EINST.ZUG_HILFE'), strlen((string) $rk_g['passwort'])) ?></p>
-  <label><input data-role="none" type="checkbox" name="zug_loeschen" value="1"> <?= rk_e(rk_t('EINST.ZUG_LOESCHEN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="zug_loeschen" value="1"<?= rk_haken('zug_loeschen', false) ?>> <?= rk_e(rk_t('EINST.ZUG_LOESCHEN')) ?></label>
 </div>
 
 <h2><?= rk_e(rk_t('EINST.H_AUSSEN')) ?></h2>
 <div class="sm-step"><?= rk_t('EINST.AUSSEN_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="rk_aart"><?= rk_e(rk_t('EINST.AUSSEN_ART')) ?></label>
-  <select data-role="none" id="rk_aart" name="aussen_art">
-    <option value="meteo"<?= $rk_cfg['aussen_art'] === 'meteo' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_METEO')) ?></option>
-    <option value="eigen"<?= $rk_cfg['aussen_art'] === 'eigen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_EIGEN')) ?></option>
+  <select data-role="none" id="rk_aart" name="aussen_art"<?= rk_mark('aussen_art') ?>>
+    <option value="meteo"<?= rk_ein('aussen_art', $rk_cfg['aussen_art']) === 'meteo' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_METEO')) ?></option>
+    <option value="eigen"<?= rk_ein('aussen_art', $rk_cfg['aussen_art']) === 'eigen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_EIGEN')) ?></option>
   </select>
 </div>
 <div class="sm-feld">
   <label for="rk_breite"><?= rk_e(rk_t('EINST.BREITE')) ?></label>
-  <input data-role="none" type="text" id="rk_breite" name="breite" value="<?= rk_e($rk_cfg['breite']) ?>" placeholder="51.3183">
+  <input data-role="none" type="text" id="rk_breite" name="breite" value="<?= rk_e(rk_ein('breite', $rk_cfg['breite'])) ?>"<?= rk_mark('breite') ?> placeholder="51.3183">
 </div>
 <div class="sm-feld">
   <label for="rk_laenge"><?= rk_e(rk_t('EINST.LAENGE')) ?></label>
-  <input data-role="none" type="text" id="rk_laenge" name="laenge" value="<?= rk_e($rk_cfg['laenge']) ?>" placeholder="9.4896">
+  <input data-role="none" type="text" id="rk_laenge" name="laenge" value="<?= rk_e(rk_ein('laenge', $rk_cfg['laenge'])) ?>"<?= rk_mark('laenge') ?> placeholder="9.4896">
   <p class="sm-hilfe"><?= rk_t('EINST.ORT_HILFE') ?></p>
 <?php if ($rk_cfg['aussen_art'] === 'meteo' && (trim((string) $rk_cfg['breite']) === '' || trim((string) $rk_cfg['laenge']) === '')) { ?>
   <div class="sm-warnung"><?= rk_e(rk_t('MELD.KEIN_STANDORT')) ?></div>
@@ -1481,26 +1585,26 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 </div>
 <div class="sm-feld">
   <label for="rk_aq"><?= rk_e(rk_t('EINST.AUSSEN_QUELLE')) ?></label>
-  <input data-role="none" type="text" id="rk_aq" name="aussen_quelle" value="<?= rk_e($rk_cfg['aussen_quelle']) ?>">
+  <input data-role="none" type="text" id="rk_aq" name="aussen_quelle" value="<?= rk_e(rk_ein('aussen_quelle', $rk_cfg['aussen_quelle'])) ?>"<?= rk_mark('aussen_quelle') ?>>
 </div>
 <div class="sm-feld">
   <label for="rk_at"><?= rk_e(rk_t('EINST.AUSSEN_T')) ?></label>
-  <input data-role="none" type="text" id="rk_at" name="aussen_t" value="<?= rk_e($rk_cfg['aussen_t']) ?>">
+  <input data-role="none" type="text" id="rk_at" name="aussen_t" value="<?= rk_e(rk_ein('aussen_t', $rk_cfg['aussen_t'])) ?>"<?= rk_mark('aussen_t') ?>>
 </div>
 <div class="sm-feld">
   <label for="rk_arf"><?= rk_e(rk_t('EINST.AUSSEN_RF')) ?></label>
-  <input data-role="none" type="text" id="rk_arf" name="aussen_rf" value="<?= rk_e($rk_cfg['aussen_rf']) ?>">
+  <input data-role="none" type="text" id="rk_arf" name="aussen_rf" value="<?= rk_e(rk_ein('aussen_rf', $rk_cfg['aussen_rf'])) ?>"<?= rk_mark('aussen_rf') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.AUSSEN_EIGEN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_aeh"><?= rk_e(rk_t('EINST.EINHEIT')) ?></label>
-  <select data-role="none" id="rk_aeh" name="aussen_einheit_t">
-    <option value="C"<?= $rk_cfg['aussen_einheit_t'] === 'C' ? ' selected' : '' ?>>&deg;C</option>
-    <option value="F"<?= $rk_cfg['aussen_einheit_t'] === 'F' ? ' selected' : '' ?>>&deg;F</option>
+  <select data-role="none" id="rk_aeh" name="aussen_einheit_t"<?= rk_mark('aussen_einheit_t') ?>>
+    <option value="C"<?= rk_ein('aussen_einheit_t', $rk_cfg['aussen_einheit_t']) === 'C' ? ' selected' : '' ?>>&deg;C</option>
+    <option value="F"<?= rk_ein('aussen_einheit_t', $rk_cfg['aussen_einheit_t']) === 'F' ? ' selected' : '' ?>>&deg;F</option>
   </select>
-  <select data-role="none" name="aussen_einheit_rf">
-    <option value="proz"<?= $rk_cfg['aussen_einheit_rf'] === 'proz' ? ' selected' : '' ?>>%</option>
-    <option value="anteil"<?= $rk_cfg['aussen_einheit_rf'] === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
+  <select data-role="none" name="aussen_einheit_rf"<?= rk_mark('aussen_einheit_rf') ?>>
+    <option value="proz"<?= rk_ein('aussen_einheit_rf', $rk_cfg['aussen_einheit_rf']) === 'proz' ? ' selected' : '' ?>>%</option>
+    <option value="anteil"<?= rk_ein('aussen_einheit_rf', $rk_cfg['aussen_einheit_rf']) === 'anteil' ? ' selected' : '' ?>>0&ndash;1</option>
   </select>
   <p class="sm-hilfe"><?= rk_t('EINST.EINHEIT_HILFE') ?></p>
 </div>
@@ -1509,115 +1613,112 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <div class="sm-step"><?= rk_t('EINST.BEWERTUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="rk_mind"><?= rk_e(rk_t('EINST.MINDEST')) ?></label>
-  <input data-role="none" type="text" id="rk_mind" name="mindest" value="<?= rk_e($rk_cfg['mindest']) ?>">
+  <input data-role="none" type="text" id="rk_mind" name="mindest" value="<?= rk_e(rk_ein('mindest', $rk_cfg['mindest'])) ?>"<?= rk_mark('mindest') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.MINDEST_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_tmin"><?= rk_e(rk_t('EINST.T_MIN')) ?></label>
-  <input data-role="none" type="text" id="rk_tmin" name="t_min" value="<?= rk_e($rk_cfg['t_min']) ?>">
+  <input data-role="none" type="text" id="rk_tmin" name="t_min" value="<?= rk_e(rk_ein('t_min', $rk_cfg['t_min'])) ?>"<?= rk_mark('t_min') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.T_MIN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_afu"><?= rk_e(rk_t('EINST.AF_UNTER')) ?></label>
-  <input data-role="none" type="text" id="rk_afu" name="af_unter" value="<?= rk_e($rk_cfg['af_unter']) ?>">
+  <input data-role="none" type="text" id="rk_afu" name="af_unter" value="<?= rk_e(rk_ein('af_unter', $rk_cfg['af_unter'])) ?>"<?= rk_mark('af_unter') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.AF_UNTER_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_vs"><?= rk_e(rk_t('EINST.VORSCHAU')) ?></label>
-  <input data-role="none" type="text" id="rk_vs" name="vorschau" value="<?= rk_e($rk_cfg['vorschau']) ?>">
+  <input data-role="none" type="text" id="rk_vs" name="vorschau" value="<?= rk_e(rk_ein('vorschau', $rk_cfg['vorschau'])) ?>"<?= rk_mark('vorschau') ?>>
 </div>
 <div class="sm-feld">
   <label for="rk_hyst"><?= rk_e(rk_t('EINST.HYST')) ?></label>
-  <input data-role="none" type="text" id="rk_hyst" name="hyst" value="<?= rk_e($rk_cfg['hyst']) ?>">
+  <input data-role="none" type="text" id="rk_hyst" name="hyst" value="<?= rk_e(rk_ein('hyst', $rk_cfg['hyst'])) ?>"<?= rk_mark('hyst') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.HYST_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_dauer"><?= rk_e(rk_t('EINST.DAUER_MIN')) ?></label>
-  <input data-role="none" type="text" id="rk_dauer" name="dauer_min" value="<?= rk_e($rk_cfg['dauer_min']) ?>">
+  <input data-role="none" type="text" id="rk_dauer" name="dauer_min" value="<?= rk_e(rk_ein('dauer_min', $rk_cfg['dauer_min'])) ?>"<?= rk_mark('dauer_min') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.DAUER_MIN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_regen"><?= rk_e(rk_t('EINST.REGEN_MAX')) ?></label>
-  <input data-role="none" type="text" id="rk_regen" name="regen_max" value="<?= rk_e($rk_cfg['regen_max']) ?>">
+  <input data-role="none" type="text" id="rk_regen" name="regen_max" value="<?= rk_e(rk_ein('regen_max', $rk_cfg['regen_max'])) ?>"<?= rk_mark('regen_max') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.REGEN_MAX_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_ksp"><?= rk_e(rk_t('EINST.KUEHL_SPANNE')) ?></label>
-  <input data-role="none" type="text" id="rk_ksp" name="kuehl_spanne" value="<?= rk_e($rk_cfg['kuehl_spanne']) ?>">
+  <input data-role="none" type="text" id="rk_ksp" name="kuehl_spanne" value="<?= rk_e(rk_ein('kuehl_spanne', $rk_cfg['kuehl_spanne'])) ?>"<?= rk_mark('kuehl_spanne') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.KUEHL_SPANNE_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_wind"><?= rk_e(rk_t('EINST.WIND_MAX')) ?></label>
-  <input data-role="none" type="text" id="rk_wind" name="wind_max" value="<?= rk_e($rk_cfg['wind_max']) ?>">
+  <input data-role="none" type="text" id="rk_wind" name="wind_max" value="<?= rk_e(rk_ein('wind_max', $rk_cfg['wind_max'])) ?>"<?= rk_mark('wind_max') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.WIND_MAX_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_wabs"><?= rk_e(rk_t('EINST.WAND_ABSTAND')) ?></label>
-  <input data-role="none" type="text" id="rk_wabs" name="wand_abstand" value="<?= rk_e($rk_cfg['wand_abstand']) ?>">
+  <input data-role="none" type="text" id="rk_wabs" name="wand_abstand" value="<?= rk_e(rk_ein('wand_abstand', $rk_cfg['wand_abstand'])) ?>"<?= rk_mark('wand_abstand') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.WAND_ABSTAND_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_co2t"><?= rk_e(rk_t('EINST.CO2_T_MIN')) ?></label>
-  <input data-role="none" type="text" id="rk_co2t" name="co2_t_min" value="<?= rk_e($rk_cfg['co2_t_min']) ?>">
+  <input data-role="none" type="text" id="rk_co2t" name="co2_t_min" value="<?= rk_e(rk_ein('co2_t_min', $rk_cfg['co2_t_min'])) ?>"<?= rk_mark('co2_t_min') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.CO2_T_MIN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_zwang"><?= rk_e(rk_t('EINST.ZWANG_STD')) ?></label>
-  <input data-role="none" type="text" id="rk_zwang" name="zwang_std" value="<?= rk_e($rk_cfg['zwang_std']) ?>">
+  <input data-role="none" type="text" id="rk_zwang" name="zwang_std" value="<?= rk_e(rk_ein('zwang_std', $rk_cfg['zwang_std'])) ?>"<?= rk_mark('zwang_std') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.ZWANG_STD_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_schw"><?= rk_e(rk_t('EINST.SCHWUEL_X')) ?></label>
-  <input data-role="none" type="text" id="rk_schw" name="schwuel_x" value="<?= rk_e($rk_cfg['schwuel_x']) ?>">
+  <input data-role="none" type="text" id="rk_schw" name="schwuel_x" value="<?= rk_e(rk_ein('schwuel_x', $rk_cfg['schwuel_x'])) ?>"<?= rk_mark('schwuel_x') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.SCHWUEL_X_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_vlz"><?= rk_e(rk_t('EINST.VL_ZUSCHLAG')) ?></label>
-  <input data-role="none" type="text" id="rk_vlz" name="vl_zuschlag" value="<?= rk_e($rk_cfg['vl_zuschlag']) ?>">
+  <input data-role="none" type="text" id="rk_vlz" name="vl_zuschlag" value="<?= rk_e(rk_ein('vl_zuschlag', $rk_cfg['vl_zuschlag'])) ?>"<?= rk_mark('vl_zuschlag') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.VL_ZUSCHLAG_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_kfe"><?= rk_e(rk_t('EINST.KUEHLFREI_EIN')) ?></label>
-  <input data-role="none" type="text" id="rk_kfe" name="kuehlfrei_ein" value="<?= rk_e($rk_cfg['kuehlfrei_ein']) ?>">
+  <input data-role="none" type="text" id="rk_kfe" name="kuehlfrei_ein" value="<?= rk_e(rk_ein('kuehlfrei_ein', $rk_cfg['kuehlfrei_ein'])) ?>"<?= rk_mark('kuehlfrei_ein') ?>>
   <label for="rk_kfa"><?= rk_e(rk_t('EINST.KUEHLFREI_AUS')) ?></label>
-  <input data-role="none" type="text" id="rk_kfa" name="kuehlfrei_aus" value="<?= rk_e($rk_cfg['kuehlfrei_aus']) ?>">
+  <input data-role="none" type="text" id="rk_kfa" name="kuehlfrei_aus" value="<?= rk_e(rk_ein('kuehlfrei_aus', $rk_cfg['kuehlfrei_aus'])) ?>"<?= rk_mark('kuehlfrei_aus') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.KUEHLFREI_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_heiz"><?= rk_e(rk_t('EINST.HEIZGRENZE')) ?></label>
-  <input data-role="none" type="text" id="rk_heiz" name="heizgrenze" value="<?= rk_e($rk_cfg['heizgrenze']) ?>">
+  <input data-role="none" type="text" id="rk_heiz" name="heizgrenze" value="<?= rk_e(rk_ein('heizgrenze', $rk_cfg['heizgrenze'])) ?>"<?= rk_mark('heizgrenze') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.HEIZGRENZE_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_trend"><?= rk_e(rk_t('EINST.TREND_MIN')) ?></label>
-  <input data-role="none" type="text" id="rk_trend" name="trend_min" value="<?= rk_e($rk_cfg['trend_min']) ?>">
+  <input data-role="none" type="text" id="rk_trend" name="trend_min" value="<?= rk_e(rk_ein('trend_min', $rk_cfg['trend_min'])) ?>"<?= rk_mark('trend_min') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.TREND_MIN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_cltr"><?= rk_e(rk_t('EINST.CO2_LTR')) ?></label>
-  <input data-role="none" type="text" id="rk_cltr" name="co2_ltr" value="<?= rk_e($rk_cfg['co2_ltr']) ?>">
+  <input data-role="none" type="text" id="rk_cltr" name="co2_ltr" value="<?= rk_e(rk_ein('co2_ltr', $rk_cfg['co2_ltr'])) ?>"<?= rk_mark('co2_ltr') ?>>
   <label for="rk_causs"><?= rk_e(rk_t('EINST.CO2_AUSSEN')) ?></label>
-  <input data-role="none" type="text" id="rk_causs" name="co2_aussen" value="<?= rk_e($rk_cfg['co2_aussen']) ?>">
+  <input data-role="none" type="text" id="rk_causs" name="co2_aussen" value="<?= rk_e(rk_ein('co2_aussen', $rk_cfg['co2_aussen'])) ?>"<?= rk_mark('co2_aussen') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.CO2_LTR_HILFE') ?></p>
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= $rk_cfg['verlauf_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('EINST.VERLAUF')) ?></label>
+  <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= rk_haken('verlauf_ein', !empty($rk_cfg['verlauf_ein'])) ?>> <?= rk_e(rk_t('EINST.VERLAUF')) ?></label>
   <p class="sm-hilfe"><?= rk_t('EINST.VERLAUF_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_steht"><?= rk_e(rk_t('EINST.STEHT_MIN')) ?></label>
-  <input data-role="none" type="text" id="rk_steht" name="steht_min" value="<?= rk_e($rk_cfg['steht_min']) ?>">
+  <input data-role="none" type="text" id="rk_steht" name="steht_min" value="<?= rk_e(rk_ein('steht_min', $rk_cfg['steht_min'])) ?>"<?= rk_mark('steht_min') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.STEHT_MIN_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_takt"><?= rk_e(rk_t('EINST.TAKT')) ?></label>
-  <input data-role="none" type="text" id="rk_takt" name="takt" value="<?= rk_e($rk_cfg['takt']) ?>">
+  <input data-role="none" type="text" id="rk_takt" name="takt" value="<?= rk_e(rk_ein('takt', $rk_cfg['takt'])) ?>"<?= rk_mark('takt') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.TAKT_HILFE') ?></p>
 </div>
 
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= rk_e(rk_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1626,6 +1727,17 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <h2><?= rk_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= rk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= rk_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (Durchgang 01.10.2026): wuerde das eigene Zurueckspielen die
+         Sicherung abweisen, steht es gelb am Knopf - mit dem Namen der
+         Einstellung und dem Grund, nie mit dem Wert. DIESELBE Pruefung wie
+         beim Zurueckspielen. Gesichert wird trotzdem vollstaendig (die Datei
+         traegt dann "_warnung"). Bauart AWM-Abfuhr 1.4.19. */
+$rk_x3 = rk_sicherung_maengel($rk_cfg, rk_geheim());
+if ($rk_x3) {
+    $rk_x3l = array();
+    foreach ($rk_x3 as $rk_xk => $rk_xg) { $rk_x3l[] = ($rk_xk === '_' ? '' : $rk_xk . ': ') . $rk_xg; } ?>
+<div class="sm-warnung" id="sicherung-altwerte"><?= rk_e(sprintf(rk_t('EINST.SICH_ALTWERT'), implode('; ', $rk_x3l))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1682,7 +1794,7 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
          Verzweigung spaeter anfasst, muesste erst messen, ob das Absicht
          war. Der Unterschied, auf den es ankommt, steckt in
          rk_abo_text(): der nennt bei fassung = 0 beide Saetze. */ ?>
-<?php if ($rk_gwf >= 2) { ?>
+<?php if ($rk_gwf >= 2 || rk_abo_da()) { ?>
 <div class="sm-hinweis"><?= rk_abo_text() ?></div>
 <?php } else { ?>
 <div class="sm-warnung"><?= rk_abo_text() ?></div>
@@ -1698,11 +1810,11 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
 <input data-role="none" type="hidden" name="feld_mqtt" value="1">
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $rk_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= rk_e(rk_t('MQTT.EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= rk_haken('mqtt_ein', !empty($rk_cfg['mqtt_ein'])) ?>> <?= rk_e(rk_t('MQTT.EIN')) ?></label>
 </div>
 <div class="sm-feld">
   <label for="rk_thema"><?= rk_e(rk_t('MQTT.THEMA')) ?></label>
-  <input data-role="none" type="text" id="rk_thema" name="mqtt_topic" value="<?= rk_e($rk_cfg['mqtt_topic']) ?>">
+  <input data-role="none" type="text" id="rk_thema" name="mqtt_topic" value="<?= rk_e(rk_ein('mqtt_topic', $rk_cfg['mqtt_topic'])) ?>"<?= rk_mark('mqtt_topic') ?>>
   <p class="sm-hilfe"><?= rk_t('MQTT.THEMA_HILFE') ?></p>
 </div>
 <div class="sm-legende">
@@ -1761,9 +1873,15 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
          webfrontend/html/index.php - der Anwender musste sie aus dem
          Quelltext holen. Die Nummer ist der erste eingerichtete Raum,
          damit das Beispiel an dieser Anlage wirklich antwortet. */
-   $rk_bsp = 1;
-   foreach (array_keys(rk_raeume()) as $rk_bn) { $rk_bsp = (int) $rk_bn; break; } ?>
+   /* U16 (Durchgang 01.10.2026): ohne eingerichteten Raum keine Adresse -
+    * die Beispielnummer 1 antwortete dann mit 404 RAUM_UNBEKANNT (gemessen,
+    * Bericht oberflaeche Nr. 18). */
+   if ($rk_raeume) {
+       $rk_bsp = (int) array_keys($rk_raeume)[0]; ?>
 <tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=raum&nr=' . $rk_bsp) ?></span></td></tr>
+<?php } else { ?>
+<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><?= rk_e(rk_t('LOX.Z_RAUM_ERST')) ?></td></tr>
+<?php } ?>
 </table>
 
 <div class="sm-legende">

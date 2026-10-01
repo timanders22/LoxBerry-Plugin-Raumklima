@@ -64,34 +64,18 @@ fi
 # sie ausgewertet und auf JEDEM Ausgang wieder entfernt (trap) - das Skript
 # steigt an mehreren Stellen mit 'exit 1' aus.
 #
-# Sie zaehlt nur, wenn sie eine Unixzeit traegt und hoechstens 3600 s zurueck
-# bzw. 300 s voraus liegt. Beide Zahlen werden VOR der Rechnung als Zahl
-# geprueft - bash wertet in $(( )) den Inhalt einer Variablen aus
-# (Bestand-2026-09-18/klasse-M); '10#' nimmt einer fuehrenden Null die
-# Oktaldeutung. Ohne lesbare Uhr gilt eine liegende Marke: die Pruefung
-# faellt geschlossen aus (Bauart Sprachsteuerung 0.11.9).
+# Sie gilt, sobald sie LIEGT - ohne Altersvergleich (Entscheidung 1 vom
+# 29.09.2026 und Nr. 8 vom 30.09.2026, Durchgang 01.10.2026). Bis 0.11.13
+# zaehlte sie nur bis 3600 s Alter: ein Update mit mehr als einer Stunde
+# zwischen preupgrade und postinstall - an der Funkwacht gemessen - oder ein
+# Uhrsprung auf einem Pi ohne Echtzeituhr galt dann als Neuinstallation, und
+# 30 Tage Stundenreihe, Nassstunden und Lueftungserfolg waren weg (in WSL
+# gemessen, Bericht installer, Faelle E und E2). Die 3600 s bleiben nur als
+# Startsperre des Abrufs (rk_upgrade_laeuft()). Eine vergessene Marke gilt
+# ebenso; wer frisch anfangen will, deinstalliert vorher.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 MARKE_GILT=""
-if [ -f "$MARKE" ]; then
-    MARKE_JETZT=$(date +%s 2>/dev/null)
-    MARKE_WERT=$(cat "$MARKE" 2>/dev/null)
-    case "$MARKE_JETZT" in
-        ''|*[!0-9]*) MARKE_GILT=ja ;;
-        *)
-            case "$MARKE_WERT" in
-                ''|*[!0-9]*) ;;
-                *)
-                    if [ "${#MARKE_WERT}" -le 12 ]; then
-                        MARKE_ALTER=$(( MARKE_JETZT - 10#$MARKE_WERT ))
-                        if [ "$MARKE_ALTER" -ge -300 ] && [ "$MARKE_ALTER" -lt 3600 ]; then
-                            MARKE_GILT=ja
-                        fi
-                    fi
-                    ;;
-            esac
-            ;;
-    esac
-fi
+[ -f "$MARKE" ] && MARKE_GILT=ja
 trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 
 # ---------- INHALT statt GROESSE ----------
@@ -171,7 +155,14 @@ chmod 700 "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/raumklima.json" 2>/dev/null
 [ -f "$PCONFIG/geheim.json" ] && chmod 600 "$PCONFIG/geheim.json" 2>/dev/null
 
-# Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+# Sicherung zurueckspielen - NUR bei einer Aktualisierung (Marke).
+#
+# Bis 0.11.13 stand hier "uebersteht Update UND Neuinstallation", und genau
+# das war der Befund: eine Neuinstallation spielte die liegengebliebene
+# Zweitschrift einer frueheren Installation samt altem Aktionstoken ein
+# (Bauart F, Entscheidung 1; in WSL gemessen, Bericht installer, Fall D). Bei
+# einer Neuinstallation legt preinstall.sh sie vorher nach .alt; liegt hier
+# trotzdem eine, ohne Marke, wird sie nicht eingespielt und genannt.
 #
 # Bis 0.11.9 entschied `[ ! -s "$CF" ] || [ "$INHALT" = "{}" ]`. Eine
 # ABGESCHNITTENE raumklima.json ist weder leer noch `{}`: sie galt als heil,
@@ -179,7 +170,10 @@ chmod 600 "$PCONFIG/raumklima.json" 2>/dev/null
 # da. Gemessen am 18.09.2026 (Fall 8 des eigenen Pruefstands).
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/raumklima.json"
-if [ -f "$BK" ]; then
+if [ -f "$BK" ] && [ -z "$MARKE_GILT" ]; then
+    echo "<WARNING> Eine Zweitschrift liegt, aber keine Marke einer laufenden Aktualisierung -"
+    echo "<WARNING> sie wird nicht eingespielt: $BK"
+elif [ -f "$BK" ]; then
     rk_inhalt "$CF" conf
     case "$?" in
     1)
@@ -337,9 +331,12 @@ netz_zurueck() {
 # Block). Gelesen hat rk_config() nur den ersten, zurueckgespielt hat
 # postinstall.sh nur den zweiten. Zwei Sicherungsverfahren sind eines zu
 # viel; preupgrade.sh fuehrt eine vorhandene alte Datei jetzt zusammen.
+# Nur bei einer Aktualisierung (Marke) - wie der Block oben (Bauart F).
+if [ -n "$MARKE_GILT" ]; then
 netz_zurueck "raumklima.json" \
     "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356" \
     "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json"
+fi
 
 
 # Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,
@@ -375,7 +372,14 @@ netz_ohne_vorgabe() {   # $1 Dateiname, $2 Art fuer rk_inhalt
         echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
     fi
 }
-netz_ohne_vorgabe "geheim.json" geheim
+# Die Zugangsdaten nur bei einer Aktualisierung (Marke). Bis 0.11.13 holte eine
+# Neuinstallation das Kennwort einer frueheren Installation aus einer
+# liegengebliebenen Klartext-Zweitschrift, und die Datei blieb danach liegen,
+# weil postupgrade.sh bei einer Neuinstallation nicht laeuft (in WSL gemessen,
+# Bericht installer, Fall D3).
+if [ -n "$MARKE_GILT" ]; then
+    netz_ohne_vorgabe "geheim.json" geheim
+fi
 
 # ---------- Schlusswort: die Erstanleitung nur ohne Einstellungen ----------
 # postinstall.sh laeuft auch bei jedem Update. Bis 0.11.10 riet es danach

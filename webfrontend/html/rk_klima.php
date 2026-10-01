@@ -79,6 +79,18 @@ define('RK_KERN', '1.3.0');
 define('RK_T_MIN', -60.0);
 define('RK_T_MAX', 80.0);
 
+/* Die kleinste relative Feuchte, die als Messung gilt (Durchgang 01.10.2026, C3).
+ *
+ * Raumluft mit weniger als 1 % gibt es nicht; ein solcher Wert kommt von einem
+ * Fuehler am unteren Anschlag. Bis 0.11.13 galt nur 0 % als Ausfall: 20 Grad und
+ * 0,1 % ergaben ok=1, einen Taupunkt von -58,38 Grad und VLMIN -57,38 - ausserhalb
+ * jeder Vorlagengrenze, in Loxone also 0, und eine Vorlaufgrenze 0 heisst "jede
+ * Vorlauftemperatur erlaubt". Das ist die gefaehrliche Richtung. 0,04 % ergab
+ * sogar ok=1 mit einer absoluten Feuchte von 0,007 g/m3 (gemessen, Bericht code
+ * Nr. 3, PHP 7.4 und 8.5 gleich). Bei 1 % und 20 Grad liegt der Taupunkt bei rund
+ * -38 Grad, also im Bereich der Formel. */
+define('RK_RF_MIN', 1.0);
+
 /** Liegt die Temperatur im Bereich, in dem die Formeln gelten? */
 function rk_t_gueltig($t)
 {
@@ -172,6 +184,11 @@ function rk_dampfdruck($t, $rf)
  * geht als "kleinste Vorlauftemperatur" nach Loxone. Der Bereich, in dem die
  * Magnus-Formel laut Dateikopf gilt, endet bei -60; eine Zahl 30 Kelvin
  * darunter ist keine Aussage mehr, sondern eine gefaehrliche.
+ *
+ * Diese Ergebnispruefung allein reichte nicht: 0,1 % bei 20 Grad ergibt -58,38,
+ * und das liegt INNERHALB von RK_T_MIN. Seit dem Durchgang 01.10.2026 ist eine
+ * Raumfeuchte unter RK_RF_MIN ein Ausfall (rk_raum_rechnen()); diese Funktion
+ * selbst rechnet weiter jede Feuchte ueber 0 %.
  */
 function rk_taupunkt($t, $rf)
 {
@@ -987,7 +1004,9 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
     $rf = rk_rf_prozent(rk_zahl_aus(isset($raum['rf']) ? $raum['rf'] : null),
                         isset($raum['einheit_rf']) ? $raum['einheit_rf'] : 'proz');
     if (!rk_t_gueltig($t)) { $t = null; }
-    if ($rf === null || $rf <= 0.0 || $rf > 100.0) { $rf = null; }
+    /* Unter RK_RF_MIN (1 %) ist es ein Fuehler am Anschlag, kein Messwert - siehe
+     * dort (Durchgang 01.10.2026, C3). Bis 0.11.13 galt hier nur 0 %. */
+    if ($rf === null || $rf < RK_RF_MIN || $rf > 100.0) { $rf = null; }
 
     $art = isset($raum['art']) ? (string) $raum['art'] : 'aussen';
     if (!in_array($art, array('aussen', 'keller', 'innen'), true)) { $art = 'aussen'; }
@@ -2076,6 +2095,22 @@ function rk_selbsttest()
                               'frsi' => 0.7), array('t' => 3.0, 'rf' => 85.0),
                         array(), array(), $t0)['vlmin'], null);
     $pr('  ein normaler Wert bleibt unberuehrt', rk_taupunkt(20, 50), 9.26, 0.05);
+    /* C3 (Durchgang 01.10.2026): bei 20 Grad lag der Taupunkt aus 0,1 % mit -58,38
+     * INNERHALB des Bereichs - der Raum stand auf ok=1. Unter 1 % ist es ein Ausfall. */
+    $rf01 = rk_raum_rechnen(array('name' => 'Anschlag20', 't' => 20.0, 'rf' => 0.1,
+                                  'frsi' => 0.7), array('t' => 3.0, 'rf' => 85.0),
+                            array(), array(), $t0);
+    $pr('Fuehler am Anschlag: 0,1 % bei 20 C ist ein Ausfall',
+        array($rf01['ok'], $rf01['taupunkt'], $rf01['vlmin']), array(0, null, null));
+    $rf004 = rk_raum_rechnen(array('name' => 'Anschlag20b', 't' => 20.0, 'rf' => 0.04,
+                                   'frsi' => 0.7), array('t' => 3.0, 'rf' => 85.0),
+                             array(), array(), $t0);
+    $pr('  0,04 % ebenso (keine absolute Feuchte 0,007)',
+        array($rf004['ok'], $rf004['absolut']), array(0, null));
+    $rf1 = rk_raum_rechnen(array('name' => 'Trocken', 't' => 20.0, 'rf' => 1.0,
+                                 'frsi' => 0.7), array('t' => 3.0, 'rf' => 85.0),
+                           array(), array(), $t0);
+    $pr('  1 % rechnet weiter', $rf1['ok'], 1);
 
     /* ---------- V18: Kuehlfreigabe mit zwei Schaltpunkten ---------- */
     $gk = array('name' => 'Decke', 't' => 24.0, 'rf' => 55.0, 'frsi' => 0.9);

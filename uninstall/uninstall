@@ -75,8 +75,9 @@ fi
 # der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
 # (rk_mqtt_leeren() in webfrontend/html/rk_lib.php; Bauart Spotpreis-Tibber
 # 0.9.19). Als loxberry, nicht als root; stdin geschlossen, damit su nie auf
-# eine Eingabe wartet. Themen unter einem FRUEHER eingestellten Praefix
-# erreicht das nicht.
+# eine Eingabe wartet. Seit dem Durchgang 01.10.2026 (M3) leert es auch die
+# vorgemerkten frueher eingestellten Praefixe (data/plugins/<ordner>/
+# mqtt_praefix_alt.json) - deshalb 120 s statt 60 s.
 #
 # 'timeout -k 5 60': ohne -k schickt timeout nach Ablauf nur SIGTERM - ein
 # Prozess, der es nicht annimmt, hielt die Deinstallation an, und die
@@ -92,15 +93,15 @@ if command -v php >/dev/null 2>&1 && [ -f "$RK_ABRUF" ]; then
     RK_RC=0
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
         su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
-            timeout -k 5 60 php "$RK_ABRUF" --mqtt-leeren)" < /dev/null 2>&1 || RK_RC=$?
+            timeout -k 5 120 php "$RK_ABRUF" --mqtt-leeren)" < /dev/null 2>&1 || RK_RC=$?
     else
-        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 60 php "$RK_ABRUF" --mqtt-leeren \
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 120 php "$RK_ABRUF" --mqtt-leeren \
             < /dev/null 2>&1 || RK_RC=$?
     fi
     case "$RK_RC" in
         0|1|2) ;;
-        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 60 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
-        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 120 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 120 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
         *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $RK_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
     esac
 else
@@ -125,8 +126,19 @@ do
 done
 # Die beiseitegelegten kaputten Konfigurationen (raumklima.json.kaputt.*)
 # tragen dieselben Raumnamen und Adressen wie die heile Datei.
-for F in "$BASE/config/plugins/$PFOLDER"/raumklima.json.kaputt.*; do
-    [ -e "$F" ] || continue
+#
+# Seit dem Durchgang 01.10.2026 (I4) auch: die .alt aus preinstall.sh und
+# preupgrade.sh (Entscheidung 1) und die Nebendateien eines abgebrochenen
+# Schreibvorgangs (*.tmp.<pid>, rk_json_schreiben()). Bis 0.11.13 blieb eine
+# Nebendatei raumklima.backup.json.tmp.4242 mit dem Aktionstoken liegen, und
+# die Schlussmeldung behauptete Vollzug (in WSL gemessen, Bericht installer,
+# Fall G).
+for F in "$BASE/config/plugins/$PFOLDER"/raumklima.json.kaputt.* \
+         "$BASE/config/plugins/$PFOLDER".backup*.alt \
+         "$BASE/config/plugins/$PFOLDER".backup*.tmp.* \
+         "$BASE/config/plugins/$PFOLDER"/raumklima.json.tmp.* \
+         "$BASE/config/plugins/$PFOLDER"/geheim.json.tmp.*; do
+    [ -e "$F" ] || [ -L "$F" ] || continue
     rm -f "$F" && WEG=$((WEG + 1))
 done
 
@@ -137,14 +149,12 @@ for D in "$BASE/data/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER"; do
 done
 
 # Fail closed: liegt danach noch etwas da, wird es gesagt statt beschwiegen.
+# Gezaehlt wird JEDE Datei <ordner>.backup* - nicht eine feste Liste, die neue
+# Namen nicht kennt (I4).
 REST=0
-for F in \
-    "$BASE/config/plugins/$PFOLDER.backup.json" \
-    "$BASE/config/plugins/$PFOLDER.backup.geheim.json" \
-    "$BASE/config/plugins/$PFOLDER.backup.raumklima.json" \
-    "$BASE/config/plugins/$PFOLDER.backup.verlauf.json"
-do
-    [ -e "$F" ] && { echo "<WARNING> Nicht entfernt: $F"; REST=$((REST + 1)); }
+for F in "$BASE/config/plugins/$PFOLDER".backup*; do
+    [ -e "$F" ] || [ -L "$F" ] || continue
+    echo "<WARNING> Nicht entfernt: $F"; REST=$((REST + 1))
 done
 
 if [ "$REST" -gt 0 ]; then

@@ -3,9 +3,36 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.12 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.13 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.13
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Raumklima_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 8, 16, 19 und 26).
+Gemessen mit Attrappen für Fühler, Open-Meteo und Broker unter PHP 7.4, 8.3, 8.4 und 8.5; nicht am Gerät.
+
+* **Fühler am Anschlag:** Eine Feuchte unter 1 % rF gilt als Fühlerausfall. Bisher
+  ergab z. B. 20 °C/0,1 % einen Taupunkt von −58 °C und eine Mindest-Vorlauftemperatur,
+  die Loxone als „jede Vorlauftemperatur erlaubt“ las.
+* **`OK` im Endpunkt** fällt auf 0, sobald die Werte älter als das Dreifache des
+  Takts sind; `ALTER` und `RALTER` gelten zur Abfragezeit.
+* **Vorlage:** Die Grenzen von 16 Feldern sind geweitet (Dachboden, Bad, Frost) –
+  bitte die Loxone-Vorlage neu importieren.
+* Ein Open-Meteo-Aussetzer wird mit der gespeicherten Vorhersage überbrückt.
+* **Speichern:** Bei einer Beanstandung wird nichts gespeichert, die Eingaben kommen
+  markiert zurück, nichts wird mehr still verbogen. „Einstellungen sichern“ warnt;
+  beim Zurückspielen werden die Raumfelder geprüft, ein leeres Token behält das
+  geltende.
+* **Neuinstallation:** Alte Einstellungen, Zugangsdaten und Verlauf einer früheren
+  Installation werden nach `.alt` gelegt statt eingespielt (`preinstall.sh`).
+* **MQTT:** Bei Fühlerausfall bleiben die Zustände stehen (die gesperrte
+  Kühlfreigabe bleibt retained), ein ausgetragener Raum wird mit `-` geräumt,
+  Präfixwechsel und „MQTT aus“ räumen ab, die Abodatei wird mitgeliefert; gesendet
+  werden nur Änderungen, der volle Satz alle 30 Minuten. Gateway V1 einmal neu
+  starten, damit es die Abodatei liest.
+* PHP 8.5: keine Verfallsmeldung mehr (`$http_response_header` ersetzt).
+* Der Endpunkt protokolliert Aufrufe (gebremst, ohne Token).
 
 ## Neu in 0.11.12
 
@@ -344,7 +371,9 @@ Fehlende Werte werden **nicht** gesendet und als Strich angezeigt. Eine 0
 wäre bei einer Temperatur eine Falschaussage.
 
 **Ausfälle sind sichtbar.** `OK` ist **1**, sobald mindestens *ein* Raum
-Werte liefert, sonst 0 — ein Merkmal, kein Zähler. Wie viele Räume ohne
+Werte liefert und die letzte erfolgreiche Messung nicht älter ist als das
+Dreifache des Abruftakts, sonst 0 — ein Merkmal, kein Zähler. `ALTER` und
+`RALTER` rechnet der Endpunkt zur Abfragezeit. Wie viele Räume ohne
 Werte dastehen, sagt `NOHNE`; je Raum sagen `RALTER` die Sekunden seit dem
 letzten gültigen Wert und
 `STEHT`, ob sich der Wert seit einer einstellbaren Zeit überhaupt nicht mehr

@@ -142,7 +142,10 @@ function rk_selbstpruefung()
      * fielen beide in den Rueckfall. Eine Minute nach einer geglueckten
      * Selbstheilung sagte der Reiter Test dem Anwender deshalb, es gebe
      * keine Konfiguration und es gaelten die Vorgabewerte. */
-    $lage = rk_config_lage();
+    /* U9 (Durchgang 01.10.2026): der ERSTE Zustand dieser Anfrage. Bis 0.11.13
+     * hatte die Selbstheilung ihn schon beseitigt, und hier stand "gelesen und
+     * in Ordnung" (gemessen, Bericht oberflaeche Nr. 11). */
+    $lage = rk_config_lage_anfang();
     $lagetext = array('ok'           => 'PRUEFTEXT.CFG_OK',
                       'kaputt'       => 'PRUEFTEXT.CFG_KAPUTT',
                       'zweitschrift' => 'PRUEFTEXT.CFG_ZWEITSCHRIFT',
@@ -272,6 +275,30 @@ function rk_selbstpruefung()
     $add('PRUEF.WERTPFAD', $fehl === 0 ? 1 : 0,
          sprintf(rk_t('PRUEFTEXT.WERTPFAD_N'), count($ff) - $fehl, count($ff)));
 
+    /* ---- 10. Tragen die Texte der Meldungslisten keine Auszeichnung? ----
+     * Regeln/04 (Fensterbilanz 0.12.1): Meldungen werden maskiert ausgegeben,
+     * ein <b> darin steht woertlich da. Bis 0.11.13 traf das drei Texte je
+     * Sprache, sichtbar bei jeder abgewiesenen Sicherung (gemessen, Bericht
+     * oberflaeche Nr. 7). Gelesen wird der Quelltext der Oberflaeche: welche
+     * Sprachschluessel gehen in eine der vier Listen? Eine gepflegte zweite
+     * Liste liefe davon weg. */
+    $mschl = array();
+    if (preg_match_all('/\$rk_(?:meldungen|fehler|stoerung|abrufhinweise)\[\]\s*=\s*(?:sprintf\(\s*)?rk_t\(\'([A-Z_]+\.[A-Z0-9_]+)\'\)/',
+                       $q, $mm)) {
+        $mschl = array_values(array_unique($mm[1]));
+    }
+    $mfalsch = array();
+    foreach ($mschl as $ms) {
+        if (strpos(rk_t($ms), '<') !== false) { $mfalsch[] = $ms; }
+    }
+    if (!$mschl) {
+        $add('PRUEF.MELDTEXT', 2, rk_t('PRUEFTEXT.MELD_KEINE'));
+    } else {
+        $add('PRUEF.MELDTEXT', $mfalsch ? 0 : 1, $mfalsch
+            ? sprintf(rk_t('PRUEFTEXT.MELD_FALSCH'), count($mfalsch), implode(', ', array_slice($mfalsch, 0, 4)))
+            : sprintf(rk_t('PRUEFTEXT.MELD_OK'), count($mschl)));
+    }
+
     return $z;
 }
 
@@ -297,8 +324,11 @@ function rk_test_endpunkt_kurz($sekunden = 300)
         return array(2, rk_t('PRUEFTEXT.EP_KEIN_TOKEN'));
     }
     $url = rk_endpunkt() . '?token=' . rawurlencode($token) . '&aktion=status';
+    /* U12 (Durchgang 01.10.2026): drei Sekunden, nicht acht (Regeln/04). War der
+     * Endpunkt nicht erreichbar, wartete der Anwender 8,1 s vor dem Reiter Test
+     * (gemessen, Bericht oberflaeche Nr. 14). */
     $ctx = stream_context_create(array('http' => array(
-        'timeout' => 8, 'ignore_errors' => true, 'follow_location' => 0)));
+        'timeout' => 3, 'ignore_errors' => true, 'follow_location' => 0)));
     $text = @file_get_contents($url, false, $ctx);
     if ($text === false) {
         /* Nicht feststellbar - der eingebaute PHP-Server etwa ist einlaeufig
@@ -544,7 +574,8 @@ function rk_test_quellen()
                 if (abs($um - $zahl) > 1e-9) {
                     $anhang .= ' (umgerechnet aus ' . $zahl . ')';
                 }
-                $gut = ($f === 'pfad_t') ? rk_t_gueltig($um) : ($um > 0.0 && $um <= 100.0);
+                /* Dieselbe Grenze wie im Abruf: unter RK_RF_MIN ist es ein Ausfall (C3). */
+                $gut = ($f === 'pfad_t') ? rk_t_gueltig($um) : ($um >= RK_RF_MIN && $um <= 100.0);
                 $o[] = '  ' . $bez . ': ' . $um . $anhang
                      . ($gut ? '' : '   ACHTUNG: ausserhalb des gueltigen Bereichs,'
                                   . ' wird als Ausfall behandelt.');
@@ -722,7 +753,8 @@ function rk_test_mqtt()
         if ($v === null || $v === '') { continue; }
         $o[] = $praefix . '/' . $k . '  =  ' . $v;
     }
-    if (rk_mqtt_senden(rk_stand())) {
+    /* M7: dieser Knopf sendet den VOLLEN Satz, nicht nur die Aenderungen. */
+    if (rk_mqtt_senden(rk_stand(), null, true)) {
         $o[] = '';
         $o[] = 'Gesendet. Ob es angekommen ist, sagt der MQTT Finder in LoxBerry.';
     }

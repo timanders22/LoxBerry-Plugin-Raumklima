@@ -77,6 +77,31 @@ else
     echo "<WARNING> Ein Abruf waehrend der Aktualisierung kann den Verlauf verdraengen."
 fi
 
+# ---------- Alte Rettungen aus einem FRUEHEREN Vorgang beiseite ----------
+#
+# Entscheidung 1 (29.09.2026): preupgrade.sh raeumt einen alten Bestand weg,
+# bevor es einen neuen anlegt - bei einem Upgrade wird nie ein Bestand aus
+# einem frueheren Vorgang eingespielt. Bis 0.11.13 blieb eine liegengebliebene
+# Verlaufsrettung stehen, wenn verlauf.json fehlte oder unlesbar war, und
+# postinstall.sh spielte sie mit gueltiger Marke ein - einen fremden Verlauf
+# (in WSL gemessen, Bericht installer, Fall D4). Dasselbe galt fuer eine
+# liegengebliebene Zugangsdaten-Zweitschrift: hatte der Anwender die
+# Zugangsdaten inzwischen geloescht, kamen die alten zurueck. Die Zweitschrift
+# der Konfiguration (.backup.json) ist dagegen die LAUFENDE Rueckfallkopie und
+# bleibt (AGENTEN_AUFTRAG, Klasse 12).
+for ALTB in "$BASE/config/plugins/$PFOLDER.backup.verlauf.json" \
+            "$BASE/config/plugins/$PFOLDER.backup.geheim.json"; do
+    if [ -e "$ALTB" ] || [ -L "$ALTB" ]; then
+        rm -rf "${ALTB:?}.alt" 2>/dev/null
+        if mv -f "$ALTB" "$ALTB.alt" 2>/dev/null; then
+            [ -f "$ALTB.alt" ] && [ ! -L "$ALTB.alt" ] && chmod 600 "$ALTB.alt" 2>/dev/null
+            echo "<WARNING> Eine Rettung aus einem frueheren Vorgang lag noch da und wird nicht eingespielt: $ALTB.alt (die Deinstallation raeumt sie ab)."
+        else
+            echo "<WARNING> Eine Rettung aus einem frueheren Vorgang liess sich nicht beiseitelegen: $ALTB - bitte von Hand entfernen."
+        fi
+    fi
+done
+
 # ---------- INHALT statt GROESSE ----------
 #
 # Eine ABGESCHNITTENE Datei ist nicht leer. Sie besteht jede Groessenpruefung
@@ -188,11 +213,8 @@ if [ -e "$VL" ]; then
         fi
         ;;
     1)
-        if [ -s "$VLZ" ]; then
-            echo "<WARNING> verlauf.json ist leer oder unlesbar. Die vorhandene"
-            echo "<WARNING> Sicherung der Messreihen bleibt unveraendert:"
-            echo "<WARNING>   $VLZ"
-        fi
+        echo "<WARNING> verlauf.json ist leer oder unlesbar - es wird nichts gesichert;"
+        echo "<WARNING> die Messreihen beginnen nach dem Update von vorn."
         ;;
     *)
         echo "<WARNING> verlauf.json liess sich nicht pruefen (fehlt php?)."
@@ -245,11 +267,7 @@ if [ -e "$NETZ_CFG/geheim.json" ]; then
         fi
         ;;
     1)
-        if [ -s "$GZ" ]; then
-            echo "<WARNING> geheim.json traegt keine Zugangsdaten mehr. Die"
-            echo "<WARNING> vorhandene Zweitschrift bleibt deshalb unveraendert:"
-            echo "<WARNING>   $GZ"
-        fi
+        echo "<INFO> geheim.json traegt keine Zugangsdaten - es gibt nichts zwischenzulegen."
         ;;
     *)
         echo "<WARNING> geheim.json liess sich nicht pruefen (fehlt php?)."
