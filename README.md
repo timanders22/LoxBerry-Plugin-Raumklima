@@ -3,9 +3,21 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.13 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.14 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.14
+
+Baustein-Liste nach A4 (Nachzug B).
+Gemessen an der gerenderten Oberfläche
+(PHP 8.4, Netzsperre) und mit `php -l` unter 7.4/8.4/8.5; nicht am Gerät.
+
+* **Baustein-Liste im Reiter „Einbindung in Loxone“:** Die fünf Störungsquellen liefen bisher über ein ODER mit
+  fünf Eingängen (#22). Jetzt führt eine Kette aus vier ODER mit je zwei Eingängen sie zusammen (#22 bis #25,
+  „Störung Raumklima, Teil 1–3“ und „Störung Raumklima“); jede Zeile verweist nur auf kleinere Nummern. Die
+  folgenden Bausteine rücken um drei (Benachrichtigung jetzt #26, Freigabe-UND #30, Zählerwächter #31).
+  **In Loxone:** nichts zu tun – ein schon gebautes ODER mit fünf Eingängen wirkt gleich.
 
 ## Neu in 0.11.13
 
