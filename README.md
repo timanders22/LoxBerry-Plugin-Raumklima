@@ -3,9 +3,39 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.14 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.15 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.15
+
+Eigene Sprachausgabe bei „Lüften empfohlen“ und „Schimmelgefahr“, ab Werk aus (Entscheidung 36/40).
+Gemessen unter
+PHP 7.4 und 8.5 gegen Attrappen (Fühlerquelle, Music Server, Alexa-NG, Chromecast 4 Lox NG); nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Neu: Raumklima sagt selbst an (ab Werk aus).** Reiter Einstellungen, Abschnitt „Sprachausgabe“: Loxone Music
+  Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG).
+* Zwei Anlässe, je Raum und je mit eigenem Haken: **Lüften empfohlen** und **Schimmelgefahr**. Gesprochen wird
+  einmal beim Eintritt, nicht in jedem Abruf; erst wenn der Zustand endet und wieder eintritt, kommt die nächste
+  Ansage. Ein kurz stummer Fühler löst keine zweite Ansage aus. Treten mehrere Räume im selben Abruf ein, kommt ein
+  Satz mit allen Raumnamen; bei nur einem eingerichteten Raum nennt der Satz keinen Namen.
+* Wer die Ausgabe einschaltet, während ein Zustand schon anhält, hört ihn beim nächsten Abruf einmal.
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen – eine andere Adresse wird beim Speichern
+  abgewiesen (sie trüge den Ansagetext hinaus).
+* Testansage per Knopf im Reiter Test; die Zeile „Ist die Sprachausgabe eingerichtet?“ zeigt Ausgabeart, gewählte
+  Anlässe und wie die letzte Ansage ausging (Alexa-NG/Chromecast werden dabei gefragt, ohne dass dort etwas
+  gesprochen wird).
+* Die Sprechtoken für Alexa-NG und Chromecast 4 Lox NG stehen nie in der Seite, im Protokoll oder in einer
+  Sicherung; eine Sicherungsdatei, die eines trägt, wird abgewiesen, das gespeicherte bleibt. Eine Sicherung aus
+  0.11.14 oder früher wird weiter angenommen; die Sprachausgabe bleibt dabei, wie sie ist. Eine Sicherung aus
+  0.11.15 nimmt 0.11.14 nicht zurück (unbekannte Einstellung `tts`).
+* Eigene **Ruhezeit der Ansagen** (z. B. 22:00 bis 07:00, ab Werk leer): ein Zustand, der in ihr beginnt, wird
+  weder angesagt noch morgens nachgeholt.
+* Mit dem gemeinsamen Sprachmodul 1.1.1 sind Zonen mit leerem Eintrag oder Lautstärke 0 (`1,2,`, `2~0`) und eine
+  Alexa-/Google-Lautstärke 0 nicht mehr zulässig – sie ergäben eine stumme Ansage.
+* Einbindung in Loxone: kein neuer Baustein nötig (Satz in der Baustein-Liste).
+
+**In Loxone:** nichts zu tun; wer die Ansagen will, schaltet sie im Reiter Einstellungen ein.
 
 ## Neu in 0.11.14
 
@@ -242,6 +272,14 @@ Für jeden eingerichteten Raum:
 
 Dazu die Sammelwerte: wie viele Räume gerade gelüftet werden sollten, wie
 viele gefährdet sind, wie viele außerhalb ihres Feuchtekorridors liegen.
+
+- **Ansagen (seit 0.11.15, ab Werk aus):** Auf Wunsch sagt das Plugin selbst an, wenn in einem Raum
+  Lüften empfohlen wird oder Schimmelgefahr eintritt – einmal beim Eintritt, nicht in jedem Abruf;
+  jeder Anlass ist einzeln abwählbar, bei mehreren Räumen nennt der Satz den Raum. Ausgabe über die
+  gemeinsame Sprachausgabe der Plugins dieses Hauses: Loxone Music Server, MusicServer4Home, eine eigene
+  Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG). Adresse und Vorlage müssen im
+  Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung. Eine eigene Ruhezeit der Ansagen (ab Werk
+  leer) hält die Nacht frei; was in sie fällt, wird nicht nachgeholt. Testansage und Prüfzeile im Reiter Test.
 
 ## Warum absolute Feuchte
 

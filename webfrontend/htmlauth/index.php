@@ -163,7 +163,10 @@ function rk_eingabe_felder($formular)
         for ($i = 0; $i < RK_RAEUME; $i++) { $aus[] = $sp[0] . '[' . $i . ']'; }
     }
     return array_merge($aus, array_keys(rk_ui_einzelfelder()),
-                       array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'));
+                       array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'),
+                       /* Sprachausgabe (seit 0.11.15): ansage_x2_felder() nennt nie die Sprechtoken. */
+                       ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel',
+                       'ansage_ruhe_von', 'ansage_ruhe_bis'));
 }
 
 /** Ein Wert aus $_POST - auch fuer 'r_min[3]'. null = nicht mitgeschickt. */
@@ -182,7 +185,8 @@ function rk_eingaben_sammeln($formular, array $falsch)
 {
     $werte = array();
     foreach (rk_eingabe_felder($formular) as $f) {
-        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen'), true)) {
+        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel',
+                               'tts_alexa_token_loeschen', 'tts_google_token_loeschen'), true)) {
             $werte[$f] = !empty($_POST[$f]) ? '1' : '0';
             continue;
         }
@@ -190,7 +194,8 @@ function rk_eingaben_sammeln($formular, array $falsch)
         if (!is_string($v) || strlen($v) > 1024 || !preg_match('//u', $v)) { continue; }
         $werte[$f] = $v;
     }
-    $markierbar = array_merge(rk_eingabe_felder($formular), array('zug_passwort'));
+    $markierbar = array_merge(rk_eingabe_felder($formular),
+                              array('zug_passwort', 'tts_alexa_token', 'tts_google_token'));
     $fa = array();
     foreach ($falsch as $f) {
         if (in_array($f, $markierbar, true) && !in_array($f, $fa, true)) { $fa[] = $f; }
@@ -205,7 +210,7 @@ function rk_eingaben_aktiv($setzen = null)
     if (is_array($setzen)) {
         $f = (isset($setzen['formular']) && is_string($setzen['formular'])) ? $setzen['formular'] : '';
         $erlaubt = rk_eingabe_felder($f);
-        $markierbar = array_merge($erlaubt, array('zug_passwort'));
+        $markierbar = array_merge($erlaubt, array('zug_passwort', 'tts_alexa_token', 'tts_google_token'));
         $w = array();
         $fa = array();
         foreach ((isset($setzen['werte']) && is_array($setzen['werte'])) ? $setzen['werte'] : array() as $k => $v) {
@@ -435,6 +440,9 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
             }
             if (in_array('TOKEN_NEU', (array) $rk_hinw, true)) {
                 $rk_meldungen[] = rk_t('EINST.SICH_TOKEN_NEU');
+            }
+            if (in_array('ANSAGE_BEHALTEN', (array) $rk_hinw, true)) {
+                $rk_meldungen[] = rk_t('EINST.SICH_ANSAGE_BEHALTEN');
             }
             /* Die Zugangsdaten wandern nach geheim.json, NICHT in die
              * Konfiguration. Und es wird gesagt, ob welche dabei waren -
@@ -855,6 +863,30 @@ if ($rk_post && isset($_POST['speichern'])) {
         }
         if (!empty($_POST['zug_loeschen'])) {
             $rk_g_neu = array('benutzer' => '', 'passwort' => '');
+        }
+
+        /* --- Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.11.15) ---
+         * Jede Beanstandung verhindert das Speichern (Nr. 16); kein Sprechtoken steht in einer
+         * Meldung, ein leeres Tokenfeld heisst "behalten", der Haken loescht, beides zugleich
+         * ist ein Widerspruch. Adresse und Vorlage nur im Heimnetz (im Modul). */
+        $rk_tmangel = array();
+        $rk_tbean = array();
+        $rk_cfg['tts'] = ansage_formular_lesen($_POST, rk_tts(), $rk_tmangel, $rk_tbean, rk_ansage_opt(),
+                                               rk_ansage_k());
+        foreach ($rk_tmangel as $rk_tm) { $rk_fehler[] = $rk_tm['text']; }
+        foreach ($rk_tbean as $rk_tb) { $rk_falsch[] = $rk_tb; }
+        $rk_cfg['ansage_lueften'] = !empty($_POST['ansage_lueften']) ? 1 : 0;
+        $rk_cfg['ansage_schimmel'] = !empty($_POST['ansage_schimmel']) ? 1 : 0;
+        /* Ruhezeit der Ansagen (seit 08.10.2026): je Feld HH:MM oder leer, beide oder keines. */
+        $rk_rgut = true;
+        foreach (array('ansage_ruhe_von' => 'EINST.ANSAGE_RUHE', 'ansage_ruhe_bis' => 'EINST.ANSAGE_RUHE_BIS') as $rk_rk => $rk_rb) {
+            list($rk_gut, $rk_w) = $rk_pruefe($rk_rk, $rk_rk, rk_t($rk_rb));
+            if ($rk_gut) { $rk_cfg[$rk_rk] = $rk_w; } else { $rk_rgut = false; }
+        }
+        if ($rk_rgut && rk_ansage_ruhe_grund($rk_cfg['ansage_ruhe_von'], $rk_cfg['ansage_ruhe_bis']) !== '') {
+            $rk_fehler[] = rk_t('FEHLER.ANSAGE_RUHE');
+            $rk_falsch[] = 'ansage_ruhe_von';
+            $rk_falsch[] = 'ansage_ruhe_bis';
         }
     }
 
@@ -1719,6 +1751,28 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
   <p class="sm-hilfe"><?= rk_t('EINST.TAKT_HILFE') ?></p>
 </div>
 
+<h2><?= rk_e(rk_t('EINST.H_ANSAGE')) ?></h2>
+<div class="sm-step"><?= rk_e(rk_t('EINST.ANSAGE_ERKLAERUNG')) ?></div>
+<?= ansage_formular_html(rk_tts(), array(
+    'w' => function ($n, $g) { return rk_ein($n, $g); },
+    'm' => function ($n) { return rk_mark($n); },
+    'c' => function ($n, $g) { return rk_haken($n, $g) !== ''; },
+    'modi' => rk_ansage_modi()), rk_ansage_k()) ?>
+<h3><?= rk_e(rk_t('EINST.ANSAGE_ANLAESSE')) ?></h3>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="ansage_lueften" value="1"<?= rk_haken('ansage_lueften', !empty($rk_cfg['ansage_lueften'])) ?><?= rk_mark('ansage_lueften') ?>> <?= rk_e(rk_t('EINST.ANSAGE_LUEFTEN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="ansage_schimmel" value="1"<?= rk_haken('ansage_schimmel', !empty($rk_cfg['ansage_schimmel'])) ?><?= rk_mark('ansage_schimmel') ?>> <?= rk_e(rk_t('EINST.ANSAGE_SCHIMMEL')) ?></label>
+  <p class="sm-hilfe"><?= rk_e(rk_t('EINST.ANSAGE_ANLAESSE_HILFE')) ?></p>
+</div>
+<div class="sm-feld">
+  <label for="rk_aruhe_von"><?= rk_e(rk_t('EINST.ANSAGE_RUHE')) ?></label>
+  <input data-role="none" type="text" id="rk_aruhe_von" name="ansage_ruhe_von" maxlength="5" placeholder="22:00" value="<?= rk_e(rk_ein('ansage_ruhe_von', $rk_cfg['ansage_ruhe_von'])) ?>"<?= rk_mark('ansage_ruhe_von') ?>>
+  <label for="rk_aruhe_bis"><?= rk_e(rk_t('EINST.ANSAGE_RUHE_BIS')) ?></label>
+  <input data-role="none" type="text" id="rk_aruhe_bis" name="ansage_ruhe_bis" maxlength="5" placeholder="07:00" value="<?= rk_e(rk_ein('ansage_ruhe_bis', $rk_cfg['ansage_ruhe_bis'])) ?>"<?= rk_mark('ansage_ruhe_bis') ?>>
+  <p class="sm-hilfe"><?= rk_e(rk_t('EINST.ANSAGE_RUHE_HILFE')) ?></p>
+</div>
+<p class="sm-hilfe"><?= rk_e(sprintf(rk_t('EINST.ANSAGE_TEST_HINWEIS'), rk_t('REITER.TEST'))) ?></p>
+
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= rk_e(rk_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1727,6 +1781,7 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <h2><?= rk_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= rk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= rk_t('EINST.SICH_WARNUNG') ?></div>
+<p class="sm-hilfe"><?= rk_e(rk_t('EINST.SICH_OHNE_SPRECHTOKEN')) ?></p>
 <?php /* X-3 (Durchgang 01.10.2026): wuerde das eigene Zurueckspielen die
          Sicherung abweisen, steht es gelb am Knopf - mit dem Namen der
          Einstellung und dem Grund, nie mit dem Wert. DIESELBE Pruefung wie
@@ -1951,6 +2006,7 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <?php foreach ($rk_bl['hinweise'] as $rk_h) { ?>
 <p class="sm-hilfe"><b><?= sprintf(rk_e(rk_t('LOX.ZU')), rk_e($rk_h[0])) ?></b> <?= $rk_h[1] ?></p>
 <?php } ?>
+<p class="sm-hilfe"><?= rk_e(rk_t('LOX.ANSAGE_KEIN_BAUSTEIN')) ?></p>
 <div class="sm-hinweis"><?= sprintf(rk_t('LOX.WEITERE_RAEUME'), (int) $rk_bl['nr']) ?></div>
 
 <h3><?= rk_e(rk_t('LOX.H_S6')) ?></h3>
@@ -2078,6 +2134,16 @@ if ($rk_pz[0] > 0) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="mqtt"><?= rk_e(rk_t('TEST.K_MQTT')) ?></button>
+  </form>
+</div>
+
+<h3><?= rk_e(rk_t('TEST.H_ANSAGE')) ?></h3>
+<div class="sm-step"><?= rk_e(rk_t('TEST.ANSAGE_HINWEIS')) ?></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="ansage"><?= rk_e(rk_t('TEST.K_ANSAGE')) ?></button>
   </form>
 </div>
 <?php if ($rk_testausgabe !== '') { ?>

@@ -42,6 +42,9 @@ if (!function_exists('rk_e')) {
 }
 
 require_once __DIR__ . '/rk_klima.php';
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+ * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 /** Wie viele Raeume die Oberflaeche fuehrt. */
 define('RK_RAEUME', 12);
@@ -461,6 +464,15 @@ function rk_vorgaben()
         'mqtt_ein'    => 1,
         'mqtt_topic'  => 'raumklima',
         'aktionstoken' => '',
+        /* ---- Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.11.15) ----
+         * Ab Werk KEINE Ausgabe (Ausgabeart 'aus'). Die beiden Anlaesse sind ab
+         * Werk angehakt: wer die Ausgabe einschaltet, hoert sofort beide. */
+        'tts'             => ansage_vorgaben('aus'),
+        'ansage_lueften'  => 1,
+        'ansage_schimmel' => 1,
+        /* Ruhezeit der Ansagen (seit 08.10.2026), HH:MM; ab Werk leer = keine. */
+        'ansage_ruhe_von' => '',
+        'ansage_ruhe_bis' => '',
     );
 }
 
@@ -555,6 +567,10 @@ function rk_wert_regeln()
             'raeume'        => array('raeume'),
             'zugang'        => array('zugang'),
             'ms_nr'         => array('text'),
+            'ansage_lueften'  => array('flag'),
+            'ansage_schimmel' => array('flag'),
+            'ansage_ruhe_von' => array('zeit'),
+            'ansage_ruhe_bis' => array('zeit'),
         );
     }
     return $regeln;
@@ -1133,6 +1149,14 @@ function rk_config($heilen = true)
     list($tok, $m) = rk_wert_pruefen('aktionstoken', $cfg['aktionstoken']);
     $cfg['aktionstoken'] = ($m === '') ? $tok : '';
     $cfg['mqtt_ein'] = !empty($cfg['mqtt_ein']) ? 1 : 0;
+    /* Sprachausgabe (seit 0.11.15): der Block wird vervollstaendigt, nicht ersetzt. Ungueltige
+     * Werte bleiben stehen - das Modul prueft sie vor jedem Senden erneut (Heimnetz). */
+    list($cfg['tts']) = ansage_vervollstaendigen(is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
+    $cfg['ansage_lueften'] = !empty($cfg['ansage_lueften']) ? 1 : 0;
+    $cfg['ansage_schimmel'] = !empty($cfg['ansage_schimmel']) ? 1 : 0;
+    foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis') as $rz) {
+        $cfg[$rz] = is_string($cfg[$rz]) ? trim($cfg[$rz]) : '';
+    }
     return $cfg;
 }
 
@@ -1174,6 +1198,9 @@ function rk_config_vervollstaendigen()
         }
     }
     foreach ($je_raum as $k => $n) { $fehlt[] = $k . ' (' . $n . ' Raeume)'; }
+    if (isset($daten['tts']) && is_array($daten['tts'])) {
+        foreach (array_keys(array_diff_key(ansage_vorgaben('aus'), $daten['tts'])) as $k) { $fehlt[] = 'tts.' . $k; }
+    }
     if (!$fehlt) { return array(); }
     $cfg = rk_config();
     if (rk_config_lage() !== 'ok') { return array(); }
@@ -3218,6 +3245,246 @@ function rk_abrufen($erzwingen = false)
 }
 
 /* ==================================================================
+ * Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.11.15)
+ * ==================================================================
+ *
+ * Raumklima spricht selbst ueber die gemeinsame Sprachausgabe
+ * (sprachausgabe.php neben dieser Datei). Ab Werk ist die Ausgabe aus.
+ *
+ * Zwei Anlaesse je Raum, je mit eigenem Haken: "Lueften empfohlen" (lueften
+ * geht von 0 auf 1) und "Schimmelgefahr" (schimmel geht auf 1). Gesprochen
+ * wird beim EINTRITT, nicht in jedem Lauf: eine anhaltende Empfehlung sagt
+ * sich einmal an; erst wenn sie endet und wieder eintritt, kommt die naechste.
+ * Ein Raum ohne Aussage (stummer Fuehler, SCHIMMEL -1) aendert den gemerkten
+ * Zustand nicht - ein Funkaussetzer loest keine zweite Ansage aus.
+ *
+ * Erkannt wird im Cron-Lauf (bin/raumklima_abruf.php), nach rk_abrufen() -
+ * gegen den gemerkten Zustand in data/plugins/<ordner>/ansage_zustand.json,
+ * nicht gegen das vorige Abbild. So zaehlt auch ein Eintritt, den ein Knopf
+ * der Oberflaeche oder ?aktion=abrufen berechnet hat, und keiner zweimal.
+ * Die Oberflaeche und der Endpunkt sprechen nie.
+ *
+ * Bestehende Meldewege (MQTT, Endpunkt, Vorlage) bleiben unberuehrt.
+ */
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone). */
+function rk_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function rk_ansage_opt()
+{
+    return array('modi' => rk_ansage_modi());
+}
+
+/** Die Ansageanlaesse: Kennung => Haken in der Konfiguration. */
+function rk_ansage_anlaesse()
+{
+    return array('lueften' => 'ansage_lueften', 'schimmel' => 'ansage_schimmel');
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+function rk_tts()
+{
+    $c = rk_config();
+    list($t) = ansage_vervollstaendigen(isset($c['tts']) && is_array($c['tts']) ? $c['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Ist die Sprachausgabe eingeschaltet? */
+function rk_ansage_an()
+{
+    $t = rk_tts();
+    return is_string($t['mode']) && $t['mode'] !== 'aus' && in_array($t['mode'], rk_ansage_modi(), true);
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte aus der Sprachdatei. */
+function rk_ansage_k()
+{
+    $p = rk_paths();
+    return array(
+        'port'   => ansage_webport(($p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__)))
+                                   . '/config/system/general.json'),
+        'kopf'   => array('User-Agent: LoxBerry Raumklima'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return rk_t($s); },
+        /* Zu diesen Kennungen hat das Modul (1.0.2) keinen Satz in [ANSAGE]; ohne ihn stuenden sie roh in
+         * der Sicherungsmeldung (TTS_EINTRAG: unbekannter Eintrag; KEIN_FELD: tts ist kein Block - gemessen
+         * mit "tts": "aus"). Linieneigene Schluessel wie Intercom 2.2.18 (Entwurf, Stufe 2). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG',
+                              'K_KEIN_FELD' => 'EINST.SICH_TTS_KEIN_FELD'),
+    );
+}
+
+/**
+ * Zustand eines Anlasses in einem Raum: 1 an, 0 aus, null "keine Aussage" -
+ * dann bleibt der gemerkte Zustand stehen.
+ */
+function rk_ansage_zustand_raum($anlass, $e)
+{
+    if (!is_array($e)) { return null; }
+    if ($anlass === 'lueften') {
+        /* Ohne Messwert traegt nur der Nachlauf die Empfehlung - das ist keine
+         * neue Aussage, also auch kein Eintritt und kein Ende. */
+        if (empty($e['ok'])) { return null; }
+        return !empty($e['lueften']) ? 1 : 0;
+    }
+    if ($anlass === 'schimmel') {
+        /* === 1, nicht "wahr": -1 heisst "keine Aussage moeglich". */
+        if (!isset($e['schimmel']) || !is_numeric($e['schimmel']) || (int) $e['schimmel'] < 0) { return null; }
+        return (int) $e['schimmel'] === 1 ? 1 : 0;
+    }
+    return null;
+}
+
+/**
+ * Taugt die Ruhezeit der Ansagen? '' = ja (beide leer oder beide HH:MM und
+ * verschieden), sonst der Fehlerschluessel. Eine einzelne Uhrzeit wird
+ * beanstandet, nicht still als "keine Ruhezeit" gelesen (Nr. 19).
+ */
+function rk_ansage_ruhe_grund($von, $bis)
+{
+    $von = is_string($von) ? trim($von) : '';
+    $bis = is_string($bis) ? trim($bis) : '';
+    if ($von === '' && $bis === '') { return ''; }
+    if ($von === '' || $bis === '' || $von === $bis) { return 'FEHLER.ANSAGE_RUHE'; }
+    return '';
+}
+
+/** Liegt $jetzt in der Ruhezeit der Ansagen? (rk_ruhe_aktiv(): -1 keine, 0 nein, 1 ja) */
+function rk_ansage_ruhe_jetzt($cfg, $jetzt)
+{
+    return rk_ruhe_aktiv(isset($cfg['ansage_ruhe_von']) ? $cfg['ansage_ruhe_von'] : '',
+                         isset($cfg['ansage_ruhe_bis']) ? $cfg['ansage_ruhe_bis'] : '', $jetzt) === 1;
+}
+
+/** Der Satz: mit Raumnamen nur, wenn mehrere Raeume eingerichtet sind. */
+function rk_ansage_satz($anlass, array $namen, $mehrere)
+{
+    $s = 'EINST.SAG_' . strtoupper($anlass);
+    return $mehrere ? sprintf(rk_t($s . '_RAEUME'), implode(', ', $namen)) : rk_t($s . '_EINER');
+}
+
+/**
+ * Die Ansagen dieses Laufs - aus dem Cron-Skript, nach rk_abrufen().
+ *
+ * Wiederholsperre je Anlass und Raum: gemerkt werden Zustand, Beginn und
+ * Zeitpunkt der letzten Ansage (ansage_zustand.json, 0600, ohne Text und ohne
+ * Namen). Gesprochen wird nur, wenn der neue Zustand geschrieben ist - laesst
+ * er sich nicht schreiben, schweigt die Ansage, statt in jedem Lauf zu
+ * sprechen. Mehrere Raeume mit demselben Eintritt kommen in EINEN Satz.
+ * Ist die Ausgabe aus, wird nichts gemerkt (und ein alter Zustand entfernt):
+ * wer sie einschaltet, hoert einen anhaltenden Zustand einmal. Dasselbe gilt
+ * je Anlass fuer seinen Haken. Ins Protokoll kommt nur die Kurzform des
+ * Ergebnisses (ansage_kurz()) mit den Raumnummern - nie der Text.
+ * Rueckgabe: Zahl der gesendeten Ansagen.
+ */
+function rk_ansage_lauf($stand)
+{
+    $p = rk_paths();
+    if ($p['home'] === '') { return 0; }
+    $datei = $p['datadir'] . '/ansage_zustand.json';
+    if (!rk_ansage_an()) {
+        if (is_file($datei)) { @unlink($datei); }
+        return 0;
+    }
+    if (!is_dir($p['datadir'])) { return 0; }
+    /* Zwei gleichzeitige Laeufe duerfen nicht beide denselben Eintritt sehen. */
+    $sperre = @fopen($p['datadir'] . '/.ansage.lock', 'c');
+    if ($sperre === false) { return 0; }
+    if (!flock($sperre, LOCK_EX | LOCK_NB)) { fclose($sperre); return 0; }
+    $cfg = rk_config();
+    $alt = rk_json_lesen($datei);
+    $raeume = rk_raeume();
+    $werte = (is_array($stand) && isset($stand['raeume']) && is_array($stand['raeume'])) ? $stand['raeume'] : array();
+    $jetzt = time();
+    $neu = array();
+    $sprechen = array();
+    foreach (rk_ansage_anlaesse() as $anlass => $haken) {
+        if (empty($cfg[$haken])) { continue; }
+        $neu[$anlass] = array();
+        $namen = array();
+        $nummern = array();
+        foreach ($raeume as $nr => $r) {
+            $v = (isset($alt[$anlass][$nr]) && is_array($alt[$anlass][$nr])) ? $alt[$anlass][$nr] : array();
+            $war = !empty($v['an']);
+            $e = array('an' => $war ? 1 : 0,
+                       'seit' => isset($v['seit']) ? (int) $v['seit'] : 0,
+                       'gesprochen' => isset($v['gesprochen']) ? (int) $v['gesprochen'] : 0);
+            $z = rk_ansage_zustand_raum($anlass, isset($werte[$nr]) ? $werte[$nr] : null);
+            if ($z === 1 && !$war) {
+                $e = array('an' => 1, 'seit' => $jetzt, 'gesprochen' => $jetzt);
+                $namen[] = (string) $r['name'];
+                $nummern[] = (int) $nr;
+            } elseif ($z === 0 && $war) {
+                $e['an'] = 0;
+                $e['seit'] = $jetzt;
+            }
+            $neu[$anlass][(string) $nr] = $e;
+        }
+        if ($namen) { $sprechen[$anlass] = array($namen, $nummern); }
+    }
+    if (json_encode($neu) !== json_encode($alt) && !rk_json_schreiben($datei, $neu, 0600)) {
+        rk_log_gebremst('ansage_zustand', 'Sprachausgabe: der Zustand liess sich nicht schreiben ('
+            . basename($datei) . ') - ohne ihn wird nicht angesagt.', 3600);
+        $sprechen = array();
+    }
+    $n = 0;
+    /* Ruhezeit der Ansagen (seit 08.10.2026): der Eintritt ist oben gemerkt, er wird nur
+     * nicht gesprochen - und auch nicht nachgeholt, damit morgens nicht alles auf einmal kommt. */
+    if ($sprechen && rk_ansage_ruhe_jetzt($cfg, $jetzt)) {
+        foreach ($sprechen as $anlass => $x) {
+            rk_log('Ansage ' . $anlass . ' (Raum ' . implode(', ', $x[1]) . '): Ruhezeit der Ansagen ('
+                . $cfg['ansage_ruhe_von'] . '-' . $cfg['ansage_ruhe_bis'] . ') - nicht gesprochen, nicht nachgeholt.');
+        }
+        $sprechen = array();
+    }
+    if ($sprechen) {
+        $k = rk_ansage_k();
+        $tts = rk_tts();
+        foreach ($sprechen as $anlass => $x) {
+            $r = ansage_sprechen(rk_ansage_satz($anlass, $x[0], count($raeume) > 1), $tts, $k);
+            rk_log('Ansage ' . $anlass . ' (Raum ' . implode(', ', $x[1]) . '): ' . ansage_kurz($r));
+            if ($r['stand'] === 1) { $n++; }
+        }
+    }
+    flock($sperre, LOCK_UN);
+    fclose($sperre);
+    return $n;
+}
+
+/**
+ * Die Zeile im Reiter Test. Rueckgabe array(ok, Text) mit ok 1 Haken, 0 Kreuz,
+ * 2 Strich (aus oder Hinweis). Alexa-NG/Chromecast werden mit selftest=1
+ * gefragt (spricht nicht), der Music Server nie.
+ */
+function rk_pruefe_ansage($offen = true)
+{
+    $k = rk_ansage_k();
+    $k['e'] = function ($s) { return (string) $s; };   // die Tabelle maskiert selbst (rk_e)
+    list($st, $text) = ansage_pruefzeile(rk_tts(), (bool) $offen, $k);
+    if (rk_ansage_an()) {
+        $cfg = rk_config();
+        $an = array();
+        foreach (rk_ansage_anlaesse() as $anlass => $haken) {
+            if (!empty($cfg[$haken])) { $an[] = rk_t('EINST.ANSAGE_' . strtoupper($anlass)); }
+        }
+        $text = rtrim($text);
+        if ($text !== '' && substr($text, -1) !== '.') { $text .= '.'; }
+        $text .= ' ' . ($an ? sprintf(rk_t('PRUEFTEXT.ANSAGE_ANLAESSE'), implode(', ', $an))
+                            : rk_t('PRUEFTEXT.ANSAGE_KEIN_ANLASS'));
+        if (!$an && $st === 1) { $st = -1; }
+        if (rk_ansage_ruhe_grund($cfg['ansage_ruhe_von'], $cfg['ansage_ruhe_bis']) === ''
+            && $cfg['ansage_ruhe_von'] !== '') {
+            $text .= ' ' . sprintf(rk_t('PRUEFTEXT.ANSAGE_RUHE'), $cfg['ansage_ruhe_von'], $cfg['ansage_ruhe_bis']);
+        }
+    }
+    return array($st === 1 ? 1 : ($st === 0 ? 0 : 2), $text);
+}
+
+/* ==================================================================
  * MQTT
  * ================================================================== */
 
@@ -4972,6 +5239,30 @@ function rk_sicherung_lesen($roh, &$namen = null)
          * ebenso _warnung (X-3). */
         if ($k !== '' && $k[0] === '_') { continue; }
 
+        /* Sprachausgabe (seit 0.11.15): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
+         * traegt die Datei eines (auch als Liste oder Zahl), stammt sie nicht aus "Einstellungen
+         * sichern" und wird abgewiesen. Ausgabeart, Adresse und Vorlage werden wie im Formular
+         * geprueft (Heimnetz). Die geltenden Sprechtoken bleiben. */
+        if ($k === 'tts') {
+            $tm = ansage_sicherung_mangel($w);
+            if ($tm) {
+                $mangel[] = sprintf(rk_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm));
+                $namen['tts'] = rk_grund('FEHLER.TTS_TOKEN');
+                continue;
+            }
+            $tg = '';
+            $tp = ansage_wert_pruefen($w, $tg, rk_ansage_modi());
+            if ($tp === null) {
+                $mangel[] = sprintf(rk_t('EINST.SICH_TTS'), ansage_kennung_text($tg, rk_ansage_k()));
+                $namen['tts'] = rk_grund('FEHLER.TTS');
+                continue;
+            }
+            $tj = rk_tts();
+            list($tv) = ansage_vervollstaendigen($tp + $tj, 'aus');
+            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+            $anzahl++;
+            continue;
+        }
         $erg = rk_wert_pruefen($k, $w);
         if ($erg[1] !== '') {
             $wo = isset($erg[2]) ? $erg[2] : null;
@@ -4998,6 +5289,10 @@ function rk_sicherung_lesen($roh, &$namen = null)
     }
     /* Ueber zwei Felder: die Ausschaltschwelle liegt unter der
      * Einschaltschwelle - rk_config() hat sie bis 0.11.13 still angeglichen. */
+    if (!$mangel && rk_ansage_ruhe_grund($neu['ansage_ruhe_von'], $neu['ansage_ruhe_bis']) !== '') {
+        $mangel[] = rk_t('EINST.SICH_ANSAGE_RUHE');
+        $namen['ansage_ruhe_von'] = rk_grund('FEHLER.ANSAGE_RUHE');
+    }
     if (!$mangel && (float) $neu['kuehlfrei_aus'] > (float) $neu['kuehlfrei_ein']) {
         $mangel[] = rk_t('EINST.SICH_KUEHLFREI');
         $namen['kuehlfrei_aus'] = rk_grund('FEHLER.KUEHLFREI');
@@ -5013,7 +5308,18 @@ function rk_sicherung_lesen($roh, &$namen = null)
      * Konfigurationsdatei liegt - Zugangsdaten in einer eigenen Datei -,
      * darf hier fehlen. */
     $fehlend = array();
+    /* Sprachausgabe (seit 0.11.15): eine Sicherung aelterer Fassungen kennt diese drei
+     * Schluessel nicht. Fehlen sie, bleibt, was jetzt gilt (samt Sprechtoken), und die Meldung
+     * sagt es. Jeder andere fehlende Schluessel bleibt eine Beanstandung. */
+    $seit_ansage = array('tts', 'ansage_lueften', 'ansage_schimmel', 'ansage_ruhe_von', 'ansage_ruhe_bis');
+    $jetzt_cfg = null;
     foreach (array_keys(rk_vorgaben()) as $fk) {
+        if (!array_key_exists($fk, $daten) && in_array($fk, $seit_ansage, true)) {
+            if ($jetzt_cfg === null) { $jetzt_cfg = rk_config(); }
+            $neu[$fk] = $jetzt_cfg[$fk];
+            if (!in_array('ANSAGE_BEHALTEN', $hinweise, true)) { $hinweise[] = 'ANSAGE_BEHALTEN'; }
+            continue;
+        }
         if (!array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
             $namen[$fk] = rk_grund('FEHLER.FEHLT');
@@ -5101,7 +5407,7 @@ function rk_sicherung_bauen($cfg, $zugang = null)
             . ' Aktionstoken dieser Anlage'
             . ($mit ? ' UND Benutzername und Passwort der Sensorquelle.'
                     : '. Zugangsdaten der Sensorquelle sind NICHT enthalten.')
-            . ' Wie ein Passwort behandeln.',
+            . ' Wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
         '_plugin'  => 'raumklima',
         '_fassung' => rk_fassung(),
         '_stand'   => date('Y-m-d H:i:s'),
@@ -5110,6 +5416,10 @@ function rk_sicherung_bauen($cfg, $zugang = null)
     $voll = array();
     foreach (rk_vorgaben() as $k => $v) {
         $voll[$k] = array_key_exists($k, $cfg) ? $cfg[$k] : $v;
+    }
+    /* Sprachausgabe (seit 0.11.15): die Sprechtoken gehen nie in eine Sicherung. */
+    if (isset($voll['tts']) && is_array($voll['tts'])) {
+        $voll['tts'] = ansage_sicherung_bereinigen($voll['tts']);
     }
     if ($mit) {
         $voll['zugang'] = array('benutzer' => (string) $zugang['benutzer'],

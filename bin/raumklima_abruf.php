@@ -101,6 +101,11 @@ rk_config_vervollstaendigen();
 
 $rk_stand = rk_abrufen(in_array('--sofort', $rk_argv, true));
 
+/* Sprachausgabe (Nr. 36 b, seit 0.11.15, ab Werk aus): die Ansagen beim Eintritt
+ * "Lueften empfohlen" und "Schimmelgefahr" - siehe rk_ansage_lauf(). Der Rueckgabewert
+ * dieses Skripts haengt weiter nur am Abruf. */
+rk_ansage_lauf($rk_stand);
+
 if (!empty($rk_stand['meldungen'])) {
     /* Ueber die gebremste Meldung im Protokoll - eine Quelle, die eine Woche
      * lang schweigt, soll das Protokoll nicht mit 2016 gleichen Zeilen

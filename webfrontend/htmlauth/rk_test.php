@@ -20,6 +20,7 @@ function rk_test_ausfuehren($welcher)
         case 'mqtt':       return rk_test_mqtt();
         case 'endpunkt':   return rk_test_endpunkt();
         case 'sicherung':  return rk_test_sicherung();
+        case 'ansage':     return rk_test_ansage();
     }
     return 'Unbekannter Test.';
 }
@@ -298,6 +299,12 @@ function rk_selbstpruefung()
             ? sprintf(rk_t('PRUEFTEXT.MELD_FALSCH'), count($mfalsch), implode(', ', array_slice($mfalsch, 0, 4)))
             : sprintf(rk_t('PRUEFTEXT.MELD_OK'), count($mschl)));
     }
+
+    /* ---- 11. Sprachausgabe (Nr. 36 b, seit 0.11.15) ----
+     * Alexa-NG/Chromecast werden mit selftest=1 gefragt (spricht nicht), der Music
+     * Server nie - eine Probe dort spraeche. Aus ist ein Strich, kein Haken. */
+    list($aok, $atext) = rk_pruefe_ansage(true);
+    $add('PRUEF.ANSAGE', $aok, $atext);
 
     return $z;
 }
@@ -785,6 +792,21 @@ function rk_test_endpunkt()
         ? 'Richtig abgewiesen.'
         : 'ACHTUNG: der Endpunkt hat NICHT abgewiesen. Antwort: ' . substr((string) $falsch, 0, 200);
     return implode("\n", $o);
+}
+
+/**
+ * Die Testansage (Nr. 36 b, seit 0.11.15): ein fester Satz aus der Sprachdatei
+ * ueber die eingestellte Ausgabeart, unabhaengig von den Anlaessen. Ins
+ * Protokoll nur die Kurzform - nie Text oder Token.
+ */
+function rk_test_ansage()
+{
+    $k = rk_ansage_k();
+    $r = ansage_testansage(rk_tts(), $k);
+    rk_log('Testansage: ' . ansage_kurz($r));
+    if ($r['stand'] === 1) { return rk_t('TEST.ANSAGE_OK'); }
+    if ($r['stand'] === -1) { return sprintf(rk_t('TEST.ANSAGE_NICHTS'), ansage_kennung_text($r['kennung'], $k)); }
+    return sprintf(rk_t('TEST.ANSAGE_FEHL'), ansage_kennung_text($r['kennung'], $k));
 }
 
 function rk_test_klartext($kuerzel)
