@@ -1286,6 +1286,8 @@ if ($rk_lage === 'kaputt') { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $rk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= rk_t('EINST.WAS_IST_DAS') ?></div>
+
 <?php /* U13 (Durchgang 01.10.2026): EINE gesammelte Legende oben im Reiter
          (Regeln/04). Bis 0.11.13 standen drei Einzellegenden ueber einzelnen
          Reihen, und ueber der Sicherungsreihe nannte die naechste nur Orange
