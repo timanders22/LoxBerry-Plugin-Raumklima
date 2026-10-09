@@ -1193,6 +1193,10 @@ if ($rk_rahmen) {
    Feld ist rot umrandet; aria-invalid sagt es Vorleseprogrammen. Bauart
    ACTiKamera 1.9.26. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 
@@ -2010,6 +2014,11 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <?php } ?>
 <p class="sm-hilfe"><?= rk_e(rk_t('LOX.ANSAGE_KEIN_BAUSTEIN')) ?></p>
 <div class="sm-hinweis"><?= sprintf(rk_t('LOX.WEITERE_RAEUME'), (int) $rk_bl['nr']) ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= rk_e(rk_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= rk_e(rk_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= rk_t('LOX.MUSTERPROJEKT') ?></p>
 
 <h3><?= rk_e(rk_t('LOX.H_S6')) ?></h3>
 <div class="sm-step"><?= rk_t('LOX.S6') ?></div>

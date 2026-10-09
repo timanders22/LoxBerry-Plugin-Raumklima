@@ -3,9 +3,28 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.17 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.18 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.18
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Baustein-Liste folgt dem dort in Loxone Config gebauten Stand.
+
+* Unter der Baustein-Liste steht das Bild der Seite „Raumklima“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste:**
+  * #18 und #19 heißen wie in Config „Schwellwertschalter“ (bisher „Analoger Schwellwertschalter“).
+  * #28 ist der „Analog MinMax-Begrenzer“. VLMIN kommt an seinen Eingang **Min** (untere Grenze),
+    der eigene Vorlauf-Sollwert an den Werteingang. Bisher ging VLMIN laut Liste an den
+    Werteingang.
+  * #31 „Abruf steht“ ist eine **Analogwertvalidierung** (Tmc 900 s = dreifacher Abruftakt, Min 0,
+    Max 999) mit `V = Ausgang von RK_ZAEHLER (#13), En = #32`; bisher ein Schwellwertschalter.
+  * Neu #32: Konstante 1 an En von #31 – die Analogwertvalidierung prüft nur damit.
+  * **In Loxone:** wer #28 oder #31 nach der alten Liste gebaut hat, baut sie so um.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.11.17
 
@@ -440,6 +459,10 @@ Zwei Wege, beide gleichzeitig nutzbar:
 * **MQTT** über das MQTT Gateway von LoxBerry — ohne Broker-Zugangsdaten.
 * **Virtueller Eingang** — der Reiter „Einbindung in Loxone“ erzeugt eine
   fertige Vorlage zum Import, mit Adresse und Wortzeichen darin.
+
+Die Bausteine der Baustein-Liste aus demselben Reiter stehen fertig verbunden auf der Seite
+„Raumklima“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 Fehlende Werte werden **nicht** gesendet und als Strich angezeigt. Eine 0
 wäre bei einer Temperatur eine Falschaussage.

@@ -4948,6 +4948,11 @@ function rk_vorlage()
  * X-10 (0.11.17): die Spalte "Eingaenge verbinden mit" in der Schreibweise von
  * Werkzeuge/leitungen_setzen.py 1.1 - "Ausgang von RK_ALTER (#2)", "I1 = #18, I2 = #19",
  * "Ausgang von #25"; bis 0.11.16 stand dort "#2 RK_ALTER", "Eingang 1: ..., Eingang 2: ...".
+ *
+ * Welle Bild 2 (0.11.18, Entscheidung A): so, wie das Musterprojekt die Liste in
+ * Loxone Config gebaut hat - Begrenzer mit VLMIN an Min (der Baustein hat Input, Min,
+ * Max, AQ; VLMIN ist die untere Grenze, nicht der Eingangswert), Abruf-Waechter als
+ * Analogwertvalidierung mit der Konstante 1 an En als eigener, letzter Zeile.
  */
 function rk_bausteine()
 {
@@ -5023,15 +5028,18 @@ function rk_bausteine()
         array($b(10), rk_t('LOX.B_MERKER'), sprintf(rk_t('LOX.BN_LUEFTEN'), $rname),
               rk_t('LOX.BP_KEINE'), $vf('RK_' . $kurz . '_LUEFTEN')),
         array($b(11), rk_t('LOX.B_BEGRENZER'), sprintf(rk_t('LOX.BN_VLMIN'), $rname),
-              rk_t('LOX.BP_VLMIN'), $vf('RK_' . $kurz . '_VLMIN')),
+              rk_t('LOX.BP_VLMIN'), sprintf(rk_t('LOX.BE_BEGRENZER'), $vf('RK_' . $kurz . '_VLMIN'))),
         /* ---- neu in 0.11.0 ---- */
         array($b(12), rk_t('LOX.B_NICHT'), sprintf(rk_t('LOX.BN_SPERRE'), $rname),
               rk_t('LOX.BP_KEINE'), $vf('RK_' . $kurz . '_SPERRE')),
         array($b(13), rk_t('LOX.B_UND'), sprintf(rk_t('LOX.BN_FREIGABE'), $rname),
               rk_t('LOX.BP_KEINE'),
               sprintf(rk_t('LOX.BE_FREIGABE'), $vf('RK_' . $kurz . '_LUEFTEN'), $vb(12))),
-        array($b(14), rk_t('LOX.B_SCHWELL'), rk_t('LOX.BN_ZAEHLER_STEHT'),
-              rk_t('LOX.BP_ZAEHLER'), $vf('RK_ZAEHLER')),
+        array($b(14), rk_t('LOX.B_VALIDIERUNG'), rk_t('LOX.BN_ZAEHLER_STEHT'),
+              rk_t('LOX.BP_ZAEHLER'), sprintf(rk_t('LOX.BE_VALIDIERUNG'), $vf('RK_ZAEHLER'), $vb(15))),
+        /* ---- neu in 0.11.18: die Konstante 1 an En von $b(14) ---- */
+        array($b(15), rk_t('LOX.B_KONSTANTE'), rk_t('LOX.BN_KONSTANTE'),
+              rk_t('LOX.BP_KONSTANTE'), '–'),
     );
 
     $hinweise = array(
@@ -5042,6 +5050,7 @@ function rk_bausteine()
         array($vb(11), rk_t('LOX.ZU_VLMIN')),
         array($vb(13), rk_t('LOX.ZU_FREIGABE')),
         array($vb(14), rk_t('LOX.ZU_ZAEHLER')),
+        array($vb(15), rk_t('LOX.ZU_KONSTANTE')),
     );
 
     return array('felder' => $f, 'bausteine' => $bausteine, 'hinweise' => $hinweise,
