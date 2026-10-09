@@ -3310,11 +3310,9 @@ function rk_ansage_k()
         'kopf'   => array('User-Agent: LoxBerry Raumklima'),
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
         't'      => function ($s) { return rk_t($s); },
-        /* Zu diesen Kennungen hat das Modul (1.0.2) keinen Satz in [ANSAGE]; ohne ihn stuenden sie roh in
-         * der Sicherungsmeldung (TTS_EINTRAG: unbekannter Eintrag; KEIN_FELD: tts ist kein Block - gemessen
-         * mit "tts": "aus"). Linieneigene Schluessel wie Intercom 2.2.18 (Entwurf, Stufe 2). */
-        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG',
-                              'K_KEIN_FELD' => 'EINST.SICH_TTS_KEIN_FELD'),
+        /* K_TTS_EINTRAG und K_KEIN_FELD: die Saetze bringt das Modul seit 1.1.2 selbst mit (wortgleich
+         * mit den bisherigen EINST.SICH_TTS_EINTRAG/SICH_TTS_KEIN_FELD); die Umlenkungen sind seit
+         * 0.11.17 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
     );
 }
 
@@ -4946,6 +4944,10 @@ function rk_vorlage()
  * Gebaut wird die Liste fuer den ERSTEN eingerichteten Raum. Fuer jeden
  * weiteren sind es dieselben Bausteine mit seiner Nummer davor - alles
  * zwoelfmal auszuschreiben hilft niemandem.
+ *
+ * X-10 (0.11.17): die Spalte "Eingaenge verbinden mit" in der Schreibweise von
+ * Werkzeuge/leitungen_setzen.py 1.1 - "Ausgang von RK_ALTER (#2)", "I1 = #18, I2 = #19",
+ * "Ausgang von #25"; bis 0.11.16 stand dort "#2 RK_ALTER", "Eingang 1: ..., Eingang 2: ...".
  */
 function rk_bausteine()
 {
@@ -4988,7 +4990,7 @@ function rk_bausteine()
     }
     /* Verweis auf ein Feld - gerechnet, nie getippt. */
     $vf = function ($titel) use ($platz) {
-        return isset($platz[$titel]) ? '#' . $platz[$titel] . ' ' . $titel : $titel;
+        return isset($platz[$titel]) ? sprintf(rk_t('LOX.BE_AUSGANG_VON'), $titel, '#' . $platz[$titel]) : $titel;
     };
 
     /* --- Die Bausteine. $b(1) ist der erste, gezaehlt hinter den Feldern. --- */

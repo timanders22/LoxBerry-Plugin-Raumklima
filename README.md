@@ -3,9 +3,24 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.16 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.17 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.17
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `Ausgang von RK_ALTER (#2)` statt „#2 RK_ALTER“, `I1 = #18, I2 = #19` statt
+  „Eingang 1: #18, Eingang 2: #19“, an der Benachrichtigung `Ausgang von #25` (dass nur dieser eine
+  Ausgang daran kommt, sagt der Hinweis darunter). Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Die Sätze zu einem
+  unbekannten Eintrag im Block der Sprachausgabe und zu einem Block, der kein Feld von Einstellungen
+  ist, bringt jetzt das Modul mit; die beiden eigenen Umlenkungen sind gestrichen (gleicher Wortlaut).
+  Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die Meldung „Port abgewiesen“ nennt
+  das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.11.16
 
