@@ -3,9 +3,40 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.19 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.20 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.20
+
+Einbindung in Loxone in Vollausstattung: drei Seiten aus dem LoxBerry-Plugins Musterprojekt mit drei
+Bildern und je einer Schritt-für-Schritt-Anleitung („So übernehmen Sie diese Seite“). Seite 1 liegt im
+Musterprojekt auf den zwei Config-Seiten „Raumklima“ und „Raumklima 2“; der Reiter zeigt dazu ein
+viertes Bild.
+
+* **Seite „Raumklima“** (39 Zeilen): die Lücken #3, #4, #7, #11, #12, #14, #15 und #17 tragen jetzt die
+  Felder, die der Reiter dort schon führte (NOHNE, NSTEHT, SPREAD, BESTIN, BESTSTD, NAMPELLOS, AMPEL, RUHE).
+  **Berichtigt:** die Analogwertvalidierung „Abruf steht“ (#31) hatte keinen Abnehmer – ein stehender
+  LoxBerry meldete nie etwas. Jetzt hängt sie über das ODER #33 und die Einschaltverzögerung #34 (300 s)
+  an der Benachrichtigung #26; die Verzögerung schluckt auch den kurzen Impuls, den die
+  Schwellwertschalter #18/#19 bei jeder Abfrage geben. „Schimmelgefahr hält an“ (#21) hängt am neuen
+  Schwellwertschalter #38 (nur SCHIMMEL = 1 zählt, -1 „keine Aussage“ nicht), der Begrenzer #28 bekommt
+  Max 25 °C und den Eingang #39 „Kühlvorlauf-Sollwert (eigene Quelle)“. Neu drei Status: Zustand mit
+  Klartext, Schimmelampel, Lüftungsgelegenheit mit Uhrzeit.
+* **Seite „Raumklima Werte“** (39 Zeilen): Raumluft, kälteste Fläche, Feuchtebilanz, Außenluft und
+  Haus-Übersicht als Status, Meldung „Feuchte seit 2 Stunden außerhalb des Korridors“.
+* **Seite „Raumklima Lüften und Kühlen“** (34 Zeilen): Lüftungsempfehlung, CO₂, Kühlen, Lüftungsanlage
+  und Wäsche als Status, Meldungen „Fenster schließen“ und „Vereisung“, ein Freigabe-Ausgang für die
+  Flächenkühlung.
+* **Textberichtigungen:** Meldungstext an #26, Ausgang zum Fensterantrieb an #30; die Feldzeilen heißen wie
+  die übrigen Eingänge „Virtueller HTTP-Eingang (Vorlage „Raumklima“)“. Der Hinweis zum UND #30
+  sagte, die Empfehlung allein genüge nicht – das Plugin sperrt bei Regen, Sturm und drohendem Tauwasser
+  aber schon selbst (LUEFTEN = 0); das UND ist die zweite Sicherung.
+* **In Loxone:** wer die Seite nach der Liste bis 0.11.19 gebaut hat, entfernt die Leitungen #6 → #21 und
+  #25 → #26, stellt „Max“ an #28 auf 25 und ergänzt die Zeilen ab #33. Vorlage und Antwortzeile sind
+  unverändert – kein neuer Import nötig.
+* Englische Oberfläche: die Bausteinnamen stehen deutsch wie im Musterprojekt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.11.19
 
@@ -466,9 +497,11 @@ Zwei Wege, beide gleichzeitig nutzbar:
 * **Virtueller Eingang** — der Reiter „Einbindung in Loxone“ erzeugt eine
   fertige Vorlage zum Import, mit Adresse und Wortzeichen darin.
 
-Die Bausteine der Baustein-Liste aus demselben Reiter stehen fertig verbunden auf der Seite
-„Raumklima“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
-einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
+Die Bausteine der drei Baustein-Listen aus demselben Reiter stehen fertig verbunden auf den Seiten
+„Raumklima“, „Raumklima Werte“ und „Raumklima Lüften und Kühlen“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen. Jede Liste hat im Reiter eine
+Schritt-für-Schritt-Anleitung und ein Bild der Seite.
 
 Fehlende Werte werden **nicht** gesendet und als Strich angezeigt. Eine 0
 wäre bei einer Temperatur eine Falschaussage.

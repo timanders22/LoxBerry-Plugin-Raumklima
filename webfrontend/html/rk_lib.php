@@ -4953,6 +4953,15 @@ function rk_vorlage()
  * Loxone Config gebaut hat - Begrenzer mit VLMIN an Min (der Baustein hat Input, Min,
  * Max, AQ; VLMIN ist die untere Grenze, nicht der Eingangswert), Abruf-Waechter als
  * Analogwertvalidierung mit der Konstante 1 an En als eigener, letzter Zeile.
+ *
+ * Welle Bild 15 (0.11.20, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
+ * uebernehmen koennen; Entwurf Welle 15 rk, Entscheidungen 1-13 wie empfohlen, 17.10.2026): DREI Seiten
+ * wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt, Abschnitte "Raumklima" 39,
+ * "Raumklima Werte" 39, "Raumklima Lueften und Kuehlen" 34 Zeilen), je mit Schritten, "Zu #" und
+ * Hinweisen. Die Zeilen sind deutsch wortgleich mit der Liste; Bausteinnamen in beiden Sprachen deutsch.
+ * Rueckgabe: array('seiten' => array(array('seite', 'bild', 'zeilen', 'schritte', 'zu', 'hinweise'), ...),
+ * 'raum', 'nr', 'kurz'); Zeile: array(Nr, Typ, Name, Parameter, Eingaenge, Feldzeile?). Die Zellen sind
+ * Klartext (index.php maskiert), Schritte, "Zu #" und Hinweise freigegebenes HTML aus der Sprachdatei.
  */
 function rk_bausteine()
 {
@@ -4964,97 +4973,273 @@ function rk_bausteine()
     if ($kurz === '') { $kurz = 'RAUM' . $rn; }
     $kurz = substr($kurz, 0, 12);
 
-    /* --- Die Felder, die die Bausteine unten brauchen --- */
-    $felder = array(
-        array('RK_OK',                     'RK_FELD.OK'),
-        array('RK_ALTER',                  'RK_FELD.ALTER'),
-        array('RK_NOHNE',                  'RK_FELD.NOHNE'),
-        array('RK_NSTEHT',                 'RK_FELD.NSTEHT'),
-        array('RK_' . $kurz . '_LUEFTEN',  'RK_FELD.LUEFTEN'),
-        array('RK_' . $kurz . '_SCHIMMEL', 'RK_FELD.SCHIMMEL'),
-        array('RK_' . $kurz . '_SPREAD',   'RK_FELD.SPREAD'),
-        array('RK_' . $kurz . '_VLMIN',    'RK_FELD.VLMIN'),
-        array('RK_' . $kurz . '_RALTER',   'RK_FELD.RALTER'),
-        array('RK_' . $kurz . '_STEHT',    'RK_FELD.STEHT'),
-        array('RK_' . $kurz . '_BESTIN',   'RK_FELD.BESTIN'),
-        array('RK_' . $kurz . '_BESTSTD',  'RK_FELD.BESTSTD'),
-        /* ---- neu in 0.11.0 ---- */
-        array('RK_ZAEHLER',                'RK_FELD.ZAEHLER'),
-        array('RK_NAMPELLOS',              'RK_FELD.NAMPELLOS'),
-        array('RK_' . $kurz . '_AMPEL',    'RK_FELD.AMPEL'),
-        array('RK_' . $kurz . '_SPERRE',   'RK_FELD.SPERRE'),
-        array('RK_' . $kurz . '_RUHE',     'RK_FELD.RUHE'),
-    );
-    $f = array();
-    $nr = 0;
+    /* Welle Bild 15 (0.11.20): {RAUM} in einem Text ist der Raumname. Kein sprintf - viele dieser
+     * Texte tragen ein Prozentzeichen ("80 % Feuchte"), und sprintf laese es als Umwandlung. */
+    $r = function ($s) use ($rname) { return str_replace('{RAUM}', $rname, (string) $s); };
+    $t = function ($k) use ($r) { return $r(rk_t('LOX.' . $k)); };
+    /* Dasselbe fuer Saetze, die die Oberflaeche ROH ausgibt (Schritte, Hinweise): der Raumname kommt
+     * maskiert hinein - er stammt aus den Einstellungen. Die Tabellenzellen maskiert erst index.php. */
+    $rh = function ($s) use ($rname) { return str_replace('{RAUM}', rk_e($rname), (string) $s); };
+    $th = function ($k) use ($rh) { return $rh(rk_t('LOX.' . $k)); };
+
+    /* Eine Seite: $ordnung zaehlt die Zeilen, danach erst entstehen die Zellen - so duerfen Verweise
+     * auch nach vorn zeigen (Seite 1: #21 -> #38, #26 -> #34, #28 -> #39). Felder heissen wie in der
+     * Antwortzeile (OK, LUEFTEN ...), Bausteine klein (sws_alt ...). */
     $platz = array();
-    foreach ($felder as $e) {
-        $nr++;
-        $platz[$e[0]] = $nr;
-        $f[] = array('nr' => $nr, 'titel' => $e[0], 'bedeutung' => rk_t($e[1]));
-    }
-    /* Verweis auf ein Feld - gerechnet, nie getippt. */
-    $vf = function ($titel) use ($platz) {
-        return isset($platz[$titel]) ? sprintf(rk_t('LOX.BE_AUSGANG_VON'), $titel, '#' . $platz[$titel]) : $titel;
+    $titel = array();
+    $neu_seite = function (array $ordnung, array $raumfelder) use (&$platz, &$titel, $kurz) {
+        $platz = array();
+        $titel = array();
+        foreach (array_values($ordnung) as $i => $id) {
+            $platz[$id] = $i + 1;
+            if (strtoupper($id) === $id) {
+                $titel[$id] = in_array($id, $raumfelder, true) ? 'RK_' . $kurz . '_' . $id : 'RK_' . $id;
+            }
+        }
     };
+    /* Verweise - gerechnet, nie getippt: '#n', "Ausgang von RK_... (#n)", "Ausgang E von #n". */
+    $n = function ($id) use (&$platz) { return '#' . $platz[$id]; };
+    $z = function ($id) use (&$platz) { return (int) $platz[$id]; };
+    $vf = function ($id) use (&$platz, &$titel) {
+        return sprintf(rk_t('LOX.BE_AUSGANG_VON'), $titel[$id], '#' . $platz[$id]);
+    };
+    $ve = function ($id) use (&$platz) { return sprintf(rk_t('LOX.BE_AUSGANG_E'), '#' . $platz[$id]); };
+    $ein = function ($x) { return sprintf(rk_t('LOX.BE_EINGANG'), $x); };
+    $i12 = function ($a, $b) { return sprintf(rk_t('LOX.BE_STOERUNG'), $a, $b); };
+    $v = function (array $quellen) {
+        $teile = array();
+        foreach (array_values($quellen) as $i => $q) { $teile[] = sprintf(rk_t('LOX.BE_V'), $i + 1, $q); }
+        return implode(', ', $teile);
+    };
+    /* Feldzeile: Typ "Virtueller HTTP-Eingang (Vorlage ...)", Spalte "Eingaenge" "—" - wie in
+     * Musterprojekt/baustein_listen.txt (Stand 17.10.2026, Entwurf Welle 15 rk E6). Bis 0.11.19 hiessen die
+     * Feldzeilen "virtueller Eingang (aus der Vorlage)" mit "— (kommt aus der Importdatei)". */
+    $feld = function ($id, $param) use (&$platz, &$titel) {
+        return array($platz[$id], rk_t('LOX.B_FELD_HTTP'), $titel[$id], $param, rk_t('LOX.BE_STRICH'), true);
+    };
+    $bs = function ($id, $typ, $name, $param, $eing) use (&$platz) {
+        return array($platz[$id], $typ, $name, $param, $eing, false);
+    };
+    $seiten = array();
 
-    /* --- Die Bausteine. $b(1) ist der erste, gezaehlt hinter den Feldern. --- */
-    $anzf = $nr;
-    $b = function ($i) use ($anzf) { return $anzf + $i; };
-    $vb = function ($i) use ($anzf) { return '#' . ($anzf + $i); };
-
-    $bausteine = array(
-        array($b(1), rk_t('LOX.B_SCHWELL'), rk_t('LOX.BN_ABRUF_ALT'),
-              rk_t('LOX.BP_ABRUF_ALT'), $vf('RK_ALTER')),
-        array($b(2), rk_t('LOX.B_SCHWELL'), sprintf(rk_t('LOX.BN_RAUM_STUMM'), $rname),
-              rk_t('LOX.BP_RAUM_STUMM'), $vf('RK_' . $kurz . '_RALTER')),
-        array($b(3), rk_t('LOX.B_NICHT'), rk_t('LOX.BN_KEINE_WERTE'),
-              rk_t('LOX.BP_KEINE'), $vf('RK_OK')),
-        array($b(4), rk_t('LOX.B_EINVERZ'), sprintf(rk_t('LOX.BN_SCHIMMEL'), $rname),
-              rk_t('LOX.BP_SCHIMMEL'), $vf('RK_' . $kurz . '_SCHIMMEL')),
-        /* Regel A4 (Nachzug G2, 02.10.2026): ein ODER belegt hoechstens zwei
-         * Eingaenge. Fuenf Stoerungsquellen brauchen die Kette $b(5) bis $b(8);
-         * jede Zeile verweist nur auf kleinere Nummern. */
-        array($b(5), rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 1), rk_t('LOX.BP_KEINE'),
-              sprintf(rk_t('LOX.BE_STOERUNG'), $vb(1), $vb(2))),
-        array($b(6), rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 2), rk_t('LOX.BP_KEINE'),
-              sprintf(rk_t('LOX.BE_STOERUNG'), $vb(5), $vb(3))),
-        array($b(7), rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 3), rk_t('LOX.BP_KEINE'),
-              sprintf(rk_t('LOX.BE_STOERUNG'), $vb(6), $vb(4))),
-        array($b(8), rk_t('LOX.B_ODER'), rk_t('LOX.BN_STOERUNG'), rk_t('LOX.BP_KEINE'),
-              sprintf(rk_t('LOX.BE_STOERUNG'), $vb(7), $vf('RK_' . $kurz . '_STEHT'))),
-        array($b(9), rk_t('LOX.B_BENACHR'), rk_t('LOX.BN_MELDUNG'),
-              rk_t('LOX.BP_BENACHR'), sprintf(rk_t('LOX.BE_NUR_ODER'), $vb(8))),
-        array($b(10), rk_t('LOX.B_MERKER'), sprintf(rk_t('LOX.BN_LUEFTEN'), $rname),
-              rk_t('LOX.BP_KEINE'), $vf('RK_' . $kurz . '_LUEFTEN')),
-        array($b(11), rk_t('LOX.B_BEGRENZER'), sprintf(rk_t('LOX.BN_VLMIN'), $rname),
-              rk_t('LOX.BP_VLMIN'), sprintf(rk_t('LOX.BE_BEGRENZER'), $vf('RK_' . $kurz . '_VLMIN'))),
-        /* ---- neu in 0.11.0 ---- */
-        array($b(12), rk_t('LOX.B_NICHT'), sprintf(rk_t('LOX.BN_SPERRE'), $rname),
-              rk_t('LOX.BP_KEINE'), $vf('RK_' . $kurz . '_SPERRE')),
-        array($b(13), rk_t('LOX.B_UND'), sprintf(rk_t('LOX.BN_FREIGABE'), $rname),
-              rk_t('LOX.BP_KEINE'),
-              sprintf(rk_t('LOX.BE_FREIGABE'), $vf('RK_' . $kurz . '_LUEFTEN'), $vb(12))),
-        array($b(14), rk_t('LOX.B_VALIDIERUNG'), rk_t('LOX.BN_ZAEHLER_STEHT'),
-              rk_t('LOX.BP_ZAEHLER'), sprintf(rk_t('LOX.BE_VALIDIERUNG'), $vf('RK_ZAEHLER'), $vb(15))),
-        /* ---- neu in 0.11.18: die Konstante 1 an En von $b(14) ---- */
-        array($b(15), rk_t('LOX.B_KONSTANTE'), rk_t('LOX.BN_KONSTANTE'),
-              rk_t('LOX.BP_KONSTANTE'), '–'),
+    /* ================= Seite 1 "Raumklima" (39 Zeilen) =================
+     * Bis 0.11.19 die einzige Liste (32 Zeilen, Nummern wie heute). Welle Bild 15 (Entwurf Welle 15 rk,
+     * Entscheidungen 2-7): #21 haengt am Schwellwertschalter #38 statt direkt an SCHIMMEL, die
+     * Benachrichtigung #26 an der Einschaltverzoegerung #34 (ODER #33 mit der bisher toten
+     * Analogwertvalidierung #31), der Begrenzer #28 bekommt den Eingang #39 und Max 25; neu #33-#39. */
+    $neu_seite(array('OK', 'ALTER', 'NOHNE', 'NSTEHT', 'LUEFTEN', 'SCHIMMEL', 'SPREAD', 'VLMIN', 'RALTER',
+                     'STEHT', 'BESTIN', 'BESTSTD', 'ZAEHLER', 'NAMPELLOS', 'AMPEL', 'SPERRE', 'RUHE',
+                     'sws_alt', 'sws_stumm', 'nicht_ok', 'evz_schimmel', 'oder1', 'oder2', 'oder3', 'oder4',
+                     'benachr', 'merker', 'begrenzer', 'nicht_sperre', 'und', 'valid', 'konst', 'oder_gesamt',
+                     'evz_stoerung', 'st_zustand', 'st_ampel', 'st_gelegenheit', 'sws_schimmel', 've_kuehl'),
+               array('LUEFTEN', 'SCHIMMEL', 'SPREAD', 'VLMIN', 'RALTER', 'STEHT', 'BESTIN', 'BESTSTD',
+                     'AMPEL', 'SPERRE', 'RUHE'));
+    $zeilen = array(
+        $feld('OK', rk_t('LOX.BF_OK')),
+        $feld('ALTER', rk_t('LOX.BF_ALTER')),
+        $feld('NOHNE', rk_t('LOX.BF_NOHNE')),
+        $feld('NSTEHT', rk_t('LOX.BF_NSTEHT')),
+        $feld('LUEFTEN', rk_t('LOX.BF_LUEFTEN')),
+        $feld('SCHIMMEL', rk_t('RK_FELD.SCHIMMEL')),
+        $feld('SPREAD', rk_t('LOX.BF_SPREAD')),
+        $feld('VLMIN', rk_t('LOX.BF_VLMIN')),
+        $feld('RALTER', rk_t('LOX.BF_RALTER')),
+        $feld('STEHT', rk_t('LOX.BF_STEHT')),
+        $feld('BESTIN', rk_t('LOX.BF_BESTIN')),
+        $feld('BESTSTD', rk_t('LOX.BF_BESTSTD')),
+        $feld('ZAEHLER', rk_t('LOX.BF_ZAEHLER')),
+        $feld('NAMPELLOS', rk_t('LOX.BF_NAMPELLOS')),
+        $feld('AMPEL', rk_t('LOX.BF_AMPEL')),
+        $feld('SPERRE', rk_t('LOX.BF_SPERRE')),
+        $feld('RUHE', rk_t('LOX.BF_RUHE')),
+        $bs('sws_alt', rk_t('LOX.B_SCHWELL'), rk_t('LOX.BN_ABRUF_ALT'), rk_t('LOX.BP_ABRUF_ALT'), $vf('ALTER')),
+        $bs('sws_stumm', rk_t('LOX.B_SCHWELL'), sprintf(rk_t('LOX.BN_RAUM_STUMM'), $rname),
+            rk_t('LOX.BP_RAUM_STUMM'), $vf('RALTER')),
+        $bs('nicht_ok', rk_t('LOX.B_NICHT'), rk_t('LOX.BN_KEINE_WERTE'), rk_t('LOX.BP_KEINE'), $vf('OK')),
+        $bs('evz_schimmel', rk_t('LOX.B_EINVERZ'), sprintf(rk_t('LOX.BN_SCHIMMEL'), $rname),
+            rk_t('LOX.BP_SCHIMMEL'), $ein($n('sws_schimmel'))),
+        /* Regel A4 (Nachzug G2, 02.10.2026): ein ODER belegt hoechstens zwei Eingaenge; jede Zeile der
+         * Kette verweist nur auf kleinere Nummern. */
+        $bs('oder1', rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 1), rk_t('LOX.BP_KEINE'),
+            $i12($n('sws_alt'), $n('sws_stumm'))),
+        $bs('oder2', rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 2), rk_t('LOX.BP_KEINE'),
+            $i12($n('oder1'), $n('nicht_ok'))),
+        $bs('oder3', rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 3), rk_t('LOX.BP_KEINE'),
+            $i12($n('oder2'), $n('evz_schimmel'))),
+        $bs('oder4', rk_t('LOX.B_ODER'), rk_t('LOX.BN_STOERUNG'), rk_t('LOX.BP_KEINE'),
+            $i12($n('oder3'), $vf('STEHT'))),
+        $bs('benachr', rk_t('LOX.B_BENACHR'), rk_t('LOX.BN_MELDUNG'), $t('BP_BENACHR'), $ein($n('evz_stoerung'))),
+        $bs('merker', rk_t('LOX.B_MERKER'), sprintf(rk_t('LOX.BN_LUEFTEN'), $rname), rk_t('LOX.BP_KEINE'),
+            $vf('LUEFTEN')),
+        $bs('begrenzer', rk_t('LOX.B_BEGRENZER'), sprintf(rk_t('LOX.BN_VLMIN'), $rname), rk_t('LOX.BP_VLMIN'),
+            sprintf(rk_t('LOX.BE_BEGRENZER'), $n('ve_kuehl'), $vf('VLMIN'))),
+        $bs('nicht_sperre', rk_t('LOX.B_NICHT'), sprintf(rk_t('LOX.BN_SPERRE'), $rname), rk_t('LOX.BP_KEINE'),
+            $vf('SPERRE')),
+        $bs('und', rk_t('LOX.B_UND'), sprintf(rk_t('LOX.BN_FREIGABE'), $rname), rk_t('LOX.BP_FREIGABE'),
+            sprintf(rk_t('LOX.BE_FREIGABE'), $vf('LUEFTEN'), $n('nicht_sperre'))),
+        $bs('valid', rk_t('LOX.B_VALIDIERUNG'), rk_t('LOX.BN_ZAEHLER_STEHT'), rk_t('LOX.BP_ZAEHLER'),
+            sprintf(rk_t('LOX.BE_VALIDIERUNG'), $vf('ZAEHLER'), $n('konst'))),
+        /* neu in 0.11.18: die Konstante 1 an En von "Abruf steht" */
+        $bs('konst', rk_t('LOX.B_KONSTANTE'), rk_t('LOX.BN_KONSTANTE'), rk_t('LOX.BP_KONSTANTE'), '–'),
+        /* ---- neu in 0.11.20 (Welle Bild 15) ---- */
+        $bs('oder_gesamt', rk_t('LOX.B_ODER'), rk_t('LOX.BN_STOERUNG_GESAMT'),
+            sprintf(rk_t('LOX.BP_STOERUNG_GESAMT'), $n('oder4'), $n('valid')), $i12($n('oder4'), $ve('valid'))),
+        $bs('evz_stoerung', rk_t('LOX.B_EINVERZ'), rk_t('LOX.BN_STOERUNG_BEST'),
+            sprintf(rk_t('LOX.BP_STOERUNG_BEST'), $n('sws_alt'), $n('sws_stumm')), $ein($n('oder_gesamt'))),
+        $bs('st_zustand', rk_t('LOX.B_STATUS'), $t('BN_ZUSTAND'), $t('BP_ZUSTAND'),
+            $v(array($n('OK'), $n('ALTER'), $n('NOHNE'), $n('NSTEHT'), $ve('valid'), $n('RALTER'), $n('STEHT'),
+                     $n('NAMPELLOS')))),
+        $bs('st_ampel', rk_t('LOX.B_STATUS'), $t('BN_AMPEL'), sprintf(rk_t('LOX.BP_AMPEL'), '%'),
+            $v(array($n('AMPEL'), $n('SPREAD'), $n('evz_schimmel')))),
+        $bs('st_gelegenheit', rk_t('LOX.B_STATUS'), $t('BN_GELEGENHEIT'), $t('BP_GELEGENHEIT'),
+            $v(array($n('LUEFTEN'), $n('SPERRE'), $n('RUHE'), $n('BESTIN'), $n('BESTSTD')))),
+        $bs('sws_schimmel', rk_t('LOX.B_SCHWELL'), $t('BN_SCHIMMEL_ERKANNT'), $t('BP_SCHIMMEL_ERKANNT'),
+            $ein($n('SCHIMMEL'))),
+        $bs('ve_kuehl', rk_t('LOX.B_SCHIEBER'), $t('BN_KUEHLVORLAUF'),
+            sprintf(rk_t('LOX.BP_KUEHLVORLAUF'), $n('begrenzer')), rk_t('LOX.BE_STRICH')),
+    );
+    $seiten[] = array(
+        'seite' => 'Raumklima', 'bild' => 'einbindung_loxone.png', 'zeilen' => $zeilen,
+        /* Im Musterprojekt liegt diese Liste auf zwei Config-Seiten; das zweite Bild zeigt "Raumklima 2"
+         * (Nr. 5, 8, 11, 12, 16, 17, 27-30, 37, 39). */
+        'bild2' => 'einbindung_loxone_2.png', 'seite2' => 'Raumklima 2',
+        'schritte' => array(
+            $th('S1_SCHRITT1'), $th('S1_SCHRITT2'),
+            sprintf(rk_t('LOX.S1_SCHRITT3'), $z('RUHE'), $z('konst')),
+            sprintf(rk_t('LOX.S1_SCHRITT4'), $z('evz_stoerung')),
+            sprintf(rk_t('LOX.S1_SCHRITT5'), $z('begrenzer'), $z('ve_kuehl')),
+            $rh(sprintf(rk_t('LOX.S1_SCHRITT6'), $z('begrenzer'), $z('valid'))),
+            $th('S1_SCHRITT7'),
+        ),
+        'zu' => array(
+            array($n('sws_alt'), rk_t('LOX.ZU_ABRUF_ALT')),
+            array($n('sws_alt') . ', ' . $n('sws_stumm') . ', ' . $n('evz_stoerung'),
+                  sprintf(rk_t('LOX.ZU_IMPULS'), $n('evz_stoerung'))),
+            array($n('evz_schimmel'), rk_t('LOX.ZU_SCHIMMEL')),
+            array($n('oder1') . '–' . $n('oder4') . ', ' . $n('oder_gesamt'),
+                  sprintf(rk_t('LOX.ZU_ODER'), $n('oder_gesamt'))),
+            array($n('benachr'), sprintf(rk_t('LOX.ZU_BENACHR'), $n('evz_stoerung'))),
+            array($n('merker'), rk_t('LOX.ZU_MERKER')),
+            array($n('begrenzer'), sprintf(rk_t('LOX.ZU_VLMIN'), $n('ve_kuehl'))),
+            array($n('und'), rk_t('LOX.ZU_FREIGABE')),
+            array($n('valid'), rk_t('LOX.ZU_ZAEHLER')),
+            array($n('valid') . ', ' . $n('oder_gesamt'), sprintf(rk_t('LOX.ZU_STEHT'), $n('oder_gesamt'))),
+            array($n('konst'), rk_t('LOX.ZU_KONSTANTE')),
+            array($n('sws_schimmel'), rk_t('LOX.ZU_MINUS1')),
+        ),
+        'hinweise' => array(
+            rk_t('LOX.S1_H_MELDUNG'),
+            sprintf(rk_t('LOX.S1_H_UMBAU'), $z('SCHIMMEL'), $z('evz_schimmel'), $z('oder4'), $z('benachr'),
+                    $z('begrenzer'), $z('oder_gesamt')),
+            sprintf(rk_t('LOX.WEITERE_RAEUME'), $rn),
+            rk_t('LOX.S1_H_TOKEN'),
+            rk_t('LOX.S1_H_GRENZE'),
+        ),
     );
 
-    $hinweise = array(
-        array($vb(1), rk_t('LOX.ZU_ABRUF_ALT')),
-        array($vb(4), rk_t('LOX.ZU_SCHIMMEL')),
-        array($vb(5) . '–' . $vb(8), sprintf(rk_t('LOX.ZU_ODER'), $vb(8))),
-        array($vb(9), sprintf(rk_t('LOX.ZU_BENACHR'), $vb(8))),
-        array($vb(11), rk_t('LOX.ZU_VLMIN')),
-        array($vb(13), rk_t('LOX.ZU_FREIGABE')),
-        array($vb(14), rk_t('LOX.ZU_ZAEHLER')),
-        array($vb(15), rk_t('LOX.ZU_KONSTANTE')),
+    /* ================= Seite 2 "Raumklima Werte" (39 Zeilen) ================= */
+    $neu_seite(array('T', 'RF', 'TAU', 'ABS', 'OBERT', 'OBERRF', 'ENTH', 'SCHWUEL', 'FEUCHT', 'TROCKEN', 'TREND',
+                     'DUSCHE', 'NASS24', 'NASS7T', 'GEWINN', 'ERFOLG', 'EINTRAG', 'AT', 'ARF', 'ATAU', 'AABS',
+                     'AMITTEL', 'HEIZFALL', 'NLUEFT', 'NSCHIMMEL', 'NFEUCHT', 'NTROCKEN', 'NCO2', 'NFENSTER',
+                     'NKUEHL', 'NVEREIST', 'st_raumluft', 'st_flaeche', 'st_bilanz', 'st_aussen', 'st_haus',
+                     'oder_korridor', 'evz_korridor', 'benachr_korridor'),
+               array('T', 'RF', 'TAU', 'ABS', 'OBERT', 'OBERRF', 'ENTH', 'SCHWUEL', 'FEUCHT', 'TROCKEN', 'TREND',
+                     'DUSCHE', 'NASS24', 'NASS7T', 'GEWINN', 'ERFOLG', 'EINTRAG'));
+    $zeilen = array();
+    foreach (array('T', 'RF', 'TAU', 'ABS', 'OBERT', 'OBERRF', 'ENTH', 'SCHWUEL', 'FEUCHT', 'TROCKEN', 'TREND',
+                   'DUSCHE', 'NASS24', 'NASS7T', 'GEWINN', 'ERFOLG', 'EINTRAG', 'AT', 'ARF', 'ATAU', 'AABS',
+                   'AMITTEL', 'HEIZFALL', 'NLUEFT', 'NSCHIMMEL', 'NFEUCHT', 'NTROCKEN', 'NCO2', 'NFENSTER',
+                   'NKUEHL', 'NVEREIST') as $f) {
+        $zeilen[] = $feld($f, rk_t('LOX.BF_' . $f));
+    }
+    $zeilen[] = $bs('st_raumluft', rk_t('LOX.B_STATUS'), $t('BN_RAUMLUFT'), $t('BP_RAUMLUFT'),
+                    $v(array($n('T'), $n('RF'), $n('TAU'), $n('ABS'), $n('FEUCHT'), $n('TROCKEN'), $n('SCHWUEL'),
+                             $n('ENTH'))));
+    $zeilen[] = $bs('st_flaeche', rk_t('LOX.B_STATUS'), $t('BN_FLAECHE'), $t('BP_FLAECHE'),
+                    $v(array($n('OBERT'), $n('OBERRF'), $n('NASS24'), $n('NASS7T'))));
+    $zeilen[] = $bs('st_bilanz', rk_t('LOX.B_STATUS'), $t('BN_BILANZ'), $t('BP_BILANZ'),
+                    $v(array($n('GEWINN'), $n('TREND'), $n('DUSCHE'), $n('EINTRAG'), $n('ERFOLG'))));
+    $zeilen[] = $bs('st_aussen', rk_t('LOX.B_STATUS'), $t('BN_AUSSEN'), $t('BP_AUSSEN'),
+                    $v(array($n('AT'), $n('ARF'), $n('ATAU'), $n('AABS'), $n('AMITTEL'), $n('HEIZFALL'))));
+    $zeilen[] = $bs('st_haus', rk_t('LOX.B_STATUS'), $t('BN_HAUS'), $t('BP_HAUS'),
+                    $v(array($n('NLUEFT'), $n('NSCHIMMEL'), $n('NFEUCHT'), $n('NTROCKEN'), $n('NCO2'),
+                             $n('NFENSTER'), $n('NKUEHL'), $n('NVEREIST'))));
+    $zeilen[] = $bs('oder_korridor', rk_t('LOX.B_ODER'), $t('BN_KORRIDOR_ODER'), $t('BP_KORRIDOR_ODER'),
+                    $i12($n('FEUCHT'), $n('TROCKEN')));
+    $zeilen[] = $bs('evz_korridor', rk_t('LOX.B_EINVERZ'), $t('BN_KORRIDOR_EVZ'), $t('BP_KORRIDOR_EVZ'),
+                    $ein($n('oder_korridor')));
+    $zeilen[] = $bs('benachr_korridor', rk_t('LOX.B_BENACHRICHTIGUNG'), $t('BN_KORRIDOR'), $t('BP_KORRIDOR'),
+                    $ein($n('evz_korridor')));
+    $seiten[] = array(
+        'seite' => 'Raumklima Werte', 'bild' => 'einbindung_loxone_werte.png', 'zeilen' => $zeilen,
+        'schritte' => array(
+            $th('S2_SCHRITT1'),
+            sprintf(rk_t('LOX.S2_SCHRITT2'), $z('NVEREIST'), $z('T'), $z('RF'), $z('ABS'), $z('OBERRF')),
+            $th('S2_SCHRITT3'), $th('S2_SCHRITT4'), $th('S2_SCHRITT5'),
+        ),
+        'zu' => array(
+            array($n('oder_korridor') . ', ' . $n('evz_korridor'), rk_t('LOX.ZU_KORRIDOR')),
+        ),
+        'hinweise' => array(rk_t('LOX.S2_H_STRICH'), rk_t('LOX.S2_H_KORRIDOR'), rk_t('LOX.S2_H_HAUS')),
     );
 
-    return array('felder' => $f, 'bausteine' => $bausteine, 'hinweise' => $hinweise,
-                 'raum' => $rname, 'nr' => $rn, 'kurz' => $kurz);
+    /* ================= Seite 3 "Raumklima Luften und Kuehlen" (34 Zeilen) ================= */
+    $felder3 = array('LUEFTEN', 'DAUER', 'KOSTEN', 'ZWANG', 'FENSTER', 'FENSTERZU', 'CO2', 'CO2HOCH', 'CO2ANSTIEG',
+                     'CO2ERWARTET', 'CO2VOLL', 'CO2LW', 'KUEHLEN', 'KUEHLG', 'KUEHLFREI', 'KBESTIN', 'KBESTSTD',
+                     'ZULUFT', 'WRG', 'FORTLUFT', 'VEREIST', 'TROCKNEN', 'TROCKENREST');
+    $neu_seite(array_merge($felder3, array('st_empfehlung', 'st_co2', 'st_kuehlen', 'st_anlage', 'st_waesche',
+                     'evz_fenster', 'benachr_fenster', 'evz_vereist', 'benachr_vereist', 'sws_kuehl', 'evz_kuehl')),
+               $felder3);
+    $zeilen = array();
+    foreach ($felder3 as $f) {
+        /* LUEFTEN steht schon auf Seite 1 - hier als weitere Instanz, mit eigenem Text. */
+        $zeilen[] = $feld($f, rk_t($f === 'LUEFTEN' ? 'LOX.BF_LUEFTEN_S3' : 'LOX.BF_' . $f));
+    }
+    $zeilen[] = $bs('st_empfehlung', rk_t('LOX.B_STATUS'), $t('BN_EMPFEHLUNG'), $t('BP_EMPFEHLUNG'),
+                    $v(array($n('LUEFTEN'), $n('DAUER'), $n('KOSTEN'), $n('ZWANG'), $n('FENSTER'), $n('FENSTERZU'))));
+    $zeilen[] = $bs('st_co2', rk_t('LOX.B_STATUS'), $t('BN_CO2'), $t('BP_CO2'),
+                    $v(array($n('CO2'), $n('CO2HOCH'), $n('CO2ANSTIEG'), $n('CO2ERWARTET'), $n('CO2VOLL'),
+                             $n('CO2LW'))));
+    $zeilen[] = $bs('st_kuehlen', rk_t('LOX.B_STATUS'), $t('BN_KUEHLEN'), $t('BP_KUEHLEN'),
+                    $v(array($n('KUEHLEN'), $n('KUEHLG'), $n('KUEHLFREI'), $n('KBESTIN'), $n('KBESTSTD'))));
+    $zeilen[] = $bs('st_anlage', rk_t('LOX.B_STATUS'), $t('BN_ANLAGE'), $t('BP_ANLAGE'),
+                    $v(array($n('ZULUFT'), $n('WRG'), $n('FORTLUFT'), $n('VEREIST'))));
+    $zeilen[] = $bs('st_waesche', rk_t('LOX.B_STATUS'), $t('BN_WAESCHE'), $t('BP_WAESCHE'),
+                    $v(array($n('TROCKNEN'), $n('TROCKENREST'))));
+    $zeilen[] = $bs('evz_fenster', rk_t('LOX.B_EINVERZ'), $t('BN_FENSTER_EVZ'), $t('BP_FENSTER_EVZ'),
+                    $ein($n('FENSTERZU')));
+    $zeilen[] = $bs('benachr_fenster', rk_t('LOX.B_BENACHRICHTIGUNG'), $t('BN_FENSTER_MELD'), $t('BP_FENSTER_MELD'),
+                    $ein($n('evz_fenster')));
+    $zeilen[] = $bs('evz_vereist', rk_t('LOX.B_EINVERZ'), $t('BN_VEREIST_EVZ'), $t('BP_VEREIST_EVZ'),
+                    $ein($n('VEREIST')));
+    $zeilen[] = $bs('benachr_vereist', rk_t('LOX.B_BENACHRICHTIGUNG'), $t('BN_VEREIST_MELD'), $t('BP_VEREIST_MELD'),
+                    $ein($n('evz_vereist')));
+    $zeilen[] = $bs('sws_kuehl', rk_t('LOX.B_SCHWELL'), $t('BN_KUEHLFREI_SWS'), $t('BP_KUEHLFREI_SWS'),
+                    $ein($n('KUEHLFREI')));
+    $zeilen[] = $bs('evz_kuehl', rk_t('LOX.B_EINVERZ'), $t('BN_KUEHLFREI_EVZ'),
+                    sprintf(rk_t('LOX.BP_KUEHLFREI_EVZ'), $n('sws_kuehl')), $ein($n('sws_kuehl')));
+    $seiten[] = array(
+        'seite' => 'Raumklima Lüften und Kühlen', 'bild' => 'einbindung_loxone_lueften_kuehlen.png',
+        'zeilen' => $zeilen,
+        'schritte' => array(
+            $th('S3_SCHRITT1'),
+            sprintf(rk_t('LOX.S3_SCHRITT2'), count($felder3), $titel['LUEFTEN'], $titel['CO2']),
+            $th('S3_SCHRITT3'), $th('S3_SCHRITT4'), $th('S3_SCHRITT5'),
+        ),
+        'zu' => array(
+            array($n('evz_fenster'), rk_t('LOX.ZU_FENSTER')),
+            array($n('sws_kuehl'), rk_t('LOX.ZU_MINUS1')),
+            array($n('evz_kuehl'), rk_t('LOX.ZU_KUEHL_IMPULS')),
+        ),
+        'hinweise' => array(
+            sprintf(rk_t('LOX.S3_H_FREIGABE'), $z('evz_kuehl')),
+            rk_t('LOX.S3_H_FENSTERKONTAKT'),
+            rk_t('LOX.S3_H_CO2'),
+            rk_t('LOX.ANSAGE_KEIN_BAUSTEIN'),
+        ),
+    );
+
+    return array('seiten' => $seiten, 'raum' => $rname, 'nr' => $rn, 'kurz' => $kurz);
 }
 
 /** Die Statuszeile fuer den Miniserver. */

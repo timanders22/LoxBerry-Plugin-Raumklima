@@ -1197,6 +1197,11 @@ if ($rk_rahmen) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 15 (0.11.20): Seiten, Schritte und Hinweise je Baustein-Liste (Bauart Dashboard 0.9.32). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 
@@ -1990,35 +1995,54 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 
 <h3><?= rk_e(rk_t('LOX.H_S5')) ?></h3>
 <div class="sm-step"><?= rk_t('LOX.S5') ?></div>
-<?php $rk_bl = rk_bausteine(); ?>
+<?php
+/* Welle Bild 15 (0.11.20): drei Seiten aus dem LoxBerry-Plugins Musterprojekt, je immer sichtbar mit
+ * Ueberschrift (= Seitenname), Kasten "So uebernehmen Sie diese Seite", Tabelle, "Zu #", Hinweisen, Bild
+ * und Link. Bis 0.11.19 stand hier eine Liste mit 32 Zeilen. Die Zellen kommen als Klartext aus
+ * rk_bausteine() und werden hier maskiert; Schritte, "Zu #" und Hinweise sind freigegebenes HTML aus
+ * [LOX] (der Raumname steht darin schon maskiert). */
+$rk_bl = rk_bausteine(); ?>
 <p class="sm-hilfe"><?= sprintf(rk_t('LOX.BAUSTEINE_FUER'), rk_e($rk_bl['raum']), (int) $rk_bl['nr']) ?></p>
+<?php foreach ($rk_bl['seiten'] as $rk_s) { ?>
+<h4 class="sm-h4"><?= rk_e($rk_s['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= rk_e(rk_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($rk_s['schritte'] as $rk_x) { ?>
+<li><?= $rk_x ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th><?= rk_e(rk_t('LOX.SP_NR')) ?></th><th><?= rk_e(rk_t('LOX.SP_TYP')) ?></th>
     <th><?= rk_e(rk_t('LOX.SP_NAME')) ?></th><th><?= rk_e(rk_t('LOX.SP_PARAM')) ?></th>
     <th><?= rk_e(rk_t('LOX.SP_EING')) ?></th></tr>
-<?php foreach ($rk_bl['felder'] as $rk_z) { ?>
-<tr><td><?= (int) $rk_z['nr'] ?></td>
-    <td><?= rk_e(rk_t('LOX.B_FELD')) ?></td>
-    <td><span class="sm-mono"><?= rk_e($rk_z['titel']) ?></span></td>
-    <td><?= rk_e($rk_z['bedeutung']) ?></td>
-    <td><?= rk_e(rk_t('LOX.BE_AUS_VORLAGE')) ?></td></tr>
-<?php } ?>
-<?php foreach ($rk_bl['bausteine'] as $rk_z) { ?>
-<tr><td><b><?= (int) $rk_z[0] ?></b></td><td><?= rk_e($rk_z[1]) ?></td>
-    <td><?= rk_e($rk_z[2]) ?></td><td><?= rk_e($rk_z[3]) ?></td>
+<?php foreach ($rk_s['zeilen'] as $rk_z) { ?>
+<tr><td><?= $rk_z[5] ? (int) $rk_z[0] : '<b>' . (int) $rk_z[0] . '</b>' ?></td><td><?= rk_e($rk_z[1]) ?></td>
+    <td><?= $rk_z[5] ? '<span class="sm-mono">' . rk_e($rk_z[2]) . '</span>' : rk_e($rk_z[2]) ?></td>
+    <td><?= rk_e($rk_z[3]) ?></td>
     <td><?= rk_e($rk_z[4]) ?></td></tr>
 <?php } ?>
 </table>
-<?php foreach ($rk_bl['hinweise'] as $rk_h) { ?>
+<?php foreach ($rk_s['zu'] as $rk_h) { ?>
 <p class="sm-hilfe"><b><?= sprintf(rk_e(rk_t('LOX.ZU')), rk_e($rk_h[0])) ?></b> <?= $rk_h[1] ?></p>
 <?php } ?>
-<p class="sm-hilfe"><?= rk_e(rk_t('LOX.ANSAGE_KEIN_BAUSTEIN')) ?></p>
-<div class="sm-hinweis"><?= sprintf(rk_t('LOX.WEITERE_RAEUME'), (int) $rk_bl['nr']) ?></div>
+<div class="sm-warnung"><b><?= rk_e(rk_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($rk_s['hinweise'] as $rk_x) { ?>
+<li><?= $rk_x ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= rk_e(rk_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= rk_e(rk_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= rk_e($rk_s['bild']) ?>" alt="<?= rk_e(sprintf(rk_t('LOX.BILD_ALT'), $rk_s['seite'])) ?>" loading="lazy">
+<figcaption><?= rk_e(sprintf(rk_t('LOX.BILD_UNTERSCHRIFT'), $rk_s['seite'])) ?></figcaption>
 </figure>
+<?php if (!empty($rk_s['bild2'])) { ?>
+<figure class="sm-bild">
+<img src="<?= rk_e($rk_s['bild2']) ?>" alt="<?= rk_e(sprintf(rk_t('LOX.BILD_ALT'), $rk_s['seite2'])) ?>" loading="lazy">
+<figcaption><?= rk_e(rk_t('LOX.BILD_UNTERSCHRIFT_2')) ?></figcaption>
+</figure>
+<?php } ?>
 <p class="sm-hilfe"><?= rk_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 
 <h3><?= rk_e(rk_t('LOX.H_S6')) ?></h3>
 <div class="sm-step"><?= rk_t('LOX.S6') ?></div>
