@@ -1197,6 +1197,9 @@ if ($rk_rahmen) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Gruppe 3 / MQTT (0.11.21): Kopierknopf der Namenstabelle (Bauart Bewaesserung 0.9.44). */
+.sm-wrap button.sm-kopier { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc;
+    border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
 /* Welle Bild 15 (0.11.20): Seiten, Schritte und Hinweise je Baustein-Liste (Bauart Dashboard 0.9.32). */
 .sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
@@ -1914,6 +1917,16 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 <div class="sm-seite<?= $rk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= rk_e(rk_t('LOX.H_VORLAGE')) ?></h2>
 <div class="sm-step"><?= rk_t('LOX.ERKLAERUNG') ?></div>
+<?php
+/* Gruppe 3 / MQTT (0.11.21; Entwurf Musterprojekt/entwurf_gruppe3_rk.txt 2.5/2.6, Nachtrag 2 Gruppe 1): MQTT
+ * ist der Weg des Musterprojekts (Schritte 1-6), der bisherige Weg ueber den Virtuellen HTTP-Eingang steht
+ * zugeklappt unter "Bestehende Anlagen". Alle Namen kommen aus derselben Rechnung wie der Sendeweg
+ * (rk_mqtt_gateway_name()); Namenstabelle und Hakenliste aus rk_mqtt_namen(). Keine Importvorlage fuer die
+ * Werte: je Name ein Virtueller Eingang. */
+$rk_nt = rk_mqtt_namen();
+$rk_gw = (int) $rk_mqtt['fassung'];
+$rk_takt = max(300, min(3600, (int) (is_numeric($rk_cfg['takt']) ? $rk_cfg['takt'] : 300)));
+?>
 
 <?php if (!$rk_raeume) { ?>
 <div class="sm-warnung"><?= rk_t('LOX.KEINE_RAEUME') ?></div>
@@ -1921,77 +1934,93 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 
 <h3><?= rk_e(rk_t('LOX.H_S1')) ?></h3>
 <div class="sm-step"><?= rk_t('LOX.S1') ?></div>
+<?php if (!empty($rk_cfg['mqtt_ein'])) { ?>
+<div class="sm-hinweis" id="rk-mqtt-ein"><?= rk_e(sprintf(rk_t('LOX.MQ_EIN'), $rk_thema)) ?></div>
+<?php } else { ?>
+<div class="sm-warnung" id="rk-mqtt-aus"><span class="sm-aus"><?= rk_e(rk_t('LOX.MQ_AUS')) ?></span></div>
+<?php } ?>
 
 <h3><?= rk_e(rk_t('LOX.H_S2')) ?></h3>
-<div class="sm-step"><?= rk_t('LOX.S2') ?></div>
+<?php /* Die Fassung des Gateways entscheidet (rk_mqtt_zustand()['fassung']): V1 braucht das Abo (das Plugin
+         bringt es selbst mit), V2 die Haken; ist sie nicht lesbar, stehen beide Faelle da. */ ?>
+<?php if ($rk_gw < 2) { ?>
+<div class="<?= rk_abo_da() ? 'sm-hinweis' : 'sm-warnung' ?>"><?= rk_abo_text() ?></div>
+<?php } ?>
+<?php if ($rk_gw <= 0 || $rk_gw >= 2) {
+    $rk_haken = array();
+    $rk_haken_muster = 0;
+    foreach ($rk_nt as $rk_ne) {
+        if (!$rk_ne['haken']) { continue; }
+        $rk_haken[] = $rk_ne;
+        if ($rk_ne['muster']) { $rk_haken_muster++; }
+    } ?>
+<p class="sm-hilfe" id="rk-v2"><?= rk_e(sprintf(rk_t('LOX.MQ_S2_V2'), $rk_thema)) ?></p>
+<div class="sm-breit"><table class="sm-tbl" id="rk-hakenliste">
+<tr><th>#</th><th><?= rk_e(rk_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_SEITE')) ?></th></tr>
+<?php foreach ($rk_haken as $rk_hi => $rk_h) { ?>
+<tr><td><?= (int) $rk_hi + 1 ?></td><td><span class="sm-mono"><?= rk_e($rk_thema . '/' . $rk_h['thema']) ?></span></td><td><span class="sm-mono"><?= rk_e($rk_h['name']) ?></span></td><td><?= $rk_h['muster'] ? rk_e(rk_t('ALLG.JA')) : '&ndash;' ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= rk_e(sprintf(rk_t('LOX.HAKEN_ZAHL'), count($rk_haken), $rk_haken_muster)) ?> <?= rk_e(rk_t('LOX.HAKEN_RESET')) ?></p>
+<?php } ?>
+<p class="sm-hilfe" id="rk-reconnect"><?= rk_e(rk_t('LOX.RECONNECT')) ?></p>
 
 <h3><?= rk_e(rk_t('LOX.H_S3')) ?></h3>
-<div class="sm-step"><?= rk_t('LOX.S3') ?></div>
-
-<h4><?= rk_e(rk_t('LOX.H_ADRESSE')) ?></h4>
-<p class="sm-hilfe"><?= rk_t('LOX.ADRESSE_HILFE') ?></p>
-<table class="sm-tbl">
-<tr><th><?= rk_e(rk_t('LOX.SP_ZWECK')) ?></th><th><?= rk_e(rk_t('LOX.SP_ADRESSE')) ?></th></tr>
-<tr><td><?= rk_e(rk_t('LOX.Z_STATUS')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=status') ?></span></td></tr>
-<tr><td><?= rk_e(rk_t('LOX.Z_JSON')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=json') ?></span></td></tr>
-<tr><td><?= rk_e(rk_t('LOX.Z_ABRUFEN')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=abrufen') ?></span></td></tr>
-<?php /* Die vierte Adresse. Bis 0.11.2 stand sie nur im Kopfkommentar von
-         webfrontend/html/index.php - der Anwender musste sie aus dem
-         Quelltext holen. Die Nummer ist der erste eingerichtete Raum,
-         damit das Beispiel an dieser Anlage wirklich antwortet. */
-   /* U16 (Durchgang 01.10.2026): ohne eingerichteten Raum keine Adresse -
-    * die Beispielnummer 1 antwortete dann mit 404 RAUM_UNBEKANNT (gemessen,
-    * Bericht oberflaeche Nr. 18). */
-   if ($rk_raeume) {
-       $rk_bsp = (int) array_keys($rk_raeume)[0]; ?>
-<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=raum&nr=' . $rk_bsp) ?></span></td></tr>
-<?php } else { ?>
-<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><?= rk_e(rk_t('LOX.Z_RAUM_ERST')) ?></td></tr>
+<div class="sm-step"><?= rk_t('LOX.S3') ?>
+<ul class="sm-schritte">
+<li><?= rk_e(rk_t('LOX.NT_DIGITAL')) ?></li>
+<li><?= rk_e(rk_t('LOX.NT_RECHTE')) ?></li>
+<li><?= rk_e(rk_t('LOX.NT_MUSTER')) ?></li>
+<li><?= rk_e(rk_t('LOX.NT_WEITERE')) ?></li>
+</ul></div>
+<?php /* Der Kopierknopf braucht kein navigator.clipboard (LoxBerry laeuft ueber http, dort fehlt es): er
+         markiert den Namen in einem Hilfsfeld und kopiert mit execCommand; geht beides nicht, steht danach der
+         Name auf dem Knopf (Bauart Bewaesserung 0.9.44). */ ?>
+<div class="sm-breit"><table class="sm-tbl" id="rk-namen">
+<tr><th><?= rk_e(rk_t('LOX.NT_NAME')) ?></th><th><?= rk_e(rk_t('LOX.NT_BEDEUTUNG')) ?></th><th><?= rk_e(rk_t('LOX.NT_BEREICH_SP')) ?></th><th><?= rk_e(rk_t('LOX.NT_ART')) ?></th><th><?= rk_e(rk_t('LOX.NT_FEHLT')) ?></th></tr>
+<?php foreach ($rk_nt as $rk_ne) { if ($rk_ne['gruppe'] === 'bestand') { continue; } ?>
+<tr><td style="white-space:nowrap"><span class="sm-mono"><?= rk_e($rk_ne['name']) ?></span> <button data-role="none" type="button" class="sm-kopier" data-name="<?= rk_e($rk_ne['name']) ?>" title="<?= rk_e(rk_t('LOX.NT_KOPIEREN')) ?>"><?= rk_e(rk_t('LOX.NT_KOPIEREN')) ?></button></td>
+<td><?= rk_e($rk_ne['bedeutung'] !== '' ? rk_klartext($rk_ne['bedeutung']) : '') ?><?php if ($rk_ne['muster']) { ?> <span class="sm-hilfe">(<?= rk_e(rk_t('LOX.NT_SEITE')) ?>)</span><?php } ?></td>
+<td class="sm-hilfe"><?= rk_e($rk_ne['bereich']) ?></td>
+<td><?= rk_e(rk_t($rk_ne['art'] === 'text' ? 'LOX.NT_TEXT' : 'LOX.NT_ZAHL')) ?></td>
+<td><?= $rk_ne['fehlt'] !== null ? '<span class="sm-mono">' . (int) $rk_ne['fehlt'] . '</span>' : '&ndash;' ?></td></tr>
 <?php } ?>
-</table>
-
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= rk_t('LEGENDE.TECHNIK_XML') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_TOKEN') ?></span>
-</div>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= rk_e(rk_t('LOX.K_VI')) ?></button>
-  </form>
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= rk_e(rk_t('LOX.K_TOKEN_NEU')) ?></button>
-  </form>
-</div>
-<p class="sm-hilfe"><?= rk_t('LOX.TOKEN_HINWEIS') ?></p>
-
-<h3><?= rk_e(rk_t('LOX.H_NUMMERN')) ?></h3>
-<p class="sm-hilfe"><?= rk_t('LOX.NUMMERN_HILFE') ?></p>
-<table class="sm-tbl">
-<tr><th><?= rk_e(rk_t('LOX.SP_NUMMER')) ?></th><th><?= rk_e(rk_t('LOX.SP_RAUM')) ?></th>
-    <th><?= rk_e(rk_t('LOX.SP_PRAEFIX')) ?></th></tr>
-<?php if ($rk_raeume) { foreach ($rk_raeume as $rk_nr => $rk_r) { ?>
-<tr><td><?= (int) $rk_nr ?></td><td><?= rk_e($rk_r['name']) ?></td>
-    <td><span class="sm-mono">R<?= (int) $rk_nr ?></span></td></tr>
-<?php } } else { ?>
-<tr><td colspan="3"><?= rk_e(rk_t('LOX.KEINE_RAEUME_KURZ')) ?></td></tr>
+</table></div>
+<p class="sm-hilfe"><?= rk_t('LOX.NT_FEHLT_HILFE') ?></p>
+<details>
+<summary><?= rk_e(rk_t('LOX.NT_BESTAND_TITEL')) ?></summary>
+<p class="sm-hilfe"><?= rk_e(rk_t('LOX.NT_BESTAND_TEXT')) ?></p>
+<div class="sm-breit"><table class="sm-tbl" id="rk-namen-bestand">
+<tr><th><?= rk_e(rk_t('LOX.NT_NAME')) ?></th><th><?= rk_e(rk_t('LOX.NT_BEDEUTUNG')) ?></th><th><?= rk_e(rk_t('LOX.NT_BEREICH_SP')) ?></th></tr>
+<?php foreach ($rk_nt as $rk_ne) { if ($rk_ne['gruppe'] !== 'bestand') { continue; } ?>
+<tr><td><span class="sm-mono"><?= rk_e($rk_ne['name']) ?></span></td><td><?= rk_e($rk_ne['bedeutung'] !== '' ? rk_klartext($rk_ne['bedeutung']) : '') ?></td><td class="sm-hilfe"><?= rk_e($rk_ne['bereich']) ?></td></tr>
 <?php } ?>
-</table>
-
-<h3><?= rk_e(rk_t('LOX.H_FELDER')) ?></h3>
-<table class="sm-tbl">
-<tr><th><?= rk_e(rk_t('LOX.SP_FELD')) ?></th><th><?= rk_e(rk_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
-<?php foreach (rk_felder() as $rk_f => $rk_info) { ?>
-<tr><td><span class="sm-mono">R&lt;n&gt;<?= rk_e($rk_f) ?></span></td>
-    <td><?= rk_e(rk_t($rk_info[3])) ?><?= $rk_info[0] !== '' ? ' [' . rk_e($rk_info[0]) . ']' : '' ?></td></tr>
-<?php } ?>
-</table>
+</table></div>
+</details>
+<script>
+(function () {
+  var knoepfe = document.querySelectorAll('#rk-namen button.sm-kopier');
+  for (var i = 0; i < knoepfe.length; i++) {
+    knoepfe[i].addEventListener('click', function () {
+      var f = document.createElement('textarea');
+      f.value = this.getAttribute('data-name');
+      f.setAttribute('readonly', '');
+      f.style.position = 'absolute'; f.style.left = '-9999px';
+      document.body.appendChild(f);
+      f.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(f);
+      this.textContent = ok ? '✓' : this.getAttribute('data-name');
+    });
+  }
+})();
+</script>
 
 <h3><?= rk_e(rk_t('LOX.H_S4')) ?></h3>
-<div class="sm-warnung"><?= rk_t('LOX.S4') ?></div>
+<div class="sm-step"><?= sprintf(rk_t('LOX.S4'), rk_e(rk_mqtt_gateway_name('status/zaehler')), 5 * $rk_takt, $rk_takt,
+    rk_e(rk_mqtt_gateway_name('status/ok')), rk_e(rk_mqtt_gateway_name('alter')),
+    rk_e(rk_mqtt_gateway_name('raum' . ($rk_raeume ? (int) array_keys($rk_raeume)[0] : 1) . '/alter'))) ?></div>
 
 <h3><?= rk_e(rk_t('LOX.H_S5')) ?></h3>
 <div class="sm-step"><?= rk_t('LOX.S5') ?></div>
@@ -2045,7 +2074,83 @@ $rk_bl = rk_bausteine(); ?>
 <?php } ?>
 
 <h3><?= rk_e(rk_t('LOX.H_S6')) ?></h3>
-<div class="sm-step"><?= rk_t('LOX.S6') ?></div>
+<div class="sm-step"><?= sprintf(rk_t('LOX.S6'), rk_e(rk_mqtt_gateway_name('status/zaehler')), $rk_takt) ?></div>
+
+<?php /* Bestehende Anlagen: der Weg ueber den Virtuellen HTTP-Eingang, unveraendert bis auf die Platzhalter
+         fehlender Werte (-1/-999 statt Strich) und die Grenzen der Vorlage. Zugeklappt; fuer eine neue
+         Einbindung nicht noetig. */ ?>
+<details id="rk-http">
+<summary><?= rk_e(rk_t('LOX.HTTP_TITEL')) ?></summary>
+<div class="sm-step"><?= rk_t('LOX.HTTP_TEXT') ?></div>
+
+<h4><?= rk_e(rk_t('LOX.H_ADRESSE')) ?></h4>
+<p class="sm-hilfe"><?= rk_t('LOX.ADRESSE_HILFE') ?></p>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_ZWECK')) ?></th><th><?= rk_e(rk_t('LOX.SP_ADRESSE')) ?></th></tr>
+<tr><td><?= rk_e(rk_t('LOX.Z_STATUS')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=status') ?></span></td></tr>
+<tr><td><?= rk_e(rk_t('LOX.Z_JSON')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=json') ?></span></td></tr>
+<tr><td><?= rk_e(rk_t('LOX.Z_ABRUFEN')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=abrufen') ?></span></td></tr>
+<?php /* Die vierte Adresse. Bis 0.11.2 stand sie nur im Kopfkommentar von
+         webfrontend/html/index.php - der Anwender musste sie aus dem
+         Quelltext holen. Die Nummer ist der erste eingerichtete Raum,
+         damit das Beispiel an dieser Anlage wirklich antwortet. */
+   /* U16 (Durchgang 01.10.2026): ohne eingerichteten Raum keine Adresse -
+    * die Beispielnummer 1 antwortete dann mit 404 RAUM_UNBEKANNT (gemessen,
+    * Bericht oberflaeche Nr. 18). */
+   if ($rk_raeume) {
+       $rk_bsp = (int) array_keys($rk_raeume)[0]; ?>
+<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><span class="sm-mono"><?= rk_e($rk_basis . '?token=' . rk_token() . '&aktion=raum&nr=' . $rk_bsp) ?></span></td></tr>
+<?php } else { ?>
+<tr><td><?= rk_e(rk_t('LOX.Z_RAUM')) ?></td><td><?= rk_e(rk_t('LOX.Z_RAUM_ERST')) ?></td></tr>
+<?php } ?>
+</table>
+
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= rk_t('LEGENDE.TECHNIK_XML') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rk_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= rk_e(rk_t('LOX.K_VI')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= rk_e(rk_t('LOX.K_TOKEN_NEU')) ?></button>
+  </form>
+</div>
+<p class="sm-hilfe"><?= rk_t('LOX.TOKEN_HINWEIS') ?></p>
+<p class="sm-hilfe"><?= rk_t('LOX.S1_H_TOKEN') ?></p>
+
+<h4><?= rk_e(rk_t('LOX.H_NUMMERN')) ?></h4>
+<p class="sm-hilfe"><?= rk_t('LOX.NUMMERN_HILFE') ?></p>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_NUMMER')) ?></th><th><?= rk_e(rk_t('LOX.SP_RAUM')) ?></th>
+    <th><?= rk_e(rk_t('LOX.SP_PRAEFIX')) ?></th></tr>
+<?php if ($rk_raeume) { foreach ($rk_raeume as $rk_nr => $rk_r) { ?>
+<tr><td><?= (int) $rk_nr ?></td><td><?= rk_e($rk_r['name']) ?></td>
+    <td><span class="sm-mono">R<?= (int) $rk_nr ?></span></td></tr>
+<?php } } else { ?>
+<tr><td colspan="3"><?= rk_e(rk_t('LOX.KEINE_RAEUME_KURZ')) ?></td></tr>
+<?php } ?>
+</table>
+
+<h4><?= rk_e(rk_t('LOX.H_FELDER')) ?></h4>
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_FELD')) ?></th><th><?= rk_e(rk_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<?php foreach (rk_felder() as $rk_f => $rk_info) { ?>
+<tr><td><span class="sm-mono">R&lt;n&gt;<?= rk_e($rk_f) ?></span></td>
+    <td><?= rk_e(rk_t($rk_info[3])) ?><?= $rk_info[0] !== '' ? ' [' . rk_e($rk_info[0]) . ']' : '' ?></td></tr>
+<?php } ?>
+</table>
+
+<h4><?= rk_e(rk_t('LOX.HTTP_H_AUSFALL')) ?></h4>
+<div class="sm-warnung"><?= rk_t('LOX.HTTP_AUSFALL') ?></div>
+<h4><?= rk_e(rk_t('LOX.HTTP_H_GEGENPROBE')) ?></h4>
+<div class="sm-step"><?= rk_t('LOX.HTTP_GEGENPROBE') ?></div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

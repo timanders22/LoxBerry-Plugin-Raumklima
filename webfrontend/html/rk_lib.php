@@ -68,6 +68,10 @@ define('RK_UDP_PAUSE_US', 5000);
  * rund 99 s Arbeit fuer das Gateway V1 je fuenf Minuten. */
 define('RK_MQTT_VOLLSATZ_S', 1800);
 
+/* Gruppe 3 / MQTT (0.11.21): Platzhalter fuer einen FEHLENDEN Wert mit Vorzeichen (Temperaturen, Taupunkte,
+ * Abstaende, Trends) - ueber MQTT und in der Antwortzeile; ohne Vorzeichen gilt -1. Siehe rk_feld_fehlt(). */
+define('RK_FEHLT_VORZEICHEN', -999);
+
 /* Groesste Antwort, die eine Quelle liefern darf. Ein Fuehler antwortet mit
  * einigen hundert Byte, der groesste bekannte Umschlag (Shelly.GetStatus)
  * mit knapp 8 kB. Zwei Megabyte sind das Hundertfache davon und bleiben
@@ -2807,7 +2811,9 @@ function rk_stand()
  * nie (Nr. 2, Regeln/03 "Alter zur Lesezeit"). Beides wird jetzt aus den
  * gespeicherten Zeitstempeln gerechnet: ts fuer ALTER, letzt_ts je Raum.
  * Ueber MQTT gehen die Werte beim Lauf hinaus und tragen das Alter dieses
- * Augenblicks; dort rechnet der Miniserver mit ts selbst.
+ * Augenblicks; das Plugin rechnet es in jedem Lauf neu (alter, raumN/alter). Gruppe 3 / MQTT
+ * (0.11.21): bis 0.11.20 stand hier, der Miniserver rechne mit ts selbst - das ist nicht der Weg
+ * (Loxone rechnet in Ortszeit); einen toten Abruf meldet die Analogwertvalidierung an status/zaehler.
  */
 function rk_stand_lesezeit($stand, $takt = null)
 {
@@ -3659,11 +3665,225 @@ function rk_mqtt_senden($stand, $alt_stand = null, $voll_erzwingen = false)
     return true;
 }
 
+/* ==================================================================
+ * Gruppe 3 / MQTT (0.11.21, Entwurf Musterprojekt/entwurf_gruppe3_rk.txt, ENTSCHEIDUNGEN_GRUPPE3_MQTT.md):
+ * Platzhalter fuer fehlende Werte, die Zuordnung Feld -> Thema, der Gateway-Name und die Namenstabelle -
+ * je an EINER Stelle, gelesen von rk_mqtt_werte(), rk_zeile(), rk_bausteine() und dem Reiter
+ * "Einbindung in Loxone".
+ * ================================================================== */
+
+/**
+ * Der Platzhalter fuer einen FEHLENDEN Wert, je Thema (raumN/ ohne Raumteil, aussen/ mit).
+ *
+ * -1 bei Groessen ohne Vorzeichen - dort ist -1 kein moeglicher Messwert. -999 bei Groessen mit Vorzeichen
+ * (Temperaturen, Taupunkte, Abstaende, Trends): -1 waere dort ein gewoehnlicher Wert (-1 Grad), -999 kommt
+ * nicht vor (Entscheidung Gruppe 3 vom 19.10.2026, Vorbild Robonect temperatur/wlan, Ecowitt, Fensterbilanz).
+ * Dieselbe Liste gilt ueber MQTT und in der HTTP-Antwortzeile. Bis 0.11.20 ging ein fehlender Wert ueber MQTT
+ * gar nicht hinaus und stand in der Antwortzeile als "-"; der Eingang in Loxone behielt den letzten Wert.
+ * Die Musterseiten fangen -999 mit "< -90" ab, -1 mit "< 0".
+ */
+function rk_feld_fehlt()
+{
+    static $f = null;
+    if ($f === null) {
+        $f = array();
+        foreach (array('rf', 'absolut', 'ober_rf', 'co2', 'co2_erwartet', 'co2_lw', 'wrg', 'trockenrest',
+                       'aussen/rf', 'aussen/absolut') as $k) {
+            $f[$k] = -1;
+        }
+        foreach (array('t', 'taupunkt', 'ober_t', 'spread', 'vlmin', 'enth', 'gewinn', 'kuehlgewinn', 'trend',
+                       'trocknen', 'zuluft', 'fortluft', 'co2_anstieg',
+                       'aussen/t', 'aussen/taupunkt', 'aussen/mittel') as $k) {
+            $f[$k] = RK_FEHLT_VORZEICHEN;
+        }
+    }
+    return $f;
+}
+
+/**
+ * Ein ECHTER Wert darf nie wie der Platzhalter aussehen. trocknen (Wasseraustrag, negativ, wenn es draussen
+ * feuchter ist) und co2_anstieg (beim Lueften stark fallend) koennen real unter -998 liegen; sie werden auf
+ * -998 begrenzt - so bleibt -999 eindeutig "kein Wert", und der Wert liegt ueber MinVal -999 der Eingaenge
+ * (Hauptsitzung 20.10.2026, offene Frage 2 des Gruppe-3-Baus). Die uebrigen Felder mit -999 erreichen diesen
+ * Bereich nicht (Temperaturen ab -60, Abstaende, Trends). Gilt fuer MQTT und die Antwortzeile.
+ */
+function rk_feld_begrenzt($feld, $v)
+{
+    if (($feld === 'trocknen' || $feld === 'co2_anstieg') && is_numeric($v)
+        && (float) $v < RK_FEHLT_VORZEICHEN + 1) {
+        return RK_FEHLT_VORZEICHEN + 1;
+    }
+    return $v;
+}
+
+/**
+ * Feld der Antwortzeile (je Raum, ohne R<n>) -> Thema unter raum<n>/. Reihenfolge = Antwortzeile; bis 0.11.20
+ * stand die Liste in rk_zeile(). Lesen: rk_zeile(), rk_bausteine(), rk_mqtt_namen().
+ */
+function rk_feld_thema()
+{
+    return array('T' => 't', 'RF' => 'rf', 'TAU' => 'taupunkt', 'ABS' => 'absolut',
+                 'OBERT' => 'ober_t', 'OBERRF' => 'ober_rf', 'LUEFTEN' => 'lueften',
+                 'GEWINN' => 'gewinn', 'SCHIMMEL' => 'schimmel', 'FEUCHT' => 'feucht',
+                 'TROCKEN' => 'trocken', 'BESTIN' => 'best_in', 'BESTSTD' => 'best_std',
+                 'SPREAD' => 'spread', 'VLMIN' => 'vlmin', 'RALTER' => 'alter',
+                 'STEHT' => 'steht', 'ENTH' => 'enth', 'AMPEL' => 'ampel',
+                 'NASS24' => 'nass24', 'NASS7T' => 'nass7t',
+                 'KUEHLEN' => 'kuehlen', 'KUEHLG' => 'kuehlgewinn',
+                 'DAUER' => 'dauer', 'KOSTEN' => 'kosten',
+                 'ERFOLG' => 'erfolg', 'EINTRAG' => 'eintrag',
+                 'CO2' => 'co2', 'CO2HOCH' => 'co2_hoch',
+                 'FENSTER' => 'fenster', 'FENSTERZU' => 'fenster_zu',
+                 /* ---- neu in 0.11.0, hinten angehaengt ---- */
+                 'SCHWUEL' => 'schwuel', 'TROCKNEN' => 'trocknen',
+                 'TROCKENREST' => 'trockenrest', 'ZULUFT' => 'zuluft',
+                 'WRG' => 'wrg', 'FORTLUFT' => 'fortluft',
+                 'VEREIST' => 'vereist', 'RUHE' => 'ruhe',
+                 'ZWANG' => 'zwang', 'TREND' => 'trend',
+                 'DUSCHE' => 'dusche', 'KUEHLFREI' => 'kuehlfrei',
+                 'KBESTIN' => 'kbest_in', 'KBESTSTD' => 'kbest_std',
+                 'SPERRE' => 'sperre',
+                 'CO2ANSTIEG' => 'co2_anstieg',
+                 'CO2ERWARTET' => 'co2_erwartet',
+                 'CO2VOLL' => 'co2_voll', 'CO2LW' => 'co2_lw');
+}
+
+/**
+ * Sammelfeld der Antwortzeile -> Thema (rk_felder_global()). OK und ZAEHLER zeigen auf das Lebenszeichen in
+ * Hausform; die alten Themen ok und zaehler tragen denselben Wert und bleiben fuer bestehende Anlagen.
+ */
+function rk_feld_thema_global()
+{
+    return array('AT' => 'aussen/t', 'ARF' => 'aussen/rf', 'ATAU' => 'aussen/taupunkt', 'AABS' => 'aussen/absolut',
+                 'NLUEFT' => 'lueften', 'NSCHIMMEL' => 'schimmel', 'ALTER' => 'alter', 'OK' => 'status/ok',
+                 'NOHNE' => 'ohne', 'NSTEHT' => 'steht', 'NKUEHL' => 'kuehlen', 'NCO2' => 'co2',
+                 'NFENSTER' => 'fenster', 'NFEUCHT' => 'feucht', 'NTROCKEN' => 'trocken',
+                 'ZAEHLER' => 'status/zaehler', 'TS' => 'ts', 'LAUFTS' => 'lauf_ts', 'NAMPELLOS' => 'ampellos',
+                 'NSCHWUEL' => 'schwuel', 'NZWANG' => 'zwang', 'NSPERRE' => 'sperre', 'NVEREIST' => 'vereist',
+                 'HEIZFALL' => 'heizfall', 'AMITTEL' => 'aussen/mittel');
+}
+
+/** Die Aussenwerte des Abbilds, fehlend = null - eine Rechnung fuer MQTT und die Antwortzeile. */
+function rk_aussen_werte($stand)
+{
+    $t = (isset($stand['aussen']['t']) && is_numeric($stand['aussen']['t'])) ? $stand['aussen']['t'] : null;
+    $rf = (isset($stand['aussen']['rf']) && is_numeric($stand['aussen']['rf'])) ? $stand['aussen']['rf'] : null;
+    return array('t' => $t, 'rf' => $rf,
+                 'taupunkt' => $t !== null ? rk_taupunkt($t, $rf) : null,
+                 'absolut' => $t !== null ? rk_absolut($t, $rf) : null);
+}
+
+/**
+ * Der Name, den das MQTT-Gateway dem Virtuellen Eingang gibt: Praefix/Thema, jedes "/", Leerzeichen und "%"
+ * wird "_" (am Geraet gemessen 18.10.2026, Midea2Lox 4.5.17). Ohne Praefix gilt das eingestellte.
+ */
+function rk_mqtt_gateway_name($thema, $praefix = null)
+{
+    if ($praefix === null) {
+        $c = rk_config(false);
+        $praefix = isset($c['mqtt_topic']) ? (string) $c['mqtt_topic'] : 'raumklima';
+    }
+    return str_replace(array('/', ' ', '%'), '_', trim((string) $praefix, '/') . '/' . (string) $thema);
+}
+
+/** Einheit und Bereich eines Themas fuer die Namenstabelle - aus rk_felder() bzw. rk_felder_global(). */
+function rk_mqtt_bereich($thema)
+{
+    static $karte = null;
+    if ($karte === null) {
+        $karte = array();
+        $rf = rk_felder();
+        foreach (rk_feld_thema() as $kurz => $f) {
+            if (isset($rf[$kurz])) { $karte['raumN/' . $f] = $rf[$kurz]; }
+        }
+        $gf = rk_felder_global();
+        foreach (rk_feld_thema_global() as $kurz => $t) {
+            if (isset($gf[$kurz])) { $karte[$t] = $gf[$kurz]; }
+        }
+        $karte['ok'] = $gf['OK'];
+        $karte['zaehler'] = $gf['ZAEHLER'];
+        $karte['status/ts'] = $gf['LAUFTS'];
+        $karte['raeume'] = array('', 0, RK_RAEUME, '', '');
+        $karte['raumN/ok'] = array('', 0, 1, '', '');
+    }
+    $n = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
+    if (!isset($karte[$n])) { return rk_t('LOX.BE_STRICH'); }
+    $i = $karte[$n];
+    $einheit = trim(preg_replace('/<v(\.\d+)?>/', '', (string) $i[4]));
+    if ($einheit === '') { $einheit = (string) $i[0]; }
+    return $einheit !== '' ? sprintf(rk_t('LOX.NT_BEREICH_EINHEIT'), $einheit, $i[1], $i[2])
+                           : sprintf(rk_t('LOX.NT_BEREICH'), $i[1], $i[2]);
+}
+
+/**
+ * Die Namenstabelle und die V2-Hakenliste aus EINER Quelle (Nachtrag 2 Gruppe 1: keine Importvorlage fuer
+ * Werte, statt dessen Virtuelle Eingaenge mit dem Namen, den das Gateway vergibt).
+ *
+ * Je Zeile: thema, name (Gateway-Name), bedeutung (Sprachschluessel aus rk_mqtt_themen()), bereich, art
+ * ('zahl'|'text'), retain, fehlt (Platzhalter oder null), muster (Eingang auf den Musterseiten), gruppe
+ * ('global'|'raum'|'bestand'), haken (gehoert in die Hakenliste).
+ * Reihenfolge: 24 globale Themen, je Raum raum<n>/ok, die 50 Felder der Antwortzeile und raum<n>/name;
+ * ohne eingerichteten Raum raum1 als Beispiel. Bei einem Raum 76 Haken, davon 70 auf den Musterseiten
+ * (nicht: raeume, schwuel, zwang, sperre, raum1/ok, raum1/name). Danach "bestand": ok, zaehler, ts, lauf_ts,
+ * status/ts - gesendet fuer bestehende Anlagen, nicht in der Hakenliste.
+ */
+function rk_mqtt_namen()
+{
+    $cfg = rk_config(false);
+    $praefix = trim(isset($cfg['mqtt_topic']) ? (string) $cfg['mqtt_topic'] : 'raumklima', '/');
+    $themen = rk_mqtt_themen();
+    $fehlt = rk_feld_fehlt();
+    $zeile = function ($thema, $gruppe, $muster) use ($praefix, $themen, $fehlt) {
+        $n = preg_replace('#^raum[0-9]+/#', 'raumN/', $thema);
+        if ($n !== $thema) { $fk = substr($n, 6); }
+        elseif (strpos($thema, 'aussen/') === 0) { $fk = $thema; }
+        else { $fk = ''; }
+        return array(
+            'thema'     => $thema,
+            'name'      => rk_mqtt_gateway_name($thema, $praefix),
+            'bedeutung' => isset($themen[$n]) ? $themen[$n] : '',
+            'bereich'   => rk_mqtt_bereich($n),
+            'art'       => $n === 'raumN/name' ? 'text' : 'zahl',
+            'retain'    => rk_mqtt_retain($thema),
+            'fehlt'     => ($fk !== '' && isset($fehlt[$fk])) ? $fehlt[$fk] : null,
+            'muster'    => $muster,
+            'gruppe'    => $gruppe,
+            'haken'     => $gruppe !== 'bestand',
+        );
+    };
+    $aus = array();
+    $nicht_muster = array('raeume', 'schwuel', 'zwang', 'sperre');
+    foreach (array('status/ok', 'status/zaehler', 'alter', 'ohne', 'steht', 'ampellos', 'raeume', 'lueften',
+                   'schimmel', 'feucht', 'trocken', 'kuehlen', 'co2', 'fenster', 'schwuel', 'zwang', 'sperre',
+                   'vereist', 'heizfall', 'aussen/t', 'aussen/rf', 'aussen/taupunkt', 'aussen/absolut',
+                   'aussen/mittel') as $t) {
+        $aus[] = $zeile($t, 'global', !in_array($t, $nicht_muster, true));
+    }
+    $nummern = array_keys(rk_raeume());
+    if (!$nummern) { $nummern = array(1); }
+    $erster = (int) reset($nummern);
+    foreach ($nummern as $nr) {
+        $z = 'raum' . (int) $nr . '/';
+        $aus[] = $zeile($z . 'ok', 'raum', false);
+        foreach (rk_feld_thema() as $f) {
+            $aus[] = $zeile($z . $f, 'raum', (int) $nr === $erster);
+        }
+        $aus[] = $zeile($z . 'name', 'raum', false);
+    }
+    foreach (array('ok', 'zaehler', 'ts', 'lauf_ts', 'status/ts') as $t) {
+        $aus[] = $zeile($t, 'bestand', false);
+    }
+    return $aus;
+}
+
 /** Geht dieses Thema in JEDEM Lauf hinaus? Das Lebenszeichen und ok (M7). */
 function rk_mqtt_immer($thema)
 {
     $t = preg_replace('#^raum[0-9]+/#', 'raumN/', (string) $thema);
-    return in_array($t, array('ok', 'ts', 'lauf_ts', 'zaehler', 'alter', 'raumN/ok', 'raumN/alter'), true);
+    /* Gruppe 3 / MQTT (0.11.21): dazu das Lebenszeichen in Hausform (status/ok, status/ts, status/zaehler),
+     * in jedem Lauf und nie retained; die alten Themen ok, ts, lauf_ts, zaehler bleiben fuer bestehende Anlagen. */
+    return in_array($t, array('ok', 'ts', 'lauf_ts', 'zaehler', 'alter', 'raumN/ok', 'raumN/alter',
+                              'status/ok', 'status/ts', 'status/zaehler'), true);
 }
 
 /** Alle Werte flach, so wie sie veroeffentlicht werden. */
@@ -3683,15 +3903,14 @@ function rk_mqtt_werte($stand)
         'fenster'    => isset($stand['fenster_n']) ? (int) $stand['fenster_n'] : 0,
         'alter'      => (!empty($stand['ts'])) ? max(0, time() - (int) $stand['ts']) : -1,
         /* ---- Das Lebenszeichen, neu in 0.11.0 ----
-         * Ueber MQTT gibt es kein "Alter", sondern nur einen Zeitstempel:
-         * gesendet wird nur, wenn der Cron laeuft, und der Broker liefert
-         * den letzten Wert mit Retain unbegrenzt weiter. 'alter' konnte
-         * deshalb nie wachsen - gemessen ueber drei Cron-Laeufe blieb es
-         * konstant bei 4. Der Miniserver rechnet selbst:
-         *     Alter = (Loxone-Zeit + 1230768000) - ts
-         * 'zaehler' beantwortet, was ein Zeitstempel nicht kann: eine Uhr,
-         * die beim ersten Zeitabgleich springt, macht jedes Alter unbrauchbar,
-         * eine umlaufende Zahl nicht. */
+         * 'alter' rechnet das Plugin in JEDEM Lauf selbst (rk_mqtt_immer()): es waechst, solange der Abruf
+         * laeuft, aber keine Quelle antwortet; steht der Abruf, friert es ein. Einen toten Abruf meldet in
+         * Loxone die Analogwertvalidierung am Zaehler (status/zaehler, Tmc fuenf Abruftakte). Eine
+         * Altersrechnung in Loxone aus ts (Systemzeit minus ts) ist NICHT der Weg: Loxone rechnet in
+         * Ortszeit, ts ist UTC - das Alter laege um die Zeitzone daneben (Gruppe 3 / MQTT, 0.11.21; bis
+         * 0.11.20 empfahl dieser Kommentar die Formel). 'zaehler' beantwortet, was ein Zeitstempel nicht
+         * kann: eine Uhr, die beim ersten Zeitabgleich springt, macht jedes Alter unbrauchbar, eine
+         * umlaufende Zahl nicht. */
         'ts'         => isset($stand['ts']) ? (int) $stand['ts'] : 0,
         'lauf_ts'    => isset($stand['lauf_ts']) ? (int) $stand['lauf_ts'] : 0,
         'zaehler'    => isset($stand['zaehler']) ? (int) $stand['zaehler'] : 0,
@@ -3702,27 +3921,37 @@ function rk_mqtt_werte($stand)
         'vereist'    => isset($stand['vereist_n']) ? (int) $stand['vereist_n'] : 0,
         'heizfall'   => isset($stand['heizfall']) ? (int) $stand['heizfall'] : -1,
     );
-    if (isset($stand['aussen_mittel']) && $stand['aussen_mittel'] !== null) {
-        $w['aussen/mittel'] = round((float) $stand['aussen_mittel'], 2);
-    }
-    if (isset($stand['aussen']['t'])) {
-        $w['aussen/t'] = round((float) $stand['aussen']['t'], 2);
-        $w['aussen/rf'] = round((float) $stand['aussen']['rf'], 1);
-        $w['aussen/taupunkt'] = rk_taupunkt($stand['aussen']['t'], $stand['aussen']['rf']);
-        $w['aussen/absolut'] = rk_absolut($stand['aussen']['t'], $stand['aussen']['rf']);
-    }
+    /* Gruppe 3 / MQTT (0.11.21): das Lebenszeichen in Hausform (Regeln/07), in jedem Lauf, nie retained -
+     * aus denselben Abbildfeldern wie ok, lauf_ts und zaehler, keine zweite Rechnung. Die alten Themen
+     * bleiben fuer bestehende Anlagen. */
+    $w['status/ok'] = $w['ok'];
+    $w['status/ts'] = $w['lauf_ts'];
+    $w['status/zaehler'] = $w['zaehler'];
+    /* Gruppe 3 / MQTT (0.11.21): ein FEHLENDER Wert geht nicht mehr weg, sondern mit Platzhalter hinaus -
+     * -1 bei Groessen ohne Vorzeichen, -999 bei Temperaturen, Taupunkten, Abstaenden und Trends
+     * (rk_feld_fehlt(), dieselbe Liste wie rk_zeile()). Bis 0.11.20 ging ein fehlender Wert gar nicht
+     * hinaus, und der Eingang in Loxone behielt den letzten - die Musterseiten erwarteten aber -1. Keiner
+     * der Platzhalter steht in rk_mqtt_retain(): sie gehen fluechtig. */
+    $fehlt = rk_feld_fehlt();
+    $w['aussen/mittel'] = (isset($stand['aussen_mittel']) && $stand['aussen_mittel'] !== null)
+        ? round((float) $stand['aussen_mittel'], 2) : $fehlt['aussen/mittel'];
+    $a = rk_aussen_werte($stand);
+    $w['aussen/t'] = $a['t'] !== null ? round((float) $a['t'], 2) : $fehlt['aussen/t'];
+    $w['aussen/rf'] = $a['rf'] !== null ? round((float) $a['rf'], 1) : $fehlt['aussen/rf'];
+    $w['aussen/taupunkt'] = $a['taupunkt'] !== null ? $a['taupunkt'] : $fehlt['aussen/taupunkt'];
+    $w['aussen/absolut'] = $a['absolut'] !== null ? $a['absolut'] : $fehlt['aussen/absolut'];
     foreach ((array) (isset($stand['raeume']) ? $stand['raeume'] : array()) as $nr => $e) {
         $z = 'raum' . (int) $nr . '/';
         $w[$z . 'name'] = $e['name'];
         $w[$z . 'ok'] = (int) $e['ok'];
         /* gewinn und kuehlgewinn stehen seit 0.11.3 in dieser Liste: sie
-         * duerfen keinen fehlenden Wert als 0 veroeffentlichen, und ein
-         * fehlendes Thema ist in dieser Linie die eingefuehrte Form dafuer
-         * (spread und vlmin machen es seit jeher so). */
+         * duerfen keinen fehlenden Wert als 0 veroeffentlichen. Seit 0.11.21
+         * steht fuer den fehlenden Wert der Platzhalter da (rk_feld_fehlt()). */
         foreach (array('t', 'rf', 'taupunkt', 'absolut', 'ober_t', 'ober_rf',
                        'spread', 'vlmin', 'enth', 'co2', 'gewinn',
                        'kuehlgewinn') as $f) {
             if (isset($e[$f]) && $e[$f] !== null) { $w[$z . $f] = $e[$f]; }
+            elseif (isset($fehlt[$f])) { $w[$z . $f] = $fehlt[$f]; }
         }
         $w[$z . 'lueften'] = (int) $e['lueften'];
         $w[$z . 'schimmel'] = (int) $e['schimmel'];
@@ -3741,7 +3970,8 @@ function rk_mqtt_werte($stand)
                        'dusche', 'kuehlfrei', 'kbest_in', 'kbest_std',
                        'sperre', 'co2_anstieg', 'co2_erwartet', 'co2_voll',
                        'co2_lw') as $f) {
-            if (isset($e[$f]) && $e[$f] !== null) { $w[$z . $f] = $e[$f]; }
+            if (isset($e[$f]) && $e[$f] !== null) { $w[$z . $f] = rk_feld_begrenzt($f, $e[$f]); }
+            elseif (isset($fehlt[$f])) { $w[$z . $f] = $fehlt[$f]; }
         }
     }
     return $w;
@@ -4546,6 +4776,10 @@ function rk_mqtt_themen()
         'raumN/co2_erwartet' => 'MQTT.R_CO2ERWARTET',
         'raumN/co2_voll'     => 'MQTT.R_CO2VOLL',
         'raumN/co2_lw'       => 'MQTT.R_CO2LW',
+        /* ---- Gruppe 3 / MQTT (0.11.21): das Lebenszeichen in Hausform ---- */
+        'status/ok'          => 'MQTT.S_OK',
+        'status/ts'          => 'MQTT.S_TS',
+        'status/zaehler'     => 'MQTT.S_ZAEHLER',
     );
 }
 
@@ -4693,18 +4927,25 @@ function rk_xml_virtual_in_http($kopf, $cmds)
  * 90 (Taupunkt plus vl_zuschlag bis 10), Abstaende -140..140, absolute
  * Feuchte 0..300, Enthalpie -70..1600 kJ/kg. Wer die Vorlage vor dem Update
  * importiert hat, importiert sie neu.
+ *
+ * Gruppe 3 / MQTT (0.11.21): ein FEHLENDER Wert kommt jetzt als Platzhalter (rk_feld_fehlt()) - -1 bei
+ * Groessen ohne Vorzeichen (RF, ABS, OBERRF, CO2ERWARTET, CO2LW; CO2, WRG, TROCKENREST trugen schon -1),
+ * -999 bei Temperaturen, Taupunkten, Abstaenden und Trends. MinVal deshalb -1 bzw. -999, wie die
+ * Virtuellen Eingaenge im Musterprojekt; mit einer hoeheren Untergrenze machte Loxone aus dem Platzhalter
+ * den Standardwert 0. Die Obergrenzen bleiben. Folge: ein ECHTER Wert unter -999 (TROCKNEN, CO2ANSTIEG)
+ * liegt jetzt unter der Grenze - bis 0.11.20 reichten sie bis -99999 bzw. -5000.
  */
 function rk_felder()
 {
     return array(
-        'T'        => array('C',    -60,  80, 'RK_FELD.T',        '<v.1> °C'),
-        'RF'       => array('%',      0, 100, 'RK_FELD.RF',       '<v.0> %'),
-        'TAU'      => array('C',    -60,  80, 'RK_FELD.TAU',      '<v.1> °C'),
-        'ABS'      => array('g/m3',   0, 300, 'RK_FELD.ABS',      '<v.2> g/m³'),
-        'OBERT'    => array('C',    -60,  80, 'RK_FELD.OBERT',    '<v.1> °C'),
-        'OBERRF'   => array('%',      0, 100, 'RK_FELD.OBERRF',   '<v.0> %'),
+        'T'        => array('C',   -999,  80, 'RK_FELD.T',        '<v.1> °C'),
+        'RF'       => array('%',     -1, 100, 'RK_FELD.RF',       '<v.0> %'),
+        'TAU'      => array('C',   -999,  80, 'RK_FELD.TAU',      '<v.1> °C'),
+        'ABS'      => array('g/m3',  -1, 300, 'RK_FELD.ABS',      '<v.2> g/m³'),
+        'OBERT'    => array('C',   -999,  80, 'RK_FELD.OBERT',    '<v.1> °C'),
+        'OBERRF'   => array('%',     -1, 100, 'RK_FELD.OBERRF',   '<v.0> %'),
         'LUEFTEN'  => array('',       0,   1, 'RK_FELD.LUEFTEN',  ''),
-        'GEWINN'   => array('g/m3', -300, 300, 'RK_FELD.GEWINN',  '<v.2> g/m³'),
+        'GEWINN'   => array('g/m3', -999, 300, 'RK_FELD.GEWINN',  '<v.2> g/m³'),
         /* -1 heisst "keine Aussage moeglich", wie bei AMPEL. MinVal muss
          * deshalb -1 sein: mit 0 schneidet Loxone die -1 ab und zeigt
          * genau die 0, die hier vermieden werden soll. */
@@ -4713,11 +4954,11 @@ function rk_felder()
         'TROCKEN'  => array('',       0,   1, 'RK_FELD.TROCKEN',  ''),
         'BESTIN'   => array('min',   -1, 2880, 'RK_FELD.BESTIN',  '<v.0> min'),
         'BESTSTD'  => array('h',     -1,  23, 'RK_FELD.BESTSTD',  '<v.0> h'),
-        'SPREAD'   => array('K',   -140, 140, 'RK_FELD.SPREAD',   '<v.1> K'),
-        'VLMIN'    => array('C',    -60,  90, 'RK_FELD.VLMIN',    '<v.1> °C'),
+        'SPREAD'   => array('K',   -999, 140, 'RK_FELD.SPREAD',   '<v.1> K'),
+        'VLMIN'    => array('C',   -999,  90, 'RK_FELD.VLMIN',    '<v.1> °C'),
         'RALTER'   => array('s',     -1, 8640000, 'RK_FELD.RALTER', '<v.0> s'),
         'STEHT'    => array('',       0,   1, 'RK_FELD.STEHT',    ''),
-        'ENTH'     => array('kJ/kg', -70, 1600, 'RK_FELD.ENTH',   '<v.1> kJ/kg'),
+        'ENTH'     => array('kJ/kg', -999, 1600, 'RK_FELD.ENTH',   '<v.1> kJ/kg'),
         /* -1 heisst "keine Aussage moeglich" - siehe rk_ampel(). MinVal
          * musste dafuer von 0 auf -1 wandern; Loxone zieht daraus die
          * Plausibilitaetsgrenze, und eine -1 unter einer Untergrenze 0
@@ -4726,7 +4967,7 @@ function rk_felder()
         'NASS24'   => array('h',     -1,  24, 'RK_FELD.NASS24',   '<v.1> h'),
         'NASS7T'   => array('h',     -1, 168, 'RK_FELD.NASS7T',   '<v.1> h'),
         'KUEHLEN'  => array('',       0,   1, 'RK_FELD.KUEHLEN',  ''),
-        'KUEHLG'   => array('K',   -140, 140, 'RK_FELD.KUEHLG',   '<v.1> K'),
+        'KUEHLG'   => array('K',   -999, 140, 'RK_FELD.KUEHLG',   '<v.1> K'),
         'DAUER'    => array('min',   -1,  60, 'RK_FELD.DAUER',    '<v.0> min'),
         'KOSTEN'   => array('Wh',    -1, 99999, 'RK_FELD.KOSTEN', '<v.0> Wh'),
         'ERFOLG'   => array('%',     -1, 100, 'RK_FELD.ERFOLG',   '<v.0> %'),
@@ -4737,25 +4978,77 @@ function rk_felder()
         'FENSTERZU' => array('',      0,   1, 'RK_FELD.FENSTERZU', ''),
         /* ---- Neu in 0.11.0. Hinten angehaengt - siehe der Satz oben. ---- */
         'SCHWUEL'  => array('',      -1,   1, 'RK_FELD.SCHWUEL',  ''),
-        'TROCKNEN' => array('g/h', -99999, 99999, 'RK_FELD.TROCKNEN', '<v.0> g/h'),
+        'TROCKNEN' => array('g/h',  -999, 99999, 'RK_FELD.TROCKNEN', '<v.0> g/h'),
         'TROCKENREST' => array('h',  -1, 99999, 'RK_FELD.TROCKENREST', '<v.1> h'),
-        'ZULUFT'   => array('C',    -60,  80, 'RK_FELD.ZULUFT',   '<v.1> °C'),
+        'ZULUFT'   => array('C',   -999,  80, 'RK_FELD.ZULUFT',   '<v.1> °C'),
         'WRG'      => array('%',     -1, 100, 'RK_FELD.WRG',      '<v.0> %'),
-        'FORTLUFT' => array('C',    -60,  80, 'RK_FELD.FORTLUFT', '<v.1> °C'),
+        'FORTLUFT' => array('C',   -999,  80, 'RK_FELD.FORTLUFT', '<v.1> °C'),
         'VEREIST'  => array('',       0,   1, 'RK_FELD.VEREIST',  ''),
         'RUHE'     => array('',      -1,   1, 'RK_FELD.RUHE',     ''),
         'ZWANG'    => array('',       0,   1, 'RK_FELD.ZWANG',    ''),
-        'TREND'    => array('g/m3h', -300, 300, 'RK_FELD.TREND',  '<v.2> g/m³h'),
+        'TREND'    => array('g/m3h', -999, 300, 'RK_FELD.TREND',  '<v.2> g/m³h'),
         'DUSCHE'   => array('',       0,   1, 'RK_FELD.DUSCHE',   ''),
         'KUEHLFREI' => array('',     -1,   1, 'RK_FELD.KUEHLFREI', ''),
         'KBESTIN'  => array('min',   -1, 2880, 'RK_FELD.KBESTIN', '<v.0> min'),
         'KBESTSTD' => array('h',     -1,  23, 'RK_FELD.KBESTSTD', '<v.0> h'),
         'SPERRE'   => array('',       0,   1, 'RK_FELD.SPERRE',   ''),
         /* ---- CO2 mit Personenzahl, 28.08.2026 ---- */
-        'CO2ANSTIEG'  => array('ppm/h', -5000, 5000, 'RK_FELD.CO2ANSTIEG', '<v.0> ppm/h'),
-        'CO2ERWARTET' => array('ppm/h', 0, 5000, 'RK_FELD.CO2ERWARTET', '<v.0> ppm/h'),
+        'CO2ANSTIEG'  => array('ppm/h', -999, 5000, 'RK_FELD.CO2ANSTIEG', '<v.0> ppm/h'),
+        'CO2ERWARTET' => array('ppm/h', -1, 5000, 'RK_FELD.CO2ERWARTET', '<v.0> ppm/h'),
         'CO2VOLL'  => array('min',   -1, 2880, 'RK_FELD.CO2VOLL',  '<v.0> min'),
-        'CO2LW'    => array('1/h',    0,  50, 'RK_FELD.CO2LW',     '<v.2> 1/h'),
+        'CO2LW'    => array('1/h',   -1,  50, 'RK_FELD.CO2LW',     '<v.2> 1/h'),
+    );
+}
+
+/**
+ * Die Sammelfelder der Antwortzeile (Aussenwerte, Zaehlungen, Lebenszeichen) - Kuerzel, Einheit, Grenzen,
+ * Sprachschluessel, Einheit in der Schreibweise von Loxone; Form wie rk_felder().
+ *
+ * Gruppe 3 / MQTT (0.11.21): bis 0.11.20 stand die Tabelle in rk_vorlage(); jetzt liest sie auch die
+ * Namenstabelle (rk_mqtt_namen()). MinVal -1 an ARF/AABS und -999 an AT/ATAU/AMITTEL fuer die
+ * Platzhalter eines fehlenden Werts (rk_feld_fehlt()), wie die Virtuellen Eingaenge im Musterprojekt.
+ */
+function rk_felder_global()
+{
+    return array(
+        'AT'   => array('C',  -999, 80, 'RK_FELD.AT',   '<v.1> °C'),
+        'ARF'  => array('%',    -1, 100, 'RK_FELD.ARF', '<v.0> %'),
+        'ATAU' => array('C',  -999, 80, 'RK_FELD.ATAU', '<v.1> °C'),
+        'AABS' => array('g/m3', -1, 300, 'RK_FELD.AABS', '<v.2> g/m³'),
+        'NLUEFT' => array('',    0, 99, 'RK_FELD.NLUEFT', ''),
+        'NSCHIMMEL' => array('', 0, 99, 'RK_FELD.NSCHIMMEL', ''),
+        /* MinVal -1, nicht 0: rk_zeile() liefert -1, solange nie eine
+         * Messung gelang, und Loxone schnitte das an der Untergrenze ab -
+         * dort staende dann 0, also "gerade eben gemessen". Genau die
+         * stille Falschaussage, fuer die 0.11.0 bei AMPEL und SCHIMMEL
+         * MinVal -1 eingefuehrt hat. Und die Obergrenze deckelte das
+         * Wachstum bei 24 Stunden, waehrend die README sagt, es wachse -
+         * 100 Tage sind die ehrlichere Schranke. */
+        'ALTER' => array('s',   -1, 8640000, 'RK_FELD.ALTER', '<v.0> s'),
+        'OK'   => array('',      0, 1, 'RK_FELD.OK', ''),
+        'NOHNE' => array('',     0, 99, 'RK_FELD.NOHNE', ''),
+        'NSTEHT' => array('',    0, 99, 'RK_FELD.NSTEHT', ''),
+        'NKUEHL' => array('',    0, 99, 'RK_FELD.NKUEHL', ''),
+        'NCO2'  => array('',     0, 99, 'RK_FELD.NCO2', ''),
+        'NFENSTER' => array('',  0, 99, 'RK_FELD.NFENSTER', ''),
+        /* NFEUCHT und NTROCKEN standen seit jeher in der Antwortzeile und
+         * gingen ueber MQTT hinaus - nur hier fehlten sie, und wer die
+         * erzeugte Importdatei einlas, bekam sie deshalb nicht. Gemessen
+         * am 28.08.2026 durch einen Mengenvergleich zwischen rk_zeile()
+         * und dieser Liste. */
+        'NFEUCHT' => array('',   0, 99, 'RK_FELD.NFEUCHT', ''),
+        'NTROCKEN' => array('',  0, 99, 'RK_FELD.NTROCKEN', ''),
+        /* ---- Neu in 0.11.0 ---- */
+        'ZAEHLER' => array('',   0, 999, 'RK_FELD.ZAEHLER', ''),
+        'TS'      => array('s',  0, 2147483647, 'RK_FELD.TS', '<v.0>'),
+        'LAUFTS'  => array('s',  0, 2147483647, 'RK_FELD.LAUFTS', '<v.0>'),
+        'NAMPELLOS' => array('', 0, 99, 'RK_FELD.NAMPELLOS', ''),
+        'NSCHWUEL' => array('',  0, 99, 'RK_FELD.NSCHWUEL', ''),
+        'NZWANG'  => array('',   0, 99, 'RK_FELD.NZWANG', ''),
+        'NSPERRE' => array('',   0, 99, 'RK_FELD.NSPERRE', ''),
+        'NVEREIST' => array('',  0, 99, 'RK_FELD.NVEREIST', ''),
+        'HEIZFALL' => array('', -1,  1, 'RK_FELD.HEIZFALL', ''),
+        'AMITTEL' => array('C', -999, 80, 'RK_FELD.AMITTEL', '<v.1> °C'),
     );
 }
 
@@ -4874,47 +5167,9 @@ function rk_vorlage()
             );
         }
     }
-    // Aussen und Zusammenfassung
-    foreach (array(
-        'AT'   => array('C',   -60, 80, 'RK_FELD.AT',   '<v.1> °C'),
-        'ARF'  => array('%',     0, 100, 'RK_FELD.ARF', '<v.0> %'),
-        'ATAU' => array('C',   -60, 80, 'RK_FELD.ATAU', '<v.1> °C'),
-        'AABS' => array('g/m3',  0, 300, 'RK_FELD.AABS', '<v.2> g/m³'),
-        'NLUEFT' => array('',    0, 99, 'RK_FELD.NLUEFT', ''),
-        'NSCHIMMEL' => array('', 0, 99, 'RK_FELD.NSCHIMMEL', ''),
-        /* MinVal -1, nicht 0: rk_zeile() liefert -1, solange nie eine
-         * Messung gelang, und Loxone schnitte das an der Untergrenze ab -
-         * dort staende dann 0, also "gerade eben gemessen". Genau die
-         * stille Falschaussage, fuer die 0.11.0 bei AMPEL und SCHIMMEL
-         * MinVal -1 eingefuehrt hat. Und die Obergrenze deckelte das
-         * Wachstum bei 24 Stunden, waehrend die README sagt, es wachse -
-         * 100 Tage sind die ehrlichere Schranke. */
-        'ALTER' => array('s',   -1, 8640000, 'RK_FELD.ALTER', '<v.0> s'),
-        'OK'   => array('',      0, 1, 'RK_FELD.OK', ''),
-        'NOHNE' => array('',     0, 99, 'RK_FELD.NOHNE', ''),
-        'NSTEHT' => array('',    0, 99, 'RK_FELD.NSTEHT', ''),
-        'NKUEHL' => array('',    0, 99, 'RK_FELD.NKUEHL', ''),
-        'NCO2'  => array('',     0, 99, 'RK_FELD.NCO2', ''),
-        'NFENSTER' => array('',  0, 99, 'RK_FELD.NFENSTER', ''),
-        /* NFEUCHT und NTROCKEN standen seit jeher in der Antwortzeile und
-         * gingen ueber MQTT hinaus - nur hier fehlten sie, und wer die
-         * erzeugte Importdatei einlas, bekam sie deshalb nicht. Gemessen
-         * am 28.08.2026 durch einen Mengenvergleich zwischen rk_zeile()
-         * und dieser Liste. */
-        'NFEUCHT' => array('',   0, 99, 'RK_FELD.NFEUCHT', ''),
-        'NTROCKEN' => array('',  0, 99, 'RK_FELD.NTROCKEN', ''),
-        /* ---- Neu in 0.11.0 ---- */
-        'ZAEHLER' => array('',   0, 999, 'RK_FELD.ZAEHLER', ''),
-        'TS'      => array('s',  0, 2147483647, 'RK_FELD.TS', '<v.0>'),
-        'LAUFTS'  => array('s',  0, 2147483647, 'RK_FELD.LAUFTS', '<v.0>'),
-        'NAMPELLOS' => array('', 0, 99, 'RK_FELD.NAMPELLOS', ''),
-        'NSCHWUEL' => array('',  0, 99, 'RK_FELD.NSCHWUEL', ''),
-        'NZWANG'  => array('',   0, 99, 'RK_FELD.NZWANG', ''),
-        'NSPERRE' => array('',   0, 99, 'RK_FELD.NSPERRE', ''),
-        'NVEREIST' => array('',  0, 99, 'RK_FELD.NVEREIST', ''),
-        'HEIZFALL' => array('', -1,  1, 'RK_FELD.HEIZFALL', ''),
-        'AMITTEL' => array('C', -60, 80, 'RK_FELD.AMITTEL', '<v.1> °C'),
-    ) as $feld => $info) {
+    /* Aussen und Zusammenfassung - Gruppe 3 / MQTT (0.11.21): die Tabelle steht in rk_felder_global(),
+     * dieselbe Quelle fuer die Namenstabelle. */
+    foreach (rk_felder_global() as $feld => $info) {
         $cmds[] = array(
             'title'   => 'RK_' . $feld,
             'comment' => rk_kachelname('Raumklima', $info[3]),
@@ -4954,6 +5209,11 @@ function rk_vorlage()
  * Max, AQ; VLMIN ist die untere Grenze, nicht der Eingangswert), Abruf-Waechter als
  * Analogwertvalidierung mit der Konstante 1 an En als eigener, letzter Zeile.
  *
+ * Gruppe 3 / MQTT (0.11.21, Musterprojekt/baustein_listen.txt Stand 19.10.2026): die Feldzeilen sind Virtuelle
+ * Eingaenge mit dem Namen, den das MQTT-Gateway vergibt (raumklima_raum1_t ...), OK und ZAEHLER das
+ * Lebenszeichen in Hausform (status_ok, status_zaehler); die Analogwertvalidierung heisst "Lebenszeichen fehlt
+ * (Raumklima)" und wartet 1500 s. Neue Statuszeilen fuer -1/-999 ("< 0", "< -90").
+ *
  * Welle Bild 15 (0.11.20, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
  * uebernehmen koennen; Entwurf Welle 15 rk, Entscheidungen 1-13 wie empfohlen, 17.10.2026): DREI Seiten
  * wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt, Abschnitte "Raumklima" 39,
@@ -4987,13 +5247,20 @@ function rk_bausteine()
      * Antwortzeile (OK, LUEFTEN ...), Bausteine klein (sws_alt ...). */
     $platz = array();
     $titel = array();
-    $neu_seite = function (array $ordnung, array $raumfelder) use (&$platz, &$titel, $kurz) {
+    /* Gruppe 3 / MQTT (0.11.21): die Feldzeilen heissen wie der Virtuelle Eingang, den das MQTT-Gateway
+     * vergibt (rk_mqtt_gateway_name(), Praefix aus den Einstellungen, Raum = erster eingerichteter Raum,
+     * ohne Raum raum1) - bis 0.11.20 der Titel der HTTP-Vorlage RK_<RAUM>_<FELD>. OK und ZAEHLER sind
+     * das Lebenszeichen in Hausform (status/ok, status/zaehler). */
+    $ft = rk_feld_thema();
+    $gt = rk_feld_thema_global();
+    $neu_seite = function (array $ordnung, array $raumfelder) use (&$platz, &$titel, $rn, $ft, $gt) {
         $platz = array();
         $titel = array();
         foreach (array_values($ordnung) as $i => $id) {
             $platz[$id] = $i + 1;
             if (strtoupper($id) === $id) {
-                $titel[$id] = in_array($id, $raumfelder, true) ? 'RK_' . $kurz . '_' . $id : 'RK_' . $id;
+                $titel[$id] = in_array($id, $raumfelder, true)
+                    ? rk_mqtt_gateway_name('raum' . $rn . '/' . $ft[$id]) : rk_mqtt_gateway_name($gt[$id]);
             }
         }
     };
@@ -5011,11 +5278,11 @@ function rk_bausteine()
         foreach (array_values($quellen) as $i => $q) { $teile[] = sprintf(rk_t('LOX.BE_V'), $i + 1, $q); }
         return implode(', ', $teile);
     };
-    /* Feldzeile: Typ "Virtueller HTTP-Eingang (Vorlage ...)", Spalte "Eingaenge" "—" - wie in
-     * Musterprojekt/baustein_listen.txt (Stand 17.10.2026, Entwurf Welle 15 rk E6). Bis 0.11.19 hiessen die
-     * Feldzeilen "virtueller Eingang (aus der Vorlage)" mit "— (kommt aus der Importdatei)". */
+    /* Feldzeile: Typ "Virtueller Eingang (Name wie das MQTT-Gateway ihn vergibt, Plugin Raumklima)", Spalte
+     * "Eingaenge" "—" - wie in Musterprojekt/baustein_listen.txt (Stand 19.10.2026, Gruppe 3 / MQTT). Bis
+     * 0.11.20 "Virtueller HTTP-Eingang (Vorlage ...)", bis 0.11.19 "virtueller Eingang (aus der Vorlage)". */
     $feld = function ($id, $param) use (&$platz, &$titel) {
-        return array($platz[$id], rk_t('LOX.B_FELD_HTTP'), $titel[$id], $param, rk_t('LOX.BE_STRICH'), true);
+        return array($platz[$id], rk_t('LOX.B_FELD_MQTT'), $titel[$id], $param, rk_t('LOX.BE_STRICH'), true);
     };
     $bs = function ($id, $typ, $name, $param, $eing) use (&$platz) {
         return array($platz[$id], $typ, $name, $param, $eing, false);
@@ -5085,7 +5352,7 @@ function rk_bausteine()
         $bs('oder_gesamt', rk_t('LOX.B_ODER'), rk_t('LOX.BN_STOERUNG_GESAMT'),
             sprintf(rk_t('LOX.BP_STOERUNG_GESAMT'), $n('oder4'), $n('valid')), $i12($n('oder4'), $ve('valid'))),
         $bs('evz_stoerung', rk_t('LOX.B_EINVERZ'), rk_t('LOX.BN_STOERUNG_BEST'),
-            sprintf(rk_t('LOX.BP_STOERUNG_BEST'), $n('sws_alt'), $n('sws_stumm')), $ein($n('oder_gesamt'))),
+            rk_t('LOX.BP_STOERUNG_BEST'), $ein($n('oder_gesamt'))),
         $bs('st_zustand', rk_t('LOX.B_STATUS'), $t('BN_ZUSTAND'), $t('BP_ZUSTAND'),
             $v(array($n('OK'), $n('ALTER'), $n('NOHNE'), $n('NSTEHT'), $ve('valid'), $n('RALTER'), $n('STEHT'),
                      $n('NAMPELLOS')))),
@@ -5109,7 +5376,7 @@ function rk_bausteine()
             sprintf(rk_t('LOX.S1_SCHRITT4'), $z('evz_stoerung')),
             sprintf(rk_t('LOX.S1_SCHRITT5'), $z('begrenzer'), $z('ve_kuehl')),
             $rh(sprintf(rk_t('LOX.S1_SCHRITT6'), $z('begrenzer'), $z('valid'))),
-            $th('S1_SCHRITT7'),
+            $rh(sprintf(rk_t('LOX.S1_SCHRITT7'), rk_e($titel['ZAEHLER']))),
         ),
         'zu' => array(
             array($n('sws_alt'), rk_t('LOX.ZU_ABRUF_ALT')),
@@ -5132,7 +5399,7 @@ function rk_bausteine()
             sprintf(rk_t('LOX.S1_H_UMBAU'), $z('SCHIMMEL'), $z('evz_schimmel'), $z('oder4'), $z('benachr'),
                     $z('begrenzer'), $z('oder_gesamt')),
             sprintf(rk_t('LOX.WEITERE_RAEUME'), $rn),
-            rk_t('LOX.S1_H_TOKEN'),
+            rk_t('LOX.S1_H_HTTP'),
             rk_t('LOX.S1_H_GRENZE'),
         ),
     );
@@ -5264,13 +5531,20 @@ function rk_zeile($stand)
         isset($stand['kuehl_n']) ? (int) $stand['kuehl_n'] : 0,
         isset($stand['co2_n']) ? (int) $stand['co2_n'] : 0,
         isset($stand['fenster_n']) ? (int) $stand['fenster_n'] : 0);
-    $w = function ($v) { return ($v === null || !is_numeric($v)) ? '-' : (string) (0 + $v); };
-    $o .= ';AT=' . $w(isset($stand['aussen']['t']) ? $stand['aussen']['t'] : null);
-    $o .= ';ARF=' . $w(isset($stand['aussen']['rf']) ? $stand['aussen']['rf'] : null);
-    $o .= ';ATAU=' . $w(isset($stand['aussen']['t'])
-        ? rk_taupunkt($stand['aussen']['t'], $stand['aussen']['rf']) : null);
-    $o .= ';AABS=' . $w(isset($stand['aussen']['t'])
-        ? rk_absolut($stand['aussen']['t'], $stand['aussen']['rf']) : null);
+    /* Gruppe 3 / MQTT (0.11.21): ein fehlender Wert kommt als Platzhalter statt als Strich - -1 bei
+     * Groessen ohne Vorzeichen, -999 bei Temperaturen, Taupunkten, Abstaenden und Trends; dieselbe Liste
+     * wie ueber MQTT (rk_feld_fehlt()). Bis 0.11.20 stand dort "-", und Loxone behielt den letzten Wert.
+     * Ein Feld ohne Platzhalter traegt weiter den Strich (heute keines - alle anderen sind nie null). */
+    $fehlt = rk_feld_fehlt();
+    $w = function ($v, $feld = '') use ($fehlt) {
+        if ($v === null || !is_numeric($v)) { return isset($fehlt[$feld]) ? (string) $fehlt[$feld] : '-'; }
+        return (string) (0 + rk_feld_begrenzt($feld, $v));
+    };
+    $a = rk_aussen_werte($stand);
+    $o .= ';AT=' . $w($a['t'], 'aussen/t');
+    $o .= ';ARF=' . $w($a['rf'], 'aussen/rf');
+    $o .= ';ATAU=' . $w($a['taupunkt'], 'aussen/taupunkt');
+    $o .= ';AABS=' . $w($a['absolut'], 'aussen/absolut');
     /* ---- Neu in 0.11.0, HINTEN angehaengt ----
      * ZAEHLER und TS sind das Lebenszeichen: ALTER allein kann einen toten
      * Cron nicht anzeigen, wenn niemand mehr fragt. Ueber HTTP fragt der
@@ -5286,37 +5560,16 @@ function rk_zeile($stand)
     $o .= ';NSPERRE=' . (isset($stand['sperre_n']) ? (int) $stand['sperre_n'] : 0);
     $o .= ';NVEREIST=' . (isset($stand['vereist_n']) ? (int) $stand['vereist_n'] : 0);
     $o .= ';HEIZFALL=' . (isset($stand['heizfall']) ? (int) $stand['heizfall'] : -1);
-    $o .= ';AMITTEL=' . $w(isset($stand['aussen_mittel']) ? $stand['aussen_mittel'] : null);
+    $o .= ';AMITTEL=' . $w(isset($stand['aussen_mittel']) ? $stand['aussen_mittel'] : null, 'aussen/mittel');
     $o .= "\n";
 
     foreach ((array) (isset($stand['raeume']) ? $stand['raeume'] : array()) as $nr => $e) {
         $t = array();
-        $paare = array('T' => 't', 'RF' => 'rf', 'TAU' => 'taupunkt', 'ABS' => 'absolut',
-                       'OBERT' => 'ober_t', 'OBERRF' => 'ober_rf', 'LUEFTEN' => 'lueften',
-                       'GEWINN' => 'gewinn', 'SCHIMMEL' => 'schimmel', 'FEUCHT' => 'feucht',
-                       'TROCKEN' => 'trocken', 'BESTIN' => 'best_in', 'BESTSTD' => 'best_std',
-                       'SPREAD' => 'spread', 'VLMIN' => 'vlmin', 'RALTER' => 'alter',
-                       'STEHT' => 'steht', 'ENTH' => 'enth', 'AMPEL' => 'ampel',
-                       'NASS24' => 'nass24', 'NASS7T' => 'nass7t',
-                       'KUEHLEN' => 'kuehlen', 'KUEHLG' => 'kuehlgewinn',
-                       'DAUER' => 'dauer', 'KOSTEN' => 'kosten',
-                       'ERFOLG' => 'erfolg', 'EINTRAG' => 'eintrag',
-                       'CO2' => 'co2', 'CO2HOCH' => 'co2_hoch',
-                       'FENSTER' => 'fenster', 'FENSTERZU' => 'fenster_zu',
-                       /* ---- neu in 0.11.0, hinten angehaengt ---- */
-                       'SCHWUEL' => 'schwuel', 'TROCKNEN' => 'trocknen',
-                       'TROCKENREST' => 'trockenrest', 'ZULUFT' => 'zuluft',
-                       'WRG' => 'wrg', 'FORTLUFT' => 'fortluft',
-                       'VEREIST' => 'vereist', 'RUHE' => 'ruhe',
-                       'ZWANG' => 'zwang', 'TREND' => 'trend',
-                       'DUSCHE' => 'dusche', 'KUEHLFREI' => 'kuehlfrei',
-                       'KBESTIN' => 'kbest_in', 'KBESTSTD' => 'kbest_std',
-                       'SPERRE' => 'sperre',
-                       'CO2ANSTIEG' => 'co2_anstieg',
-                       'CO2ERWARTET' => 'co2_erwartet',
-                       'CO2VOLL' => 'co2_voll', 'CO2LW' => 'co2_lw');
+        /* Gruppe 3 / MQTT (0.11.21): die Zuordnung Feld -> Thema an EINER Stelle (rk_feld_thema()),
+         * dieselbe fuer die Namenstabelle; Reihenfolge wie bisher. */
+        $paare = rk_feld_thema();
         foreach ($paare as $kurz => $feld) {
-            $t[] = 'R' . (int) $nr . $kurz . '=' . $w(isset($e[$feld]) ? $e[$feld] : null);
+            $t[] = 'R' . (int) $nr . $kurz . '=' . $w(isset($e[$feld]) ? $e[$feld] : null, $feld);
         }
         $o .= 'RAUM' . (int) $nr . ';' . implode(';', $t) . "\n";
     }

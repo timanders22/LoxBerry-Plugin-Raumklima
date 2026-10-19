@@ -213,6 +213,10 @@ function rk_selbstpruefung()
     list($mok, $mtext) = rk_test_themen_vergleich();
     $add('PRUEF.THEMEN', $mok, $mtext);
 
+    /* ---- 7a. Gruppe 3 / MQTT (0.11.21): ist jeder Name der Namenstabelle ein gesendetes Thema? ---- */
+    list($nok, $ntext) = rk_test_namen_vergleich();
+    $add('PRUEF.NAMEN', $nok, $ntext);
+
     /* ---- 8. Sind die Vorlagen wohlgeformt? ----
      * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config. */
     /* SimpleXML liegt auf Debian im Paket php-xml. Es steht seit 0.11.3 in
@@ -386,6 +390,42 @@ function rk_test_themen_vergleich()
             $n, count($fehlt_tab), implode(', ', array_slice($fehlt_tab, 0, 5))));
     }
     return array(2, sprintf(rk_t('PRUEFTEXT.THEMEN_FEHLT_SEND'), $n, count($fehlt_send)));
+}
+
+/**
+ * Gruppe 3 / MQTT (0.11.21): die Namenstabelle (rk_mqtt_namen()) gegen das, was wirklich gesendet wird.
+ * Jeder Name der Tabelle muss ein Thema sein, das rk_mqtt_werte() bei diesem Abbild erzeugt, und der Name
+ * muss aus Praefix und Thema entstehen wie im Gateway. Ohne Abbild wird gegen die Themenliste
+ * (rk_mqtt_themen()) verglichen - das ist dann ausdruecklich gesagt. Bauart ab-Linie (Eichung B58).
+ */
+function rk_test_namen_vergleich()
+{
+    $namen = array();
+    foreach (rk_mqtt_namen() as $z) {
+        if ($z['gruppe'] === 'bestand') { continue; }
+        $namen[$z['thema']] = $z['name'];
+    }
+    $n = count($namen);
+    if ($n === 0) { return array(0, rk_t('PRUEFTEXT.THEMEN_KEINE')); }
+    $c = rk_config(false);
+    $praefix = trim((string) $c['mqtt_topic'], '/');
+    $stand = rk_stand();
+    $mit_abbild = !empty($stand['raeume']);
+    $soll = $mit_abbild ? rk_mqtt_werte($stand) : rk_mqtt_themen();
+    $fehlt = array();
+    foreach ($namen as $thema => $name) {
+        $schluessel = $mit_abbild ? $thema : preg_replace('#^raum[0-9]+/#', 'raumN/', $thema);
+        if (!array_key_exists($schluessel, $soll)
+            || $name !== str_replace(array('/', ' ', '%'), '_', $praefix . '/' . $thema)) {
+            $fehlt[] = $name;
+        }
+    }
+    if ($fehlt) {
+        return array(0, sprintf(rk_t('PRUEFTEXT.NAMEN_FEHLT'), $n, count($fehlt),
+                                implode(', ', array_slice($fehlt, 0, 5))));
+    }
+    return array(1, $mit_abbild ? sprintf(rk_t('PRUEFTEXT.NAMEN_GLEICH'), $n)
+                                : sprintf(rk_t('PRUEFTEXT.NAMEN_TABELLE'), $n));
 }
 
 /**

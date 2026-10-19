@@ -3,9 +3,43 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.20 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.21 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.21
+
+Einbindung in Loxone über MQTT (Gruppe 3 der MQTT-Umstellung). MQTT ist jetzt der Weg des Musterprojekts;
+der Virtuelle HTTP-Eingang bleibt für bestehende Anlagen.
+
+* **Lebenszeichen in Hausform:** `status/ok`, `status/ts` und `status/zaehler` gehen in jedem Lauf hinaus, nie
+  retained. Die alten Themen `ok`, `ts`, `lauf_ts` und `zaehler` bleiben unverändert.
+* **Fehlende Werte:** Was das Plugin nicht rechnen kann, kommt über MQTT und in der HTTP-Antwortzeile nicht mehr
+  als „nichts“ bzw. „-“, sondern als **-1** (Größen ohne Vorzeichen: rF, absolute Feuchte, Wandfeuchte, CO₂,
+  erwarteter CO₂-Anstieg, Luftwechsel, Rückwärmzahl, Wäsche-Restzeit, Außenfeuchte, absolute Außenfeuchte) bzw.
+  **-999** (Temperaturen, Taupunkte, Abstände und Trends: T, Taupunkt, Wandtemperatur, Abstand zum Taupunkt,
+  Kühlvorlauf, Enthalpie, Feuchtegewinn, Kühlgewinn, Feuchtetrend, Wasseraustrag, Zuluft, Fortluft,
+  CO₂-Anstieg, Außentemperatur, Taupunkt außen, Außenmittel). Bisher behielt der Eingang in Loxone den letzten
+  Wert. Die Untergrenzen der HTTP-Vorlage sind dafür auf -1 bzw. -999 gesetzt – **wer den HTTP-Weg nutzt, liest
+  die Vorlage neu ein.**
+* **Reiter „Einbindung in Loxone“:** Schritt 1 MQTT einschalten, Schritt 2 das MQTT-Gateway (V1: Abo, V2:
+  Hakenliste mit 24 + 52 Datenpunkten je Raum), Schritt 3 Virtuelle Eingänge mit einer **Namenstabelle**
+  (Name wie das Gateway ihn vergibt, Kopierknopf, Bedeutung, Einheit/Bereich, Platzhalter) – keine
+  Importvorlage für Werte –, Schritt 4 Ausfallerkennung an `raumklima_status_zaehler` (Tmc 1500 s), Schritt 5
+  die drei Seiten, Schritt 6 Gegenprobe. Der HTTP-Weg mit Adressen, Vorlage und Wortzeichen steht zugeklappt
+  unter „Bestehende Anlagen“.
+* **Baustein-Listen** wortgleich mit dem Musterprojekt: die Eingänge heißen wie die Virtuellen Eingänge des
+  Gateways (`raumklima_raum1_t` …), „Abruf steht“ heißt „Lebenszeichen fehlt (Raumklima)“ und wartet 1500 s,
+  neue Statuszeilen für -1 und -999.
+* **Textberichtigungen:** Die Reiter MQTT und „Einbindung in Loxone“ sagten, die Werte würden „über den
+  MQTT-Eingang“ verwendet bzw. das Gateway lege die Eingänge selbst an – man legt Virtuelle Eingänge an. Zwei
+  Code-Kommentare empfahlen, das Alter in Loxone aus `ts` zu rechnen; Loxone rechnet in Ortszeit – das Alter
+  rechnet das Plugin selbst.
+* Selbstprüfung (Reiter Test) neu: „Ist jeder Name der Namenstabelle ein gesendetes Thema?“
+* Die vier Bilder der drei Seiten zeigen die Seiten mit den Virtuellen Eingängen.
+* Wasseraustrag und CO₂-Anstieg werden auf -998 begrenzt, damit ein echter Wert nie wie der Fehlwert -999
+  aussieht.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.11.20
 
@@ -493,9 +527,11 @@ lückenlos trockene Wand — und das ist die gefährliche Richtung.
 
 Zwei Wege, beide gleichzeitig nutzbar:
 
-* **MQTT** über das MQTT Gateway von LoxBerry — ohne Broker-Zugangsdaten.
-* **Virtueller Eingang** — der Reiter „Einbindung in Loxone“ erzeugt eine
-  fertige Vorlage zum Import, mit Adresse und Wortzeichen darin.
+* **MQTT** über das MQTT Gateway von LoxBerry — ohne Broker-Zugangsdaten; der Weg des Musterprojekts. In
+  Loxone je ein Virtueller Eingang mit dem Namen, den das Gateway vergibt (Namenstabelle im Reiter
+  „Einbindung in Loxone“, Kopierknopf); eine Importvorlage gibt es für diese Werte nicht.
+* **Virtueller HTTP-Eingang** — für bestehende Anlagen: der Reiter „Einbindung in Loxone“ erzeugt unter
+  „Bestehende Anlagen“ eine fertige Vorlage zum Import, mit Adresse und Wortzeichen darin.
 
 Die Bausteine der drei Baustein-Listen aus demselben Reiter stehen fertig verbunden auf den Seiten
 „Raumklima“, „Raumklima Werte“ und „Raumklima Lüften und Kühlen“ im
@@ -503,8 +539,9 @@ Die Bausteine der drei Baustein-Listen aus demselben Reiter stehen fertig verbun
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen. Jede Liste hat im Reiter eine
 Schritt-für-Schritt-Anleitung und ein Bild der Seite.
 
-Fehlende Werte werden **nicht** gesendet und als Strich angezeigt. Eine 0
-wäre bei einer Temperatur eine Falschaussage.
+Fehlende Werte kommen über beide Wege als **-1** (Größen ohne Vorzeichen) bzw. **-999** (Temperaturen,
+Taupunkte, Abstände, Trends), in der Oberfläche als Strich. Eine 0 wäre bei einer Temperatur eine
+Falschaussage; -1 wäre bei einer Temperatur ein gewöhnlicher Wert.
 
 **Ausfälle sind sichtbar.** `OK` ist **1**, sobald mindestens *ein* Raum
 Werte liefert und die letzte erfolgreiche Messung nicht älter ist als das
@@ -550,7 +587,9 @@ Messwerte gehen bewusst ohne. Stirbt der Abruf, steht in Loxone weiter die
 letzte Zahl —
 das ist keine fehlende Auskunft, sondern eine Falschaussage. Dagegen gehen drei
 Werte hinaus: `OK`, ein **Zeitstempel** der letzten *erfolgreichen* Messung und
-ein **Zähler**, der 0 bis 999 umläuft. Der Zähler beantwortet, was ein
+ein **Zähler**, der 0 bis 999 umläuft (über MQTT seit 0.11.21 auch in Hausform als `status/ok`,
+`status/ts` und `status/zaehler`; in Loxone hängt die Analogwertvalidierung an
+`raumklima_status_zaehler`). Der Zähler beantwortet, was ein
 Zeitstempel nicht kann: ein Raspberry ohne gepufferte Uhr springt beim ersten
 Zeitabgleich.
 
