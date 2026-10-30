@@ -42,7 +42,8 @@ if (!function_exists('rk_e')) {
 }
 
 require_once __DIR__ . '/rk_klima.php';
-/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b; seit 0.11.22 Stamm 1.2.1
+ * mit weiteren Ausgabezielen, rk_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
@@ -3273,16 +3274,58 @@ function rk_abrufen($erzwingen = false)
  * Bestehende Meldewege (MQTT, Endpunkt, Vorlage) bleiben unberuehrt.
  */
 
-/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone). */
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone).
+ *  Seit 0.11.22 (Nachtwelle N9, Modul 1.2.0, Pflegewelle 22) dazu Sonos4Lox und - nur ab Modul 1.1.4, damit
+ *  eine zuerst geladene aeltere Abschrift nichts anbietet, was sie nicht kann - SonoX (ungemessen, kein Sonos im
+ *  Haus; das Modul prueft Installation und Zone bzw. Raum). Weitere Ausgabeziele (Tabelle, 'ziele') seit 0.11.22
+ *  mit Stamm 1.2.1 - rk_mit_zielen() unten; ohne Tabelle wie 1.1.4. */
 function rk_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    $m = array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (defined('ANSAGE_FASSUNG') && version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) {
+        $m[] = 'sonox';
+    }
+    return $m;
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
 function rk_ansage_opt()
 {
     return array('modi' => rk_ansage_modi());
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function rk_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (0.11.22), X-2: die Felder der Tabelle als name[N] (N = 2..6) - nur, wenn die Linie die Tabelle
+ *  anbietet. rk_eingabe_felder('einst') nimmt sie auf; rk_post_wert() liest name[N] schon (wie die Raumspalten), und die
+ *  Markierung trifft name[N] direkt. */
+function rk_ziele_x2_felder()
+{
+    $aus = array();
+    if (!rk_mit_zielen()) { return $aus; }
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        for ($i = 2; $i <= 6; $i++) { $aus[] = $n . '[' . $i . ']'; }
+    }
+    return $aus;
+}
+
+/** Welle Mehrfach-Ziele (0.11.22), X-2: aus den zurueckgereisten Eingaben (Schluessel name[N]) wieder das POST der Tabelle
+ *  (ziele_post); null, wenn die Tabelle nicht darin steht (die gespeicherten Ziele bleiben sichtbar). */
+function rk_ziele_x2_post(array $werte)
+{
+    $p = array();
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        for ($i = 2; $i <= 6; $i++) {
+            $k = $n . '[' . $i . ']';
+            if (isset($werte[$k]) && is_string($werte[$k])) { $p[$n][$i] = $werte[$k]; }
+        }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
 }
 
 /** Die Ansageanlaesse: Kennung => Haken in der Konfiguration. */
@@ -3821,7 +3864,8 @@ function rk_mqtt_bereich($thema)
  *
  * Je Zeile: thema, name (Gateway-Name), bedeutung (Sprachschluessel aus rk_mqtt_themen()), bereich, art
  * ('zahl'|'text'), retain, fehlt (Platzhalter oder null), muster (Eingang auf den Musterseiten), gruppe
- * ('global'|'raum'|'bestand'), haken (gehoert in die Hakenliste).
+ * ('global'|'raum'|'bestand'), haken (gehoert in die Hakenliste), noncached (seit 0.11.22, Nachtwelle N9: aus
+ * rk_mqtt_noncached(), nur bei Haken).
  * Reihenfolge: 24 globale Themen, je Raum raum<n>/ok, die 50 Felder der Antwortzeile und raum<n>/name;
  * ohne eingerichteten Raum raum1 als Beispiel. Bei einem Raum 76 Haken, davon 70 auf den Musterseiten
  * (nicht: raeume, schwuel, zwang, sperre, raum1/ok, raum1/name). Danach "bestand": ok, zaehler, ts, lauf_ts,
@@ -3849,6 +3893,7 @@ function rk_mqtt_namen()
             'muster'    => $muster,
             'gruppe'    => $gruppe,
             'haken'     => $gruppe !== 'bestand',
+            'noncached' => $gruppe !== 'bestand' && in_array($thema, rk_mqtt_noncached(), true),
         );
     };
     $aus = array();
@@ -3874,6 +3919,155 @@ function rk_mqtt_namen()
         $aus[] = $zeile($t, 'bestand', false);
     }
     return $aus;
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N9, 0.11.22) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos(), Govee 0.9.30
+ * gv_mqtt_v2_haken_lage() und ACTiKamera 1.9.34 (Nachtwelle N4); die Datei liest rk_v2_haken_lage(). Rein.
+ */
+function rk_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = trim($e[$k]);
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nach einem Neustart des Miniservers
+ * nicht weiter; steht es zu viel, geht jeder Wert erneut an den Miniserver.
+ */
+function rk_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: die Eintraege der Namenstabelle mit Haken (rk_mqtt_namen() - DIESELBE Liste wie die
+ * Hakenliste im Reiter Einbindung in Loxone, Regeln/07; 24 + 52 je Raum, mit dem Textthema raum<n>/name, fuer das
+ * die Einbindung einen Virtuellen Texteingang vorsieht). Thema voll mit dem Praefix wie in rk_mqtt_namen().
+ * Noncached aus rk_mqtt_noncached(): status/ok.
+ */
+function rk_v2_haken_soll()
+{
+    $cfg = rk_config(false);
+    $p = trim(isset($cfg['mqtt_topic']) ? (string) $cfg['mqtt_topic'] : 'raumklima', '/');
+    $aus = array();
+    foreach (rk_mqtt_namen() as $z) {
+        if (empty($z['haken'])) {
+            continue;
+        }
+        $aus[] = array('thema' => $p . '/' . $z['thema'], 'name' => $z['name'], 'noncached' => !empty($z['noncached']));
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N9, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function rk_v2_haken_lage()
+{
+    $cfg = rk_config(false);
+    if (empty($cfg['mqtt_ein'])) {
+        return array(2, rk_t('PRUEFTEXT.V2_AUS'));
+    }
+    $m = rk_mqtt_zustand();
+    $fassung = (int) $m['fassung'];
+    $home = (string) rk_paths()['home'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, rk_t('PRUEFTEXT.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, rk_t('PRUEFTEXT.V2_V1'));
+    }
+    $abo = rk_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, rk_t('PRUEFTEXT.V2_UNKLAR'));
+    }
+    $liste = rk_v2_haken_soll();
+    if (!$liste) {
+        return array(2, rk_t('PRUEFTEXT.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = rk_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(rk_t('PRUEFTEXT.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(rk_t('PRUEFTEXT.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(rk_t('PRUEFTEXT.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(rk_t('PRUEFTEXT.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
+}
+
+/**
+ * Nachtwelle N9 (0.11.22): die Themen, die unter MQTT-Gateway V2 "Noncached" brauchen - EINE Quelle fuer die
+ * Namenstabelle (rk_mqtt_namen(), Feld 'noncached'), die Spalte Noncached der Hakenliste und den Selbsttest gegen
+ * subscriptions.json. status/ok (das Lebenszeichen-ok in Hausform) kommt mit jedem Abruf meist mit gleichem Wert;
+ * Gateway V2 unterdrueckt einen gleichen Wert (Dedup) - ohne "Noncached" fehlte es nach einem Neustart des
+ * Miniservers (Vorschrift Nachtwelle, Nachtrag 29.10.). Eine Befehlsbruecke (status/befehle) hat die Linie nicht.
+ */
+function rk_mqtt_noncached()
+{
+    return array('status/ok');
 }
 
 /** Geht dieses Thema in JEDEM Lauf hinaus? Das Lebenszeichen und ok (M7). */
@@ -5662,6 +5856,7 @@ function rk_sicherung_lesen($roh, &$namen = null)
     $namen = array();
     $hinweise = array();
     $zugang = null;
+    $rk_tsspaet = array();     // Welle Mehrfach-Ziele (0.11.22): tts.ziele, wenn die Sicherung die Liste nicht kannte
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         $namen['_'] = rk_grund('FEHLER.KEIN_JSON');
@@ -5707,7 +5902,20 @@ function rk_sicherung_lesen($roh, &$namen = null)
                 continue;
             }
             $tj = rk_tts();
-            list($tv) = ansage_vervollstaendigen($tp + $tj, 'aus');
+            /* Welle Mehrfach-Ziele (0.11.22): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
+            $rk_tsneu = array('tts' => $tp);
+            $rk_tsjetzt = array('tts' => $tj);
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $rk_spaete = array();
+            if (is_array($rk_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($rk_tsneu['tts'], $rk_spaete) = ansage_sicherung_spaet($rk_tsneu['tts'],
+                    (isset($rk_tsjetzt['tts']) && is_array($rk_tsjetzt['tts'])) ? $rk_tsjetzt['tts'] : null);
+            }
+            foreach ($rk_spaete as $rk_sn) { $rk_tsspaet[] = $rk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($tv) = ansage_vervollstaendigen($rk_tsneu['tts'] + $tj, 'aus');
             $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
             $anzahl++;
             continue;
@@ -5778,6 +5986,7 @@ function rk_sicherung_lesen($roh, &$namen = null)
         /* Roh, nicht maskiert: maskiert wird EINMAL, bei der Ausgabe (U6). */
         $mangel[] = sprintf(rk_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
     }
+    foreach ($rk_tsspaet as $rk_sp1) { $hinweise[] = 'SPAET|' . $rk_sp1; }     // 0.11.22: im Handler EINST.SICH_SPAET
     return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
                  $mangel ? array() : $hinweise);
 }

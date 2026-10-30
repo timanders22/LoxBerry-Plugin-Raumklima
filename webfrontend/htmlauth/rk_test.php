@@ -217,6 +217,11 @@ function rk_selbstpruefung()
     list($nok, $ntext) = rk_test_namen_vergleich();
     $add('PRUEF.NAMEN', $nok, $ntext);
 
+    /* ---- 7b. Nachtwelle N9 (0.11.22): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen
+     * Noncached? Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Hinweis (2). ---- */
+    list($v2s, $v2t) = rk_v2_haken_lage();
+    $add('PRUEF.V2_HAKEN', $v2s, $v2t);
+
     /* ---- 8. Sind die Vorlagen wohlgeformt? ----
      * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config. */
     /* SimpleXML liegt auf Debian im Paket php-xml. Es steht seit 0.11.3 in

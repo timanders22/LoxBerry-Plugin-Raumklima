@@ -3,9 +3,37 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.21 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.22 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.22
+
+Pflegefassung der Nachtwelle (29.10.2026) ohne Änderung an Rechnung, Werten oder Themen; neu sind mehrere Lautsprecher
+gleichzeitig für die Ansagen:
+
+* **Gemeinsame Sprachausgabe 1.2.1** (bisher 1.1.2), dazu die Ausgabearten **Sonos4Lox** und **SonoX** (ab Werk nicht
+  gewählt, ungemessen – kein Sonos im Haus). Das Formular zeigt Zone bzw. Raum, Lautstärke und (SonoX) Sprache; der
+  Reiter Test prüft Installation und Zone bzw. Raum. **SonoX schickt den Ansagetext an Google** und antwortet erst nach
+  der Wiedergabe (bis 30 s).
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 10 s, mit Sonos 30 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  0.11.21. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 0.11.21 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* spricht wie bisher an alle Ziele; die Knöpfe *Testansage an Ziel n* darunter sprechen
+  den Testsatz nur an diesem Ziel.
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste (Reiter *Einbindung in
+  Loxone*), der dort nicht angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt. Unter Gateway V1 und bei
+  ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Noncached:** Die Hakenliste hat eine Spalte *Noncached*. Nötig ist es nur für `status/ok` (Gateway V2 unterdrückt
+  einen gleichen Wert; ohne den Haken fehlte es nach einem Neustart des Miniservers). Bis 0.11.21 stand dort „kein
+  Thema braucht Noncached“.
 
 ## Neu in 0.11.21
 

@@ -166,7 +166,9 @@ function rk_eingabe_felder($formular)
                        array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'),
                        /* Sprachausgabe (seit 0.11.15): ansage_x2_felder() nennt nie die Sprechtoken. */
                        ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel',
-                       'ansage_ruhe_von', 'ansage_ruhe_bis'));
+                       'ansage_ruhe_von', 'ansage_ruhe_bis'),
+                       /* Welle Mehrfach-Ziele (0.11.22): die Tabelle als name[N], nur wenn die Linie sie anbietet. */
+                       rk_ziele_x2_felder());
 }
 
 /** Ein Wert aus $_POST - auch fuer 'r_min[3]'. null = nicht mitgeschickt. */
@@ -443,6 +445,12 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
             }
             if (in_array('ANSAGE_BEHALTEN', (array) $rk_hinw, true)) {
                 $rk_meldungen[] = rk_t('EINST.SICH_ANSAGE_BEHALTEN');
+            }
+            /* Welle Mehrfach-Ziele (0.11.22): Spaetliste - die Sicherung kannte die weiteren Ziele nicht, sie bleiben. */
+            foreach ((array) $rk_hinw as $rk_hw1) {
+                if (is_string($rk_hw1) && strpos($rk_hw1, 'SPAET|') === 0) {
+                    $rk_meldungen[] = sprintf(rk_t('EINST.SICH_SPAET'), substr($rk_hw1, 6));
+                }
             }
             /* Die Zugangsdaten wandern nach geheim.json, NICHT in die
              * Konfiguration. Und es wird gesagt, ob welche dabei waren -
@@ -775,6 +783,7 @@ if ($rk_post && isset($_POST['speichern'])) {
     $rk_hat_mqtt  = isset($_POST['feld_mqtt']);
     $rk_falsch = array();
     $rk_g_neu = null;
+    $rk_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     /* Ein Feld pruefen. $regel ist ein Schluessel fuer rk_wert_pruefen() oder
      * eine Regel fuer rk_regel_pruefen(). Rueckgabe array(gut, Wert). Die
      * Eingabe steht in der Beanstandung - ausser bei einem Kennwort. */
@@ -871,8 +880,8 @@ if ($rk_post && isset($_POST['speichern'])) {
          * ist ein Widerspruch. Adresse und Vorlage nur im Heimnetz (im Modul). */
         $rk_tmangel = array();
         $rk_tbean = array();
-        $rk_cfg['tts'] = ansage_formular_lesen($_POST, rk_tts(), $rk_tmangel, $rk_tbean, rk_ansage_opt(),
-                                               rk_ansage_k());
+        $rk_cfg['tts'] = ansage_formular_lesen($_POST, rk_tts(), $rk_tmangel, $rk_tbean, rk_ansage_opt() + array(
+                                               'ziele' => rk_mit_zielen()), rk_ansage_k(), $rk_thinw);
         foreach ($rk_tmangel as $rk_tm) { $rk_fehler[] = $rk_tm['text']; }
         foreach ($rk_tbean as $rk_tb) { $rk_falsch[] = $rk_tb; }
         $rk_cfg['ansage_lueften'] = !empty($_POST['ansage_lueften']) ? 1 : 0;
@@ -920,6 +929,7 @@ if ($rk_post && isset($_POST['speichern'])) {
             rk_log('Speichern: geheim.json liess sich nicht schreiben - es wurde nichts gespeichert.');
         } elseif (rk_config_speichern($rk_cfg)) {
             $rk_meldungen[] = rk_t('ALLG.GESPEICHERT');
+            foreach ($rk_thinw as $rk_th) { $rk_meldungen[] = $rk_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
             rk_log('Einstellungen gespeichert (' . ($rk_hat_einst ? 'Einstellungen' : '')
                    . ($rk_hat_einst && $rk_hat_mqtt ? '+' : '') . ($rk_hat_mqtt ? 'MQTT' : '') . ').');
         } else {
@@ -980,6 +990,30 @@ if ($rk_post && isset($_POST['log_leeren'])) {
 /* ---------------- Test ---------------- */
 if ($rk_post && isset($_POST['test'])) {
     $rk_testausgabe = rk_test_ausfuehren((string) $_POST['test']);
+    $rk_tab = 'tab-test';
+}
+
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($rk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    /* Testansage (Nr. 36 b) wie rk_test_ansage(): ins Protokoll nur die Kurzform, nie Text oder Token. */
+    $rk_tk = rk_ansage_k();
+    $rk_tnur = (isset($_POST['ansage_test_ziel']) && rk_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $rk_tnur === 0) {
+        $rk_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($rk_tnur >= 1) {
+        $rk_tr = ansage_testansage(rk_tts(), $rk_tk, $rk_tnur);
+    } else {
+        $rk_tr = ansage_testansage(rk_tts(), $rk_tk);
+    }
+    rk_log('Testansage' . ($rk_tnur >= 1 ? ' an Ziel ' . $rk_tnur : '') . ': ' . ansage_kurz($rk_tr));
+    if ($rk_tr['stand'] === 1) {
+        $rk_testausgabe = rk_t('TEST.ANSAGE_OK');
+    } elseif ($rk_tr['stand'] === -1) {
+        $rk_testausgabe = sprintf(rk_t('TEST.ANSAGE_NICHTS'), ansage_kennung_text($rk_tr['kennung'], $rk_tk));
+    } else {
+        $rk_testausgabe = sprintf(rk_t('TEST.ANSAGE_FEHL'), ansage_kennung_text($rk_tr['kennung'], $rk_tk));
+    }
     $rk_tab = 'tab-test';
 }
 
@@ -1771,7 +1805,10 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
     'w' => function ($n, $g) { return rk_ein($n, $g); },
     'm' => function ($n) { return rk_mark($n); },
     'c' => function ($n, $g) { return rk_haken($n, $g) !== ''; },
-    'modi' => rk_ansage_modi()), rk_ansage_k()) ?>
+    'modi' => rk_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => rk_mit_zielen(),
+    'ziele_post' => rk_eingaben_aktiv()['formular'] === 'einst' ? rk_ziele_x2_post(rk_eingaben_aktiv()['werte']) : null), rk_ansage_k()); ?>
 <h3><?= rk_e(rk_t('EINST.ANSAGE_ANLAESSE')) ?></h3>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="ansage_lueften" value="1"<?= rk_haken('ansage_lueften', !empty($rk_cfg['ansage_lueften'])) ?><?= rk_mark('ansage_lueften') ?>> <?= rk_e(rk_t('EINST.ANSAGE_LUEFTEN')) ?></label>
@@ -1956,9 +1993,9 @@ $rk_takt = max(300, min(3600, (int) (is_numeric($rk_cfg['takt']) ? $rk_cfg['takt
     } ?>
 <p class="sm-hilfe" id="rk-v2"><?= rk_e(sprintf(rk_t('LOX.MQ_S2_V2'), $rk_thema)) ?></p>
 <div class="sm-breit"><table class="sm-tbl" id="rk-hakenliste">
-<tr><th>#</th><th><?= rk_e(rk_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_SEITE')) ?></th></tr>
+<tr><th>#</th><th><?= rk_e(rk_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_SEITE')) ?></th><th><?= rk_e(rk_t('LOX.HAKEN_SP_NC')) ?></th></tr>
 <?php foreach ($rk_haken as $rk_hi => $rk_h) { ?>
-<tr><td><?= (int) $rk_hi + 1 ?></td><td><span class="sm-mono"><?= rk_e($rk_thema . '/' . $rk_h['thema']) ?></span></td><td><span class="sm-mono"><?= rk_e($rk_h['name']) ?></span></td><td><?= $rk_h['muster'] ? rk_e(rk_t('ALLG.JA')) : '&ndash;' ?></td></tr>
+<tr><td><?= (int) $rk_hi + 1 ?></td><td><span class="sm-mono"><?= rk_e($rk_thema . '/' . $rk_h['thema']) ?></span></td><td><span class="sm-mono"><?= rk_e($rk_h['name']) ?></span></td><td><?= $rk_h['muster'] ? rk_e(rk_t('ALLG.JA')) : '&ndash;' ?></td><td><?= !empty($rk_h['noncached']) ? rk_e(rk_t('ALLG.JA')) : '&ndash;' ?></td></tr>
 <?php } ?>
 </table></div>
 <p class="sm-hilfe"><?= rk_e(sprintf(rk_t('LOX.HAKEN_ZAHL'), count($rk_haken), $rk_haken_muster)) ?> <?= rk_e(rk_t('LOX.HAKEN_RESET')) ?></p>
@@ -2284,6 +2321,9 @@ if ($rk_pz[0] > 0) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="ansage"><?= rk_e(rk_t('TEST.K_ANSAGE')) ?></button>
+    <?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+       ohne weitere Ziele nichts. */
+    if (rk_mit_zielen()) { echo ansage_testknoepfe_html(rk_tts(), rk_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
 </div>
 <?php if ($rk_testausgabe !== '') { ?>
