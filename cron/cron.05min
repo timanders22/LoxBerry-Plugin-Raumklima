@@ -18,5 +18,11 @@
 # Plugin, das nach einem misslungenen Update gar nicht mehr laeuft, sah
 # von aussen aus wie eines, das laeuft. Die uebliche Ausgabe bleibt
 # verworfen, nur die Fehlerausgabe wird aufgehoben.
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+ERR="REPLACELBPLOGDIR/cron_fehler.log"
+# 0.11.23 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 0.11.22 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+( : >>"$ERR" ) 2>/dev/null || ERR=/dev/null
 php "REPLACELBPBINDIR/raumklima_abruf.php" \
-    >/dev/null 2>>"REPLACELBPLOGDIR/cron_fehler.log"
+    >/dev/null 2>>"$ERR"

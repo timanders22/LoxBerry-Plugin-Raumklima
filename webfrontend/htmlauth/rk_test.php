@@ -847,7 +847,7 @@ function rk_test_endpunkt()
 function rk_test_ansage()
 {
     $k = rk_ansage_k();
-    $r = ansage_testansage(rk_tts(), $k);
+    $r = ansage_testansage(rk_ansage_vor_ort(), $k);
     rk_log('Testansage: ' . ansage_kurz($r));
     if ($r['stand'] === 1) { return rk_t('TEST.ANSAGE_OK'); }
     if ($r['stand'] === -1) { return sprintf(rk_t('TEST.ANSAGE_NICHTS'), ansage_kennung_text($r['kennung'], $k)); }

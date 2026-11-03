@@ -165,8 +165,7 @@ function rk_eingabe_felder($formular)
     return array_merge($aus, array_keys(rk_ui_einzelfelder()),
                        array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'),
                        /* Sprachausgabe (seit 0.11.15): ansage_x2_felder() nennt nie die Sprechtoken. */
-                       ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel',
-                       'ansage_ruhe_von', 'ansage_ruhe_bis'),
+                       ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel'), ansage_regeln_x2_felder(),
                        /* Welle Mehrfach-Ziele (0.11.22): die Tabelle als name[N], nur wenn die Linie sie anbietet. */
                        rk_ziele_x2_felder());
 }
@@ -881,22 +880,17 @@ if ($rk_post && isset($_POST['speichern'])) {
         $rk_tmangel = array();
         $rk_tbean = array();
         $rk_cfg['tts'] = ansage_formular_lesen($_POST, rk_tts(), $rk_tmangel, $rk_tbean, rk_ansage_opt() + array(
-                                               'ziele' => rk_mit_zielen()), rk_ansage_k(), $rk_thinw);
+                                               'ziele' => rk_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), rk_ansage_k(), $rk_thinw);
         foreach ($rk_tmangel as $rk_tm) { $rk_fehler[] = $rk_tm['text']; }
         foreach ($rk_tbean as $rk_tb) { $rk_falsch[] = $rk_tb; }
         $rk_cfg['ansage_lueften'] = !empty($_POST['ansage_lueften']) ? 1 : 0;
         $rk_cfg['ansage_schimmel'] = !empty($_POST['ansage_schimmel']) ? 1 : 0;
-        /* Ruhezeit der Ansagen (seit 08.10.2026): je Feld HH:MM oder leer, beide oder keines. */
-        $rk_rgut = true;
-        foreach (array('ansage_ruhe_von' => 'EINST.ANSAGE_RUHE', 'ansage_ruhe_bis' => 'EINST.ANSAGE_RUHE_BIS') as $rk_rk => $rk_rb) {
-            list($rk_gut, $rk_w) = $rk_pruefe($rk_rk, $rk_rk, rk_t($rk_rb));
-            if ($rk_gut) { $rk_cfg[$rk_rk] = $rk_w; } else { $rk_rgut = false; }
-        }
-        if ($rk_rgut && rk_ansage_ruhe_grund($rk_cfg['ansage_ruhe_von'], $rk_cfg['ansage_ruhe_bis']) !== '') {
-            $rk_fehler[] = rk_t('FEHLER.ANSAGE_RUHE');
-            $rk_falsch[] = 'ansage_ruhe_von';
-            $rk_falsch[] = 'ansage_ruhe_bis';
-        }
+        /* 0.11.23: die Regeln des Stamms; die Felder ansage_ruhe_von/bis schreiben jetzt in ansage_regeln. Die alten Schluessel bleiben unberuehrt. */
+        $rk_rm = array();
+        $rk_rb = array();
+        list($rk_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, rk_ansage_regeln(rk_config()), array(), $rk_rm, $rk_rb, rk_ansage_k());
+        foreach ($rk_rm as $rk_rx) { $rk_fehler[] = $rk_rx['text']; }
+        foreach ($rk_rb as $rk_ry) { $rk_falsch[] = $rk_ry; }
     }
 
     /* ===================== Felder des Reiters MQTT ===================== */
@@ -1002,9 +996,9 @@ if ($rk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $rk_tnur === 0) {
         $rk_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($rk_tnur >= 1) {
-        $rk_tr = ansage_testansage(rk_tts(), $rk_tk, $rk_tnur);
+        $rk_tr = ansage_testansage(rk_ansage_vor_ort(), $rk_tk, $rk_tnur);
     } else {
-        $rk_tr = ansage_testansage(rk_tts(), $rk_tk);
+        $rk_tr = ansage_testansage(rk_ansage_vor_ort(), $rk_tk);
     }
     rk_log('Testansage' . ($rk_tnur >= 1 ? ' an Ziel ' . $rk_tnur : '') . ': ' . ansage_kurz($rk_tr));
     if ($rk_tr['stand'] === 1) {
@@ -1815,13 +1809,11 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
   <label><input data-role="none" type="checkbox" name="ansage_schimmel" value="1"<?= rk_haken('ansage_schimmel', !empty($rk_cfg['ansage_schimmel'])) ?><?= rk_mark('ansage_schimmel') ?>> <?= rk_e(rk_t('EINST.ANSAGE_SCHIMMEL')) ?></label>
   <p class="sm-hilfe"><?= rk_e(rk_t('EINST.ANSAGE_ANLAESSE_HILFE')) ?></p>
 </div>
-<div class="sm-feld">
-  <label for="rk_aruhe_von"><?= rk_e(rk_t('EINST.ANSAGE_RUHE')) ?></label>
-  <input data-role="none" type="text" id="rk_aruhe_von" name="ansage_ruhe_von" maxlength="5" placeholder="22:00" value="<?= rk_e(rk_ein('ansage_ruhe_von', $rk_cfg['ansage_ruhe_von'])) ?>"<?= rk_mark('ansage_ruhe_von') ?>>
-  <label for="rk_aruhe_bis"><?= rk_e(rk_t('EINST.ANSAGE_RUHE_BIS')) ?></label>
-  <input data-role="none" type="text" id="rk_aruhe_bis" name="ansage_ruhe_bis" maxlength="5" placeholder="07:00" value="<?= rk_e(rk_ein('ansage_ruhe_bis', $rk_cfg['ansage_ruhe_bis'])) ?>"<?= rk_mark('ansage_ruhe_bis') ?>>
-  <p class="sm-hilfe"><?= rk_e(rk_t('EINST.ANSAGE_RUHE_HILFE')) ?></p>
-</div>
+<?= ansage_regeln_html(rk_ansage_regeln(), array(), array(), array(
+    'w' => function ($n, $g) { return rk_ein($n, $g); },
+    'm' => function ($n) { return rk_mark($n); },
+    'c' => function ($n, $g) { return rk_haken($n, $g) !== ''; },
+    'token_vor_ort' => true), rk_ansage_k()) ?>
 <p class="sm-hilfe"><?= rk_e(sprintf(rk_t('EINST.ANSAGE_TEST_HINWEIS'), rk_t('REITER.TEST'))) ?></p>
 
 <div class="sm-knopfreihe">
@@ -2325,6 +2317,7 @@ if ($rk_pz[0] > 0) { ?>
        ohne weitere Ziele nichts. */
     if (rk_mit_zielen()) { echo ansage_testknoepfe_html(rk_tts(), rk_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+  <?= rk_ansage_lage_html() ?>
 </div>
 <?php if ($rk_testausgabe !== '') { ?>
 <div class="sm-pre"><?= rk_e($rk_testausgabe) ?></div>

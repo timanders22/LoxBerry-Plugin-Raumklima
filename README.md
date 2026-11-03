@@ -3,9 +3,20 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.22 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.23 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.23
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt Sprachausgabe, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** Lüften empfohlen und Schimmelgefahr, je Raum beim Eintritt, jeder Anlass mit eigenem Haken. Ihre bisherige Ruhezeit gilt weiter.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse), Google-Lautsprecher über Chromecast4lox (braucht dort ein Standardgerät oder hier den Namen) und Amazon Echo über Alexa-NG. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Reiter *Test* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** Nachtruhe 22 bis 7 Uhr (einstellbar, wird nicht nachgeholt; Dringendes spricht trotzdem), dieselbe Ansage höchstens einmal in 30 Minuten (einstellbar) und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt auch für Dringendes). Die Testansage im Reiter *Test* spricht immer.
+* **Der Minutenlauf wartet nicht auf Lautsprecher:** Gesprochen wird in einem eigenen Vorgang.
+* **Berichtigt:** Der Leser der Haus-Themen hat jetzt auch beim Lesen eines Pakets eine feste Frist.
+
 
 ## Neu in 0.11.22
 

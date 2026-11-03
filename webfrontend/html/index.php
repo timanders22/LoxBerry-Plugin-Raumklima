@@ -90,7 +90,9 @@ $soll = rk_token_lesen();
  * sind Hausstandard (Regeln/07, Regeln/03). Bis 0.11.7 wurde der
  * Parameter stillschweigend uebergangen - gemessen 06.09.2026: HTTP 200
  * mit der normalen Statuszeile. */
-if (isset($_GET['selftest'])) {
+/* 0.11.23 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 0.11.22 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     if ($soll === '') {
         header('HTTP/1.1 403 Forbidden');
         echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
