@@ -1947,7 +1947,7 @@ function rk_ms_holen($ms, $pfad, $zeit = 12)
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        if ($roh === false) { return array(0, '', $fehler !== '' ? $fehler : 'keine Antwort'); }
+        if ($roh === false) { return array(0, '', $fehler !== '' ? $fehler : rk_t('TEST.E_KEINE_ANTWORT')); }
         return array($code, (string) $roh, '');
     }
     /* follow_location = 0 aus demselben Grund wie in rk_holen(): der Kopf
@@ -1957,11 +1957,11 @@ function rk_ms_holen($ms, $pfad, $zeit = 12)
         'ignore_errors' => true, 'follow_location' => 0, 'max_redirects' => 1)));
     /* Bauart A (Durchgang 01.10.2026, C5): wie in rk_holen(). */
     $fp = @fopen($url, 'rb', false, $ctx);
-    if ($fp === false) { return array(0, '', 'keine Antwort'); }
+    if ($fp === false) { return array(0, '', rk_t('TEST.E_KEINE_ANTWORT')); }
     $meta = @stream_get_meta_data($fp);
     $roh = @stream_get_contents($fp);
     @fclose($fp);
-    if ($roh === false) { return array(0, '', 'keine Antwort'); }
+    if ($roh === false) { return array(0, '', rk_t('TEST.E_KEINE_ANTWORT')); }
     return array(rk_http_code($meta), (string) $roh, '');
 }
 
@@ -3424,7 +3424,7 @@ function rk_ansage_token_pflegen($cfg = null)
 function rk_ansage_vor_ort($cfg = null)
 {
     if ($cfg === null) { $cfg = rk_config(); }
-    return ansage_token_fuer_lauf(rk_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), rk_ansage_k());
+    return ansage_tafel_einreihen(ansage_token_fuer_lauf(rk_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), rk_ansage_k()), rk_ansage_regeln($cfg), rk_ansage_k(), true);     // Stamm 1.4.0: die Tafel, wenn sie bereitsteht
 }
 
 /** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
