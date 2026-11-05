@@ -2318,6 +2318,7 @@ function rk_blaetter($daten, $praefix, &$treffer, $tiefe)
  * ================================================================== */
 
 define('RK_FEIN_MAX', 144);      // 12 Stunden zu 5 Minuten
+define('RK_DUSCHE_HALT_S', 10800);  // 0.11.26 (RK-2): so lange haelt der Dusch-Merker hoechstens, seit der Sprung zuletzt lief
 define('RK_STUNDEN_MAX', 720);   // 30 Tage
 define('RK_EREIGNIS_MAX', 20);
 
@@ -2692,28 +2693,53 @@ function rk_verlauf_werte($vr, $jetzt, $volumen = 0, $trend_min = 60)
      * Minutenzahl, sondern wenn die Feuchte wieder unter den Wert VOR dem
      * Sprung faellt; sonst steht die Empfehlung, waehrend das Wasser noch
      * an den Fliesen haengt.
+     *
+     * 0.11.26 (RK-2): so steht es jetzt auch im Code. Bis 0.11.25 fiel der
+     * Merker, sobald der Sprung aus dem 30-Minuten-Fenster lief: 10 auf 14 g/m3
+     * und dann gleichbleibend ergab nach 30 Minuten dusche=0 bei 14 g/m3. Die
+     * Reihe wird deshalb von vorn abgegangen: der Sprung setzt den Merker und
+     * merkt den Wert vor dem Sprung, der Merker faellt, wenn die Feuchte wieder
+     * dort ist (0,2 g/m3 Spielraum; sie naehert sich dem Wert nur an). Hoechstens
+     * RK_DUSCHE_HALT_S lang: draussen kann es feuchter geworden sein, dann
+     * kommt sie nie zurueck. Beide Zahlen sind gesetzt, nicht gemessen.
      * ------------------------------------------------------------------ */
-    $kurz = array();
+    $reihe = array();
     foreach ((array) (isset($vr['fein']) ? $vr['fein'] : array()) as $f) {
         if (!is_array($f) || count($f) < 4 || $f[3] === null) { continue; }
-        $alt = (int) $jetzt - (int) $f[0];
-        if ($alt < 0 || $alt > 1800) { continue; }
-        $kurz[] = array((int) $f[0], (float) $f[3]);
+        if ((int) $f[0] > (int) $jetzt) { continue; }
+        $reihe[] = array((int) $f[0], (float) $f[3]);
     }
-    if (count($kurz) >= 3) {
-        $erster = $kurz[0];
-        $letzter = $kurz[count($kurz) - 1];
-        $std = ((int) $letzter[0] - (int) $erster[0]) / 3600.0;
-        if ($std >= 0.15) {
-            $steig = ((float) $letzter[1] - (float) $erster[1]) / $std;
+    $an = false;
+    $basis = 0.0;
+    $seit = 0;
+    foreach ($reihe as $i => $p) {
+        $sprung = false;
+        $erster = null;
+        $zahl = 0;
+        foreach ($reihe as $j => $q) {
+            if ($j > $i) { break; }
+            if ($p[0] - $q[0] > 1800) { continue; }
+            if ($erster === null) { $erster = $q; }
+            $zahl++;
+        }
+        if ($zahl >= 3) {
+            $std = ($p[0] - $erster[0]) / 3600.0;
             /* 2,0 g/(m3*h) trennt eine Dusche von jeder Alltagsbewegung -
              * Kochen und Waesche liegen darunter, ein Mensch im Raum weit
              * darunter. Die Zahl ist eine EINSTELLUNG in Zahlenform, keine
              * Messung; sie steht hier, weil ein Feld dafuer in der
              * Oberflaeche mehr Verwirrung als Nutzen braechte. */
-            if ($steig >= 2.0) { $out['dusche'] = 1; }
+            $sprung = ($std >= 0.15) && (($p[1] - $erster[1]) / $std >= 2.0);
+        }
+        if ($sprung) {
+            if (!$an) { $basis = $erster[1]; }
+            $an = true;
+            $seit = $p[0];
+        } elseif ($an && ($p[1] <= $basis + 0.2 || $p[0] - $seit > RK_DUSCHE_HALT_S)) {
+            $an = false;
         }
     }
+    if ($an && (int) $jetzt - $seit <= RK_DUSCHE_HALT_S) { $out['dusche'] = 1; }
     return $out;
 }
 
@@ -3069,6 +3095,11 @@ function rk_abrufen($erzwingen = false)
                        'kuehlfrei_aus' => $cfg['kuehlfrei_aus'],
                        'co2_ltr' => $cfg['co2_ltr'],
                        'co2_aussen' => $cfg['co2_aussen']);
+    /* 0.11.26 (RK-1): die Kuehl-Empfehlung fragt den Heizfall. Er stammt aus dem Aussenspeicher, der erst nach den
+     * Raeumen fortgeschrieben wird; das Tagesmittel aendert sich dadurch nur einmal am Tag, der Stand davor genuegt. */
+    $bewertung['heizfall'] = !empty($cfg['verlauf_ein'])
+        ? rk_heizfall(rk_aussen_mittel(isset($verlauf['aussen']) ? $verlauf['aussen'] : array(), $jetzt), $cfg['heizgrenze'])
+        : -1;
     $aussen = is_array($stand['aussen']) ? $stand['aussen'] : array('t' => null, 'rf' => null);
 
     foreach (rk_raeume() as $nr => $r) {
@@ -5652,7 +5683,7 @@ function rk_bausteine()
     };
     $seiten = array();
 
-    /* ================= Seite 1 "Raumklima" (39 Zeilen) =================
+    /* ================= Seite 1 "Raumklima" (40 Zeilen) =================
      * Bis 0.11.19 die einzige Liste (32 Zeilen, Nummern wie heute). Welle Bild 15 (Entwurf Welle 15 rk,
      * Entscheidungen 2-7): #21 haengt am Schwellwertschalter #38 statt direkt an SCHIMMEL, die
      * Benachrichtigung #26 an der Einschaltverzoegerung #34 (ODER #33 mit der bisher toten
@@ -5661,7 +5692,7 @@ function rk_bausteine()
                      'STEHT', 'BESTIN', 'BESTSTD', 'ZAEHLER', 'NAMPELLOS', 'AMPEL', 'SPERRE', 'RUHE',
                      'sws_alt', 'sws_stumm', 'nicht_ok', 'evz_schimmel', 'oder1', 'oder2', 'oder3', 'oder4',
                      'benachr', 'merker', 'begrenzer', 'nicht_sperre', 'und', 'valid', 'konst', 'oder_gesamt',
-                     'evz_stoerung', 'st_zustand', 'st_ampel', 'st_gelegenheit', 'sws_schimmel', 've_kuehl'),
+                     'evz_stoerung', 'st_zustand', 'st_ampel', 'st_gelegenheit', 'sws_schimmel', 've_kuehl', 'evz_steht'),
                array('LUEFTEN', 'SCHIMMEL', 'SPREAD', 'VLMIN', 'RALTER', 'STEHT', 'BESTIN', 'BESTSTD',
                      'AMPEL', 'SPERRE', 'RUHE'));
     $zeilen = array(
@@ -5697,7 +5728,7 @@ function rk_bausteine()
         $bs('oder3', rk_t('LOX.B_ODER'), sprintf(rk_t('LOX.BN_STOERUNG_TEIL'), 3), rk_t('LOX.BP_KEINE'),
             $i12($n('oder2'), $n('evz_schimmel'))),
         $bs('oder4', rk_t('LOX.B_ODER'), rk_t('LOX.BN_STOERUNG'), rk_t('LOX.BP_KEINE'),
-            $i12($n('oder3'), $vf('STEHT'))),
+            $i12($n('oder3'), $n('evz_steht'))),     // 0.11.26: ueber die Einschaltverzoegerung, siehe evz_steht
         $bs('benachr', rk_t('LOX.B_BENACHR'), rk_t('LOX.BN_MELDUNG'), $t('BP_BENACHR'), $ein($n('evz_stoerung'))),
         $bs('merker', rk_t('LOX.B_MERKER'), sprintf(rk_t('LOX.BN_LUEFTEN'), $rname), rk_t('LOX.BP_KEINE'),
             $vf('LUEFTEN')),
@@ -5727,6 +5758,8 @@ function rk_bausteine()
             $ein($n('SCHIMMEL'))),
         $bs('ve_kuehl', rk_t('LOX.B_SCHIEBER'), $t('BN_KUEHLVORLAUF'),
             sprintf(rk_t('LOX.BP_KUEHLVORLAUF'), $n('begrenzer')), rk_t('LOX.BE_STRICH')),
+        /* 0.11.26: eine Stunde gleiche Werte ist im ruhigen Haus normal; erst 24 Stunden gehen an die Stoerung (wie Hauswelle 11, OnDelay 86400 s). */
+        $bs('evz_steht', rk_t('LOX.B_EINVERZ'), sprintf(rk_t('LOX.BN_STEHT_LANGE'), $rname), rk_t('LOX.BP_STEHT_LANGE'), $ein($vf('STEHT'))),
     );
     $seiten[] = array(
         'seite' => 'Raumklima', 'bild' => 'einbindung_loxone.png', 'zeilen' => $zeilen,
@@ -5746,6 +5779,7 @@ function rk_bausteine()
             array($n('sws_alt') . ', ' . $n('sws_stumm') . ', ' . $n('evz_stoerung'),
                   sprintf(rk_t('LOX.ZU_IMPULS'), $n('evz_stoerung'))),
             array($n('evz_schimmel'), rk_t('LOX.ZU_SCHIMMEL')),
+            array($n('evz_steht'), rk_t('LOX.ZU_STEHT_LANGE')),
             array($n('oder1') . '–' . $n('oder4') . ', ' . $n('oder_gesamt'),
                   sprintf(rk_t('LOX.ZU_ODER'), $n('oder_gesamt'))),
             array($n('benachr'), sprintf(rk_t('LOX.ZU_BENACHR'), $n('evz_stoerung'))),

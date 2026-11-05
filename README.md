@@ -3,9 +3,19 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.25 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.26 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.26
+
+- **Kältegrenzen auch für Kühlen und Dusche.** Kühlen empfiehlt das Plugin nicht mehr unter „Nicht lüften unter“ (ab Werk −5 °C) und nicht im Heizfall (Außenmittel der letzten Tage unter der Heizgrenze, nur mit eingeschaltetem Verlauf bekannt); das gilt auch für die beste Kühlstunde. Ein Feuchtestoß löst unter der CO₂-Grenze (ab Werk −15 °C) kein Lüften mehr aus, der Merker `dusche` meldet ihn weiter. Die Zwangslüftung bleibt ohne Kältegrenze.
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Formular:** Tafel- und HomePod-Felder gehören jetzt zu den Feldern, die eine Beanstandung im Formular mitführt und markiert. Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+- **Reiter Test:** Ein Klick auf den Reiter lädt die Seite und zeigt die Prüfzeilen. Bisher stand dort nur der Hinweissatz.
+- **Baustein-Liste:** Die Meldung „Fühler steht“ geht erst nach 24 Stunden an die Störung (neuer Baustein Einschaltverzögerung). Wer die Liste schon gebaut hat, setzt ihn zwischen den Eingang `raumklima_raum1_steht` und das letzte ODER der Störungskette.
+- **Dusch-Erkennung:** Die Empfehlung endet, wenn die Feuchte wieder auf dem Wert vor dem Sprung ist, nicht schon nach 30 Minuten; höchstens drei Stunden nach dem Sprung.
 
 ## Neu in 0.11.25
 
@@ -481,7 +491,10 @@ Stelle wirklich gibt, an der ein Pfad abbricht.
 **Kühlen.** Ein Raum kann eine Zieltemperatur bekommen. Ist es draußen kühler
 und nicht deutlich feuchter, wird Lüften auch dann empfohlen, wenn die Feuchte
 allein nicht dafür spräche — der Fall der Sommernacht, in dem 25 °C innen und
-17 °C außen bisher „lohnt nicht" ergaben.
+17 °C außen bisher „lohnt nicht" ergaben. Seit 0.11.26 nicht unter der Grenze
+„Nicht lüften unter“ und nicht im Heizfall: an einem warmen Frühlingstag mit
+kühlem Außenmittel kommt die Empfehlung deshalb erst, wenn das Mittel die
+Heizgrenze erreicht.
 
 **Wie lange, und was es kostet.** Aus Raumvolumen, Fensterart (gekippt, ganz
 offen, Durchzug), Temperaturunterschied und Wind schätzt das Plugin die
@@ -616,8 +629,8 @@ Kühlung:
   14,2 °C aber 1,2 K über der Wand, und an der Wand wären es danach 100 %.
 
 Dazu eine **Ruhezeit** je Raum (verbrauchte Luft schlägt sie), eine
-**Zwangslüftung** nach N Stunden ohne Gelegenheit und eine eigene, mildere
-Frostgrenze für den CO₂-Grund.
+**Zwangslüftung** nach N Stunden ohne Gelegenheit (ohne Kältegrenze) und eine eigene,
+mildere Frostgrenze für den CO₂-Grund und den Feuchtestoß.
 
 ## Lüftungsanlage, Wäsche, Behaglichkeit
 

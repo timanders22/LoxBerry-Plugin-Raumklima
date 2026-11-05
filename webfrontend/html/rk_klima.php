@@ -529,6 +529,20 @@ function rk_kuehlen($t_innen, $rf_innen, $t_aussen, $rf_aussen, $t_soll,
 }
 
 /**
+ * 0.11.26 (RK-1): Sperrt die Kaelte das Kuehlen?
+ *
+ * Unter der allgemeinen Kaeltegrenze t_min und im Heizfall (gleitendes Aussenmittel unter der Heizgrenze, 1 von
+ * rk_heizfall()) wird nicht zum Kuehlen gelueftet: Januar, 21,5 Grad innen, Ziel 21, aussen -10 ergab bis 0.11.25
+ * "kuehlen" mit 528 Wh Lueftkosten. Heizfall -1 ("noch keine Aussage", ohne Verlauf immer) sperrt nicht, sonst
+ * kuehlte ohne Verlauf nie etwas. Eine ungueltige Aussentemperatur sperrt nicht; dann sagt rk_kuehlen() "keine_daten".
+ */
+function rk_kuehlen_zu_kalt($t_aussen, $t_min, $heizfall = -1)
+{
+    if ((int) $heizfall === 1) { return true; }
+    return rk_t_gueltig($t_aussen) && is_numeric($t_min) && (float) $t_aussen < (float) $t_min;
+}
+
+/**
  * Luftwechsel je Stunde - eine SCHAETZUNG, keine Messung.
  *
  * Die Spannen stammen aus der Bauphysik-Literatur und schwanken mit Wind,
@@ -854,7 +868,7 @@ function rk_heizfall($aussen_mittel, $grenze = 15.0)
  * rechnerisch negativ, wenn die laufende Stunde gewinnt; es wird auf 0
  * geklemmt, denn "vor fuenf Minuten" ist als Empfehlung unbrauchbar.
  *
- * $kuehl ist array('t_innen','rf_innen','t_soll','spanne') oder null. Ist
+ * $kuehl ist array('t_innen','rf_innen','t_soll','spanne'[,'heizfall']) oder null. Ist
  * es gesetzt, wird zusaetzlich die beste Stunde zum KUEHLEN gesucht. Bis
  * 0.10.1 sah diese Funktion nur die Feuchte, und ein Raum konnte in
  * derselben Ausgabe "jetzt kuehlen" und "beste Stunde in fuenf Stunden"
@@ -907,6 +921,8 @@ function rk_bester_zeitpunkt($af_innen, $vorhersage, $jetzt, $mindest, $t_min,
                 && (float) $regen > (float) $regen_max) { continue; }
             if ((float) $wind_max > 0.0 && $wind !== null
                 && (float) $wind > (float) $wind_max) { continue; }
+            /* 0.11.26 (RK-1): dieselbe Kaeltesperre wie im Augenblicksfall. */
+            if (rk_kuehlen_zu_kalt($w['t'], $t_min, isset($kuehl['heizfall']) ? $kuehl['heizfall'] : -1)) { continue; }
             $k = rk_kuehlen($kuehl['t_innen'], $kuehl['rf_innen'], $w['t'],
                             $w['rf'], $kuehl['t_soll'], $kuehl['spanne']);
             if ($k['lohnt'] && ($bestk === null || $k['gewinn'] > $bestk[1])) {
@@ -1315,6 +1331,12 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
                     isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0, 1.0,
                     !empty($letzt['kuehlen']),
                     isset($cfg['hyst']) ? $cfg['hyst'] : 0.5);
+    /* 0.11.26 (RK-1): Kuehlen hielt bis 0.11.25 keine Kaeltegrenze ein. Der Temperaturgewinn bleibt sichtbar. */
+    if ($k['lohnt'] && rk_kuehlen_zu_kalt($ta, isset($cfg['t_min']) ? $cfg['t_min'] : -5,
+                                          isset($cfg['heizfall']) ? $cfg['heizfall'] : -1)) {
+        $k['lohnt'] = 0;
+        $k['grund'] = 'zu_kalt';
+    }
     $e['kuehlen'] = $k['lohnt'];
     $e['kuehlgewinn'] = $k['gewinn'];
 
@@ -1328,8 +1350,14 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         $e['co2_hoch'] = (rk_t_gueltig($ta) && (float) $ta < $co2_t_min) ? 0 : 1;
     }
 
+    /* 0.11.26 (RK-1): die Dusche an derselben Grenze wie CO2 (co2_t_min). Der Merker "dusche" bleibt stehen, er
+     * meldet den Feuchtestoss als Messung; nur das Lueften loest er darunter nicht mehr aus. */
+    $dusche_wirkt = $e['dusche'] && !(rk_t_gueltig($ta)
+        && (float) $ta < (isset($cfg['co2_t_min']) ? (float) $cfg['co2_t_min'] : -15.0));
+
     /* Zwangslueftung: N Stunden ohne jede Empfehlung. Der Feuchteschutz
-     * haengt nicht davon ab, dass gerade eine Bilanz aufgeht. 0 = aus. */
+     * haengt nicht davon ab, dass gerade eine Bilanz aufgeht. 0 = aus.
+     * Bleibt seit 0.11.26 ausdruecklich OHNE Kaeltegrenze (Entscheidung RK-1): sie ist die Feuchteschutz-Notbremse. */
     $zwang_std = isset($cfg['zwang_std']) ? (int) $cfg['zwang_std'] : 0;
     if ($zwang_std > 0 && is_array($verlauf) && isset($verlauf['ohne_std'])
         && $verlauf['ohne_std'] >= 0 && $verlauf['ohne_std'] >= $zwang_std) {
@@ -1337,9 +1365,9 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
     }
 
     $e['lueften'] = ($l['lohnt'] || $e['co2_hoch'] || $k['lohnt']
-                     || $e['dusche'] || $e['zwang']) ? 1 : 0;
+                     || $dusche_wirkt || $e['zwang']) ? 1 : 0;
     if (!$l['lohnt']) {
-        if ($e['dusche'])        { $e['grund'] = 'dusche'; }
+        if ($dusche_wirkt)       { $e['grund'] = 'dusche'; }
         elseif ($e['co2_hoch'])  { $e['grund'] = 'co2'; }
         elseif ($k['lohnt'])     { $e['grund'] = 'kuehlen'; }
         elseif ($e['zwang'])     { $e['grund'] = 'zwang'; }
@@ -1399,7 +1427,8 @@ function rk_raum_rechnen($raum, $aussen, $vorher, $cfg, $jetzt, $letzt = null,
         $e['ober_t'], isset($cfg['wand_abstand']) ? $cfg['wand_abstand'] : 1.0,
         array('t_innen' => $t, 'rf_innen' => $rf,
               't_soll' => isset($raum['t_soll']) ? $raum['t_soll'] : 0,
-              'spanne' => isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0));
+              'spanne' => isset($cfg['kuehl_spanne']) ? $cfg['kuehl_spanne'] : 1.0,
+              'heizfall' => isset($cfg['heizfall']) ? $cfg['heizfall'] : -1));
     $e['best_in'] = $b['in'];
     $e['best_std'] = ($b['ts'] !== null) ? (int) date('G', $b['ts']) : -1;
     $e['kbest_in'] = $b['kuehl_in'];
@@ -2140,6 +2169,39 @@ function rk_selbsttest()
     $pr('  bei -8 C aber weiterhin',
         array($rco2['lueften'], $rco2['grund']), array(1, 'co2'));
 
+    /* ---------- RK-1 (0.11.26): Kaeltegrenze fuer Kuehlen und Dusche, Zwang ohne Grenze ---------- */
+    $gk1 = array('name' => 'Wohnen', 't' => 21.5, 'rf' => 40.0, 'frsi' => 0.7, 't_soll' => 21.0);
+    $ck1 = array('mindest' => 50.0, 't_min' => -5, 'co2_t_min' => -15.0);
+    $rk1 = rk_raum_rechnen($gk1, array('t' => -10.0, 'rf' => 90.0), array(), $ck1, $t0);
+    $pr('Kuehlen bei -10 C unter t_min: keine Empfehlung',
+        array($rk1['kuehlen'], $rk1['lueften']), array(0, 0));
+    $rk1w = rk_raum_rechnen($gk1, array('t' => 5.0, 'rf' => 40.0), array(), $ck1, $t0);
+    $pr('  bei +5 C ohne Heizfall-Aussage wird gekuehlt',
+        array($rk1w['kuehlen'], $rk1w['lueften'], $rk1w['grund']), array(1, 1, 'kuehlen'));
+    $rk1h = rk_raum_rechnen($gk1, array('t' => 5.0, 'rf' => 40.0), array(), $ck1 + array('heizfall' => 1), $t0);
+    $pr('  im Heizfall auch bei +5 C nicht', array($rk1h['kuehlen'], $rk1h['lueften']), array(0, 0));
+    $rk1s = rk_raum_rechnen($gk1, array('t' => 5.0, 'rf' => 40.0), array(), $ck1 + array('heizfall' => 0), $t0);
+    $pr('  im Kuehlfall (Heizfall 0) ja', $rk1s['kuehlen'], 1);
+    $pr('  die Grenze selbst: genau t_min sperrt nicht', rk_kuehlen_zu_kalt(-5.0, -5, -1), false);
+    $rk1v = array($t0 + 3600 => array('t' => -10.0, 'rf' => 60.0), $t0 + 7200 => array('t' => -4.0, 'rf' => 60.0));
+    $rk1b = rk_bester_zeitpunkt(5.0, $rk1v, $t0, 0.5, -5, null, 12, 0.0, 0.0, null, 1.0,
+        array('t_innen' => 21.5, 'rf_innen' => 40.0, 't_soll' => 21.0, 'spanne' => 1.0));
+    $pr('Beste Kuehlstunde laesst die Stunde unter t_min aus', $rk1b['kuehl_std'], (int) date('G', $t0 + 7200));
+    $rk1c = rk_bester_zeitpunkt(5.0, $rk1v, $t0, 0.5, -5, null, 12, 0.0, 0.0, null, 1.0,
+        array('t_innen' => 21.5, 'rf_innen' => 40.0, 't_soll' => 21.0, 'spanne' => 1.0, 'heizfall' => 1));
+    $pr('  im Heizfall keine Kuehlstunde', array($rk1c['kuehl_in'], $rk1c['kuehl_std']), array(-1, -1));
+    $gd1 = array('name' => 'Bad', 't' => 22.0, 'rf' => 75.0, 'frsi' => 0.7);
+    $cd1 = array('mindest' => 50.0, 't_min' => -5, 'co2_t_min' => -15.0, 'zwang_std' => 6);
+    $rd1 = rk_raum_rechnen($gd1, array('t' => -20.0, 'rf' => 80.0), array(), $cd1, $t0, null, array('dusche' => 1));
+    $pr('Dusche bei -20 C unter co2_t_min: kein Lueften, der Merker bleibt',
+        array($rd1['lueften'], $rd1['dusche']), array(0, 1));
+    $rd2 = rk_raum_rechnen($gd1, array('t' => -8.0, 'rf' => 80.0), array(), $cd1, $t0, null, array('dusche' => 1));
+    $pr('  bei -8 C (unter t_min, ueber co2_t_min) weiterhin',
+        array($rd2['lueften'], $rd2['grund']), array(1, 'dusche'));
+    $rz1 = rk_raum_rechnen($gd1, array('t' => -20.0, 'rf' => 80.0), array(), $cd1, $t0, null, array('ohne_std' => 7));
+    $pr('Zwangslueftung bei -20 C bleibt ohne Grenze',
+        array($rz1['lueften'], $rz1['grund'], $rz1['zwang']), array(1, 'zwang', 1));
+
     /* ---------- B9: Schliessbefehl auch bei stummem Fuehler ---------- */
     $ar = array('t' => 8.0, 'rf' => 95.0, 'regen' => 9.0);
     $cr = array('regen_max' => 1.0);
@@ -2214,6 +2276,15 @@ function rk_selbsttest()
     $pr('Duschstoss loest Lueften aus, auch gegen die Feuchtebilanz',
         array($rd['lueften'], $rd['grund'], $rd['dusche']), array(1, 'dusche', 1));
     $pr('  und der Trend wird durchgereicht', $rd['trend'], 2.4);
+    /* 0.11.26 (RK-2): der Merker haelt, bis die Feuchte wieder dort ist, wo sie vor dem Sprung war. */
+    $rk_dv = array('fein' => array());
+    for ($rk_dm = 0; $rk_dm <= 36; $rk_dm++) {
+        $rk_dv['fein'][] = array($t0 + $rk_dm * 300, 22.0, 60.0, $rk_dm < 12 ? 10.0 : 14.0, 0, 0, 0);
+    }
+    $pr('Dusche: 2 Stunden nach dem Sprung, Feuchte oben: der Merker steht',
+        rk_verlauf_werte($rk_dv, $t0 + 36 * 300)['dusche'], 1);
+    $rk_dv['fein'][] = array($t0 + 37 * 300, 22.0, 60.0, 10.1, 0, 0, 0);
+    $pr('  Feuchte zurueck: der Merker faellt', rk_verlauf_werte($rk_dv, $t0 + 37 * 300)['dusche'], 0);
     $rz = rk_raum_rechnen($gv, array('t' => 24.0, 'rf' => 80.0), array(), $cv, $t0,
         null, array('ohne_std' => 7));
     $pr('Sieben Stunden ohne Empfehlung loesen die Zwangslueftung aus',

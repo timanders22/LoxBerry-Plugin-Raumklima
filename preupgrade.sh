@@ -16,6 +16,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
 # Bis 0.11.10 stand hier BASE="${ARGV5:-$LBHOMEDIR}" ohne jede Pruefung - mit leerem BASE hiessen die Pfade /config/plugins/<ordner>. Standen weder das
@@ -55,7 +59,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<WARNING> der eigene Ablageort fuehrten auf einen Ordner mit"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde NICHTS gesichert."
-    exit 1
+    exit 2
 fi
 
 # ---------- Die Marke "Aktualisierung laeuft", als ERSTES ----------
@@ -73,9 +77,35 @@ MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if date +%s > "$MARKE" 2>/dev/null && [ -s "$MARKE" ]; then
     echo "<INFO> Marke gesetzt: der Abruf setzt bis zum Ende der Aktualisierung aus."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen."
-    echo "<WARNING> Ein Abruf waehrend der Aktualisierung kann den Verlauf verdraengen."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 
 # ---------- Alte Rettungen aus einem FRUEHEREN Vorgang beiseite ----------
 #
@@ -165,12 +195,13 @@ if [ -e "$CF" ]; then
     rk_inhalt "$CF" conf
     case "$?" in
     0)
-        if cp -p "$CF" "$ZW" 2>/dev/null; then
+        if zs_hinlegen "$CF" "$ZW" 2>/dev/null; then
             chmod 600 "$ZW" 2>/dev/null
             echo "<OK> Konfiguration gesichert."
         else
             echo "<WARNING> Die Zweitschrift der Konfiguration liess sich NICHT"
             echo "<WARNING> anlegen: $ZW"
+            ZS_FEHL="$ZS_FEHL raumklima.json"
         fi
         ;;
     1)
@@ -205,11 +236,12 @@ if [ -e "$VL" ]; then
     rk_inhalt "$VL" verlauf
     case "$?" in
     0)
-        if cp -p "$VL" "$VLZ" 2>/dev/null; then
+        if zs_hinlegen "$VL" "$VLZ" 2>/dev/null; then
             chmod 600 "$VLZ" 2>/dev/null
             echo "<OK> Verlaufsspeicher gesichert."
         else
             echo "<WARNING> Der Verlaufsspeicher liess sich NICHT sichern: $VLZ"
+            ZS_FEHL="$ZS_FEHL verlauf.json"
         fi
         ;;
     1)
@@ -257,13 +289,12 @@ if [ -e "$NETZ_CFG/geheim.json" ]; then
     rk_inhalt "$NETZ_CFG/geheim.json" geheim
     case "$?" in
     0)
-        if cp -p "$NETZ_CFG/geheim.json" "$GZ" 2>/dev/null; then
+        if zs_hinlegen "$NETZ_CFG/geheim.json" "$GZ" 2>/dev/null; then
             chmod 0600 "$GZ" 2>/dev/null
             echo "<INFO> Zugangsdaten fuer die Dauer des Updates zwischengelegt."
         else
             echo "<WARNING> Die Zugangsdaten liessen sich NICHT zwischenlegen."
-            echo "<WARNING> Sie koennen dieses Update nicht ueberstehen - bitte"
-            echo "<WARNING> $NETZ_CFG/geheim.json vorher von Hand sichern."
+            ZS_FEHL="$ZS_FEHL geheim.json"
         fi
         ;;
     1)
@@ -296,7 +327,7 @@ if [ -f "$ALT" ]; then
     else
         rk_inhalt "$ALT" conf
         if [ "$?" = 0 ]; then
-            if cp -p "$ALT" "$NEU" 2>/dev/null; then
+            if zs_hinlegen "$ALT" "$NEU" 2>/dev/null; then
                 chmod 0600 "$NEU" 2>/dev/null
                 rm -f "$ALT"
                 echo "<OK> Alte dritte Zweitschrift zusammengefuehrt und entfernt."
@@ -311,4 +342,5 @@ if [ -f "$ALT" ]; then
     fi
 fi
 
+zs_schluss
 exit 0

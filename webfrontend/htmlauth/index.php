@@ -165,7 +165,7 @@ function rk_eingabe_felder($formular)
     return array_merge($aus, array_keys(rk_ui_einzelfelder()),
                        array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'),
                        /* Sprachausgabe (seit 0.11.15): ansage_x2_felder() nennt nie die Sprechtoken. */
-                       ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel'), ansage_regeln_x2_felder(),
+                       ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel'), ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     /* 0.11.26: Tafel und HomePod dazu: ansage_regeln_formular() beanstandet sie, ohne Eintrag hier ging die Beanstandung samt Eingaben verloren. */
                        /* Welle Mehrfach-Ziele (0.11.22): die Tabelle als name[N], nur wenn die Linie sie anbietet. */
                        rk_ziele_x2_felder());
 }
@@ -186,7 +186,7 @@ function rk_eingaben_sammeln($formular, array $falsch)
 {
     $werte = array();
     foreach (rk_eingabe_felder($formular) as $f) {
-        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel',
+        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel', 'ansage_tafel_ein', 'ansage_homepod_ein',     // 0.11.26: Stamm 1.4.1 zeigt den Haken wie abgeschickt
                                'tts_alexa_token_loeschen', 'tts_google_token_loeschen'), true)) {
             $werte[$f] = !empty($_POST[$f]) ? '1' : '0';
             continue;
@@ -891,6 +891,8 @@ if ($rk_post && isset($_POST['speichern'])) {
         $rk_rm = array();
         $rk_rb = array();
         list($rk_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, rk_ansage_regeln(rk_config()), array(), $rk_rm, $rk_rb, rk_ansage_k());
+        // 0.11.26: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.11.25 ueberschrieb es der naechste Abgleich.
+        $rk_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($rk_cfg['ansage_token_herkunft']) ? $rk_cfg['ansage_token_herkunft'] : array());
         foreach ($rk_rm as $rk_rx) { $rk_fehler[] = $rk_rx['text']; }
         foreach ($rk_rb as $rk_ry) { $rk_falsch[] = $rk_ry; }
     }
@@ -2360,6 +2362,8 @@ if ($rk_pz[0] > 0) { ?>
 		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
 	}
 	reiter.forEach(function (r) {
+		// 0.11.26: die Pruefzeilen rechnet nur ein echter Abruf des Reiters. Bis 0.11.25 zeigte der Klick nur den Hinweissatz.
+		if (r.dataset.ziel === 'tab-test') { return; }
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
 	// Der Server hat sm-active bereits gesetzt; dieser Aufruf richtet nur die
