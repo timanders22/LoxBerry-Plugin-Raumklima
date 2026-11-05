@@ -779,6 +779,15 @@ if ($rk_post && isset($_POST['vorlage'])) {
  * Einmalmeldung zurueck, das falsche Feld ist markiert (X-2).
  */
 if ($rk_post && isset($_POST['speichern'])) {
+    // 0.11.27: beide Zahlen aus der Karte zusammen ins Feld Breitengrad kopiert ("50.123, 8.456") - hier aufteilen,
+    // wenn Laengengrad leer ist oder schon die zweite Zahl traegt. Eine Kommazahl allein ("51,3") bleibt eine Zahl.
+    if (isset($_POST['breite']) && is_string($_POST['breite'])
+        && !preg_match('/^\s*-?\d+,\d+\s*\z/', $_POST['breite'])
+        && preg_match('/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;\/ ]\s*(-?\d{1,3}(?:\.\d+)?)\s*\z/', $_POST['breite'], $rk_pm)
+        && (!isset($_POST['laenge']) || !is_string($_POST['laenge']) || trim($_POST['laenge']) === ''
+            || str_replace(',', '.', trim($_POST['laenge'])) === $rk_pm[2])) {
+        $_POST['breite'] = $rk_pm[1]; $_POST['laenge'] = $rk_pm[2];
+    }
     $rk_cfg = rk_config();
     $rk_hat_einst = isset($_POST['feld_einst']);
     $rk_hat_mqtt  = isset($_POST['feld_mqtt']);
@@ -1652,6 +1661,7 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <div class="sm-feld">
   <label for="rk_breite"><?= rk_e(rk_t('EINST.BREITE')) ?></label>
   <input data-role="none" type="text" id="rk_breite" name="breite" value="<?= rk_e(rk_ein('breite', $rk_cfg['breite'])) ?>"<?= rk_mark('breite') ?> placeholder="51.3183">
+  <p class="sm-hilfe"><a href="<?= rk_e('https://mapatlas.eu/' . (rk_sprache() === 'de' ? 'de' : 'en') . '/tools/coordinates') ?>" target="_blank" rel="noopener"><?= rk_e(rk_t('EINST.KARTE')) ?></a>. <?= rk_e(rk_t('EINST.KARTE_ZUSAMMEN')) ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_laenge"><?= rk_e(rk_t('EINST.LAENGE')) ?></label>
