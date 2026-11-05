@@ -398,6 +398,7 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
         rk_log('Einstellungen gesichert - ohne Zugangsdaten.');
     }
     if ($rk_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="raumklima_einstellungen_'
                . date('Ymd_His') . '.json"');
@@ -746,6 +747,7 @@ if ($rk_post && isset($_POST['vorlage'])) {
         $rk_stoerung[] = rk_t('LOX.FEHLER_VORLAGE');
         $rk_tab = 'tab-loxone';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         // Anfuehrungszeichen um den Dateinamen: ohne sie bricht jeder Name
         // mit einem Leerzeichen darin.
