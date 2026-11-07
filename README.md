@@ -3,9 +3,15 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.28 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.29 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.29
+
+- „Einstellungen sichern“ nimmt jetzt auch die Regeln der Sprachausgabe „Wann gesprochen wird“ mit. Bis 0.11.28 fehlten sie in der Sicherung; nach dem Zurückspielen galten sie ab Werk. Eine Sicherung aus einer früheren Fassung wird weiter angenommen.
+- Beim Zurückspielen einer Sicherung bleiben übernommene Sprechtoken übernommen.
+- Eine Sicherung mit ungültigen Regeln der Sprachausgabe wird abgewiesen und gemeldet. Bis 0.11.28 wurde sie angenommen, und die ungültigen Regeln fielen still weg.
 
 ## Neu in 0.11.28
 

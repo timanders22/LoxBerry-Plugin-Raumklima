@@ -478,6 +478,12 @@ function rk_vorgaben()
         /* Ruhezeit der Ansagen (seit 08.10.2026), HH:MM; ab Werk leer = keine. */
         'ansage_ruhe_von' => '',
         'ansage_ruhe_bis' => '',
+        /* 0.11.29: die beiden Schluessel des Sprachmoduls (Regeln "Wann gesprochen wird", Herkunft uebernommener
+         * Sprechtoken). Bis 0.11.28 fehlten sie hier: das Formular und rk_ansage_token_pflegen() schrieben sie in
+         * raumklima.json, aber "Einstellungen sichern" liess ansage_regeln weg, weil rk_sicherung_bauen() nur
+         * Vorgabenschluessel ausgibt (gemessen 07.11.2026). Bauart Saugroboter 1.1.33 / Pumpenwacht 1.0.16. */
+        'ansage_regeln'   => ansage_regeln_vorgaben(),
+        'ansage_token_herkunft' => array(),
     );
 }
 
@@ -6094,7 +6100,14 @@ function rk_sicherung_lesen($roh, &$namen = null)
         if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
             $s2_g = '';
             $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $namen['ansage_regeln'] = rk_grund('FEHLER.TTS'); continue; }
+            if ($s2_r === null) {
+                /* 0.11.29: bis 0.11.28 stand hier nur der Name in der Warnliste - die Datei galt sonst als gueltig, und
+                 * die ungueltigen Regeln fielen still weg (Bauart Robonect 1.1.31 / aWATTar 1.2.46). Jetzt abgewiesen. */
+                $mangel[] = sprintf(rk_t('EINST.SICH_WERT'), 'ansage_regeln', rk_sicherung_wert_text('ansage_regeln', $w),
+                    ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', rk_ansage_k()));
+                $namen['ansage_regeln'] = rk_grund('FEHLER.TTS');
+                continue;
+            }
             $neu['ansage_regeln'] = $s2_r;
             
             continue;
@@ -6183,6 +6196,9 @@ function rk_sicherung_lesen($roh, &$namen = null)
     $seit_ansage = array('tts', 'ansage_lueften', 'ansage_schimmel', 'ansage_ruhe_von', 'ansage_ruhe_bis');
     $jetzt_cfg = null;
     foreach (array_keys(rk_vorgaben()) as $fk) {
+        /* 0.11.29: ansage_regeln fehlt jeder Sicherung bis 0.11.28 - dann gelten die Regeln ab Werk, wie bisher nach
+         * dem Zurueckspielen. ansage_token_herkunft steht nie in einer Sicherung; die geltende bleibt (unten). */
+        if ($fk === 'ansage_regeln' || $fk === 'ansage_token_herkunft') { continue; }
         if (!array_key_exists($fk, $daten) && in_array($fk, $seit_ansage, true)) {
             if ($jetzt_cfg === null) { $jetzt_cfg = rk_config(); }
             $neu[$fk] = $jetzt_cfg[$fk];
@@ -6199,6 +6215,17 @@ function rk_sicherung_lesen($roh, &$namen = null)
         $mangel[] = sprintf(rk_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
     }
     foreach ($rk_tsspaet as $rk_sp1) { $hinweise[] = 'SPAET|' . $rk_sp1; }     // 0.11.22: im Handler EINST.SICH_SPAET
+    /* 0.11.29: die Herkunft der Sprechtoken bleibt, wie sie gilt - ein uebernommenes Token bleibt uebernommen. Nur Namen
+     * der Sprechtoken mit dem Vermerk 'nachbar'; alles andere faellt auf leer. Bis 0.11.28 fiel sie beim Zurueckspielen weg. */
+    if (!$mangel) {
+        if ($jetzt_cfg === null) { $jetzt_cfg = rk_config(); }
+        $rk_her = (isset($jetzt_cfg['ansage_token_herkunft']) && is_array($jetzt_cfg['ansage_token_herkunft']))
+            ? $jetzt_cfg['ansage_token_herkunft'] : array();
+        foreach ($rk_her as $rk_hk => $rk_hv) {
+            if (!in_array((string) $rk_hk, array_values(ansage_token_felder()), true) || $rk_hv !== 'nachbar') { $rk_her = array(); break; }
+        }
+        $neu['ansage_token_herkunft'] = $rk_her;
+    }
     return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
                  $mangel ? array() : $hinweise);
 }
