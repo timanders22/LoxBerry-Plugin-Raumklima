@@ -3,9 +3,13 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.29 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.30 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.30
+
+- Sprachausgabe: Wer den Haken „Nachtruhe einhalten“ abhakt und dabei eine Beanstandung auslöst, sieht ihn danach abgehakt. Bisher erschien er wieder angehakt. Gespeichert wurde in beiden Fällen nichts.
 
 ## Neu in 0.11.29
 

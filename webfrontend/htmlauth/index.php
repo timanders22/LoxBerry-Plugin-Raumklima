@@ -187,7 +187,10 @@ function rk_eingaben_sammeln($formular, array $falsch)
     $werte = array();
     foreach (rk_eingabe_felder($formular) as $f) {
         if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel', 'ansage_tafel_ein', 'ansage_homepod_ein',     // 0.11.26: Stamm 1.4.1 zeigt den Haken wie abgeschickt
-                               'tts_alexa_token_loeschen', 'tts_google_token_loeschen'), true)) {
+                               'tts_alexa_token_loeschen', 'tts_google_token_loeschen',
+                               // 0.11.30 (Bestandspruefung 09.11.2026): auch der Haken "Ruhezeit" des Regelblocks - als Text
+                               // behandelt reiste er abgehakt nicht mit, und rk_haken() zeigte den gespeicherten Stand.
+                               'ansage_ruhe_ein'), true)) {
             $werte[$f] = !empty($_POST[$f]) ? '1' : '0';
             continue;
         }
