@@ -2501,6 +2501,16 @@ function rk_selbsttest()
         $vv = rk_fuehler_vorschlag($bs);
         $pr('Ein Merker namens "Lueften Feuchte" ist keine Feuchtequelle',
             $vv[0]['rf'], null);
+
+        /* ---- 0.11.32: Eine Raumregelung ist kein Fuehler ----
+         * Ihr /all liefert LL.value = 0.000 (Ausgang H), nicht tempActual. */
+        $bs[] = array('uuid' => 'u3', 'name' => 'Raumtemperatur Bad', 'raum' => 'Bad',
+                      'kategorie' => 'k', 'typ' => 'IRoomControllerV2');
+        $vv = rk_fuehler_vorschlag($bs);
+        $pr('Eine Raumregelung namens "Raumtemperatur" ist keine Temperaturquelle',
+            count($vv), 1);
+        $pr('  und wird als Raumregelung ohne Fuehler gezaehlt',
+            rk_raumregelungen_ohne_fuehler($bs, $vv), 1);
     }
 
     array_unshift($z, sprintf('Rechenkern %s: %d Faelle geprueft, %d Fehlschlaege.',

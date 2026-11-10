@@ -2090,6 +2090,15 @@ function rk_fuehler_vorschlag($bausteine, $nur_kategorie = '')
     $raeume = array();
     foreach ($bausteine as $b) {
         if ($b['raum'] === '') { continue; }
+        /* 0.11.32 (Issue #1): Eine Intelligente Raumregelung ist kein
+         * Fuehler, auch wenn ihr Name "Temperatur" traegt. Gemessen am
+         * 10.11.2026 an 18 Raumregelungen (Firmware dieser Anlage):
+         * `jdev/sps/io/<uuid>/all` antwortet mit LL.value = 0.000 (das ist
+         * der Ausgang H, nicht die Raumtemperatur; tempActual lag zugleich
+         * zwischen 17,9 und 22,2 Grad). Als Bewerber haette der Assistent
+         * also 0 Grad eingetragen. Gezaehlt wird sie in
+         * rk_raumregelungen_ohne_fuehler(). */
+        if (isset($b['typ']) && $b['typ'] === 'IRoomControllerV2') { continue; }
         if ($nur_kategorie !== ''
             && stripos($b['kategorie'], $nur_kategorie) === false) { continue; }
         $n = mb_strtolower_ersatz($b['name']);
@@ -2111,6 +2120,47 @@ function rk_fuehler_vorschlag($bausteine, $nur_kategorie = '')
     }
     ksort($raeume);
     return array_values($raeume);
+}
+
+/**
+ * Wie viele Intelligente Raumregelungen stehen in einem Raum, fuer den die
+ * Suche keinen vollstaendigen Vorschlag (Temperatur UND Feuchte) hat?
+ *
+ * ------------------------------------------------------------------------
+ * 0.11.32, Issue #1: Wer Homematic ueber ccu-jack und das MQTT-Gateway
+ * einbindet, haengt die Fuehler oft nur an die Eingaenge der Raumregelung
+ * und gibt die virtuellen Eingaenge nicht in die Visualisierung. Dann
+ * stehen sie nicht in der Strukturdatei, und die Suche findet nichts.
+ *
+ * Die Werte der Raumregelung selbst lassen sich ueber HTTP nicht lesen -
+ * gemessen am 10.11.2026 an 18 Raumregelungen: die Zustands-UUID von
+ * tempActual und humidityActual antwortet auf `jdev/sps/io/<uuid>`,
+ * `.../state` und `.../all` mit Code 404, und `jdev/sps/io/<baustein>/all`
+ * fuehrt die beiden Zustaende nicht. Sie kommen nur ueber die
+ * Websocket-Statusmeldungen.
+ *
+ * Lesbar ist dagegen der virtuelle Eingang UEBER SEINEN NAMEN, auch wenn er
+ * nicht in der Strukturdatei steht: `jdev/sps/io/<Name>/all` antwortete am
+ * selben Tag an zwei nicht visualisierten Gateway-Eingaengen mit Code 200
+ * und der Zahl unter LL.value. Die Oberflaeche nennt deshalb diese Zahl und
+ * den Weg zum Eintragen von Hand; sie schreibt nichts.
+ * ------------------------------------------------------------------------
+ */
+function rk_raumregelungen_ohne_fuehler($bausteine, $vorschlag)
+{
+    $voll = array();
+    foreach ((array) $vorschlag as $v) {
+        if (is_array($v) && !empty($v['t']) && !empty($v['rf'])) {
+            $voll[mb_strtolower_ersatz(trim((string) $v['raum']))] = 1;
+        }
+    }
+    $n = 0;
+    foreach ((array) $bausteine as $b) {
+        if (!is_array($b) || !isset($b['typ']) || $b['typ'] !== 'IRoomControllerV2') { continue; }
+        $r = mb_strtolower_ersatz(trim(isset($b['raum']) ? (string) $b['raum'] : ''));
+        if ($r === '' || !isset($voll[$r])) { $n++; }
+    }
+    return $n;
 }
 
 /**

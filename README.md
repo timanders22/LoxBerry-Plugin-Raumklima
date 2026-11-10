@@ -3,9 +3,15 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.31 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.32 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.32
+
+- Intelligente Raumregelung (Issue #1): Die Suche „Räume vom Miniserver holen“ schlägt eine Intelligente Raumregelung nicht mehr als Temperaturquelle vor, auch wenn ihr Name „Temperatur“ enthält. Der Miniserver liefert für sie über HTTP nicht die Raumtemperatur, sondern den Wert ihres Ausgangs H (gemessen: 0.000 bei 18 von 18 Raumregelungen); eingetragen worden wäre also 0 °C. Ist-Temperatur und Ist-Feuchte einer Raumregelung gibt der Miniserver über HTTP gar nicht heraus — gemessen am 10.11.2026: die Zustände `tempActual` und `humidityActual` antworten mit Code 404, und die Ausgänge der Raumregelung führen sie nicht.
+- Stehen Raumregelungen in Räumen ohne vollständigen Vorschlag, nennt die Suche ihre Zahl und den Weg, den Fühler von Hand einzutragen. Ein virtueller Eingang lässt sich über seinen Namen lesen, auch wenn er nicht in der Visualisierung steht: unter „eigene Adresse“ `http://<Miniserver>/jdev/sps/io/<Name des Eingangs>/all`, unter „Pfad zur Temperatur“ `LL.value`; für die Feuchte ebenso unter „Adresse Feuchte“ und „Pfad zur Feuchte“. Bei Homematic über ccu-jack und das MQTT-Gateway heißen die Eingänge etwa `ccu_device_status_<Gerät>_1_ACTUAL_TEMPERATURE_v` und `ccu_device_status_<Gerät>_1_HUMIDITY_v`.
+- Bestehende Zuordnungen, Schlüssel und MQTT-Themen bleiben unverändert; die Suche schreibt weiterhin erst auf „Vorschlag übernehmen“.
 
 ## Neu in 0.11.31
 

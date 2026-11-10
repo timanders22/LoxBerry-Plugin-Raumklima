@@ -592,6 +592,8 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                             'voll' => $rk_voll, 'kategorie' => $rk_kat,
                             'frei' => $rk_frei_n, 'mehrdeutig' => $rk_mehrdeutig,
                             'kein_platz' => $rk_kein_platz,
+                            /* 0.11.32: Raumregelungen ohne lesbaren Fuehler - nur gemeldet. */
+                            'irr' => rk_raumregelungen_ohne_fuehler($rk_bau, $rk_vor),
                             'proben' => array(), 'probe' => null, 'geschrieben' => 0);
 
             /* Je Bausteinart eine Probe - siehe rk_ms_proben(). */
@@ -1481,6 +1483,10 @@ foreach ((array) $rk_ass['proben']['rf'] as $rk_pr) {
 <?php if ($rk_ass['mehrdeutig'] > 0 && !$rk_ass['geschrieben']) { ?>
 <div class="sm-warnung"><?= sprintf(rk_e(rk_t('EINST.MS_MEHRDEUTIG_N')),
     (int) $rk_ass['mehrdeutig']) ?></div>
+<?php } ?>
+<?php if (!empty($rk_ass['irr'])) { ?>
+<div class="sm-hinweis"><?= sprintf(rk_e(rk_t('EINST.MS_IRR_N')), (int) $rk_ass['irr'],
+    '<code>' . rk_e(rk_ms_url($rk_ass['ms'], 'jdev/sps/io/')) . rk_e(rk_t('EINST.MS_IRR_NAME')) . '/all</code>') ?></div>
 <?php } ?>
 <?php if ($rk_ass['vorschlag']) { ?>
 <div class="sm-breit">
