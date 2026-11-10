@@ -1685,6 +1685,10 @@ function rk_holen($url, $mit_zugang = false)
     $url = trim((string) $url);
     if ($url === '') { return array(null, 'KEINE_ADRESSE'); }
     if (!preg_match('#^https?://#i', $url)) { return array(null, 'KEINE_ADRESSE'); }
+    /* 0.11.33: zeigt die Quelle per https auf einen Miniserver aus der LoxBerry-Einstellung, wird gegen den
+     * Loxone-Namen geprueft (rk_ms_tls_ziel); jede andere Adresse wie bisher gegen ihren eigenen Namen. */
+    $tls = rk_ms_tls_ziel($url);
+    if (is_array($tls) && count($tls) === 1) { return array(null, 'TLS_MINISERVER'); }
 
     /* Ohne Fassungsnummer: eine Zahl an dieser Stelle wird beim naechsten
      * Release vergessen und widerspricht dann der plugin.cfg. */
@@ -1722,7 +1726,8 @@ function rk_holen($url, $mit_zugang = false)
             $zeit = max(2, min($zeit, (int) $rest));
             $verb = max(1, min($verb, $zeit));
         }
-        $ch = curl_init($url);
+        $ch = curl_init(is_array($tls) ? $tls[0] : $url);
+        if (is_array($tls)) { curl_setopt($ch, CURLOPT_RESOLVE, array($tls[1])); }
         curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
         curl_setopt($ch, CURLOPT_TIMEOUT, $zeit);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $verb);
@@ -1759,10 +1764,12 @@ function rk_holen($url, $mit_zugang = false)
          * geliefert; wohin weitergeleitet wird, bestimmt die Quelle, nicht
          * der Betreiber. Ohne diese Zeile haengt es also davon ab, ob
          * php-curl geladen ist, ob die Zugangsdaten abfliessen koennen. */
-        $ctx = stream_context_create(array('http' => array(
+        $ctx_opt = array('http' => array(
             'timeout' => (rk_frist() > 0 ? max(2, min(12, (int) $rest)) : 12),
             'header' => implode("\r\n", $kopf), 'ignore_errors' => true,
-            'follow_location' => 0, 'max_redirects' => 1)));
+            'follow_location' => 0, 'max_redirects' => 1));
+        if (is_array($tls)) { $ctx_opt['ssl'] = array('peer_name' => $tls[2], 'verify_peer' => true, 'verify_peer_name' => true); }
+        $ctx = stream_context_create($ctx_opt);
         /* Dieselbe Obergrenze wie im curl-Zweig - sonst haengt es davon ab,
          * ob php-curl geladen ist, ob eine Quelle den Lauf umbringen kann.
          * Ein Byte mehr als die Grenze wird geholt, damit sich "genau voll"
@@ -1953,6 +1960,96 @@ function rk_ms_url($ms, $pfad)
          . ltrim((string) $pfad, '/');
 }
 
+/* ------------------------------------------------------------------
+ * HTTPS zum Miniserver: Zertifikat MIT Pruefung, ueber den Loxone-Namen.
+ *
+ * Gemessen am 10.11.2026 an dieser Anlage (Preferhttps=1): curl gegen
+ * https://<IP>:<Porthttps> endet mit Fehler 60 - das Zertifikat des
+ * Miniservers lautet auf *.<Seriennummer>.dyndns.loxonecloud.com
+ * (Let's Encrypt), nicht auf die IP. Bis 0.11.32 scheiterte deshalb jede
+ * Suche im Assistenten. LoxBerry selbst schaltet die Pruefung dafuer ab
+ * (loxberry_io.php, CURLOPT_SSL_VERIFYPEER false).
+ *
+ * Hier bleibt sie an: Der Name <IP mit Strichen>.<Seriennummer>.dyndns.
+ * loxonecloud.com wird fest auf die IP gelegt (CURLOPT_RESOLVE bzw.
+ * peer_name), und das Zertifikat wird gegen diesen Namen geprueft -
+ * gemessen: Pruefergebnis 0, keine Abfrage im Internet. Die Seriennummer
+ * steht in keiner LoxBerry-Einstellung; sie wird aus dem Zertifikat
+ * gelesen, mit einer Verbindung OHNE Zugangsdaten. Angenommen wird nur die
+ * Form *.<12 Hexziffern>.dyndns.loxonecloud.com - ein Zertifikat dafuer
+ * bekommt nur Loxone. Laesst sich der Name nicht bestimmen, scheitert der
+ * Aufruf mit Meldung; still ungeprueft wird nicht.
+ * ------------------------------------------------------------------ */
+function rk_ms_tls_name($ip, $port)
+{
+    static $merk = array();
+    $schl = $ip . ':' . (int) $port;
+    if (isset($merk[$schl])) { return $merk[$schl]; }
+    $cn = '';
+    if (function_exists('curl_init') && defined('CURLOPT_CERTINFO')) {
+        $ch = curl_init('https://' . $ip . ':' . (int) $port . '/');
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_NOBODY, true);
+        curl_setopt($ch, CURLOPT_CERTINFO, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);   // nur lesen, KEINE Zugangsdaten
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
+        curl_exec($ch);
+        $info = curl_getinfo($ch, CURLINFO_CERTINFO);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+        if (is_array($info) && isset($info[0]['Subject']) && is_string($info[0]['Subject'])
+            && preg_match('/CN\s*=\s*([^,\/\s]+)/', $info[0]['Subject'], $m)) {
+            $cn = $m[1];
+        }
+    } elseif (function_exists('openssl_x509_parse')) {
+        $ctx = stream_context_create(array('ssl' => array('capture_peer_cert' => true,
+            'verify_peer' => false, 'verify_peer_name' => false)));
+        $s = @stream_socket_client('ssl://' . $ip . ':' . (int) $port, $en, $es, 6,
+                                   STREAM_CLIENT_CONNECT, $ctx);
+        if ($s) {
+            $p = stream_context_get_params($s);
+            @fclose($s);
+            $z = isset($p['options']['ssl']['peer_certificate']) ? $p['options']['ssl']['peer_certificate'] : null;
+            $x = $z ? @openssl_x509_parse($z) : false;
+            if (is_array($x) && isset($x['subject']['CN']) && is_string($x['subject']['CN'])) {
+                $cn = $x['subject']['CN'];
+            }
+        }
+    }
+    $name = '';
+    if (preg_match('/^\*\.([0-9a-f]{12})\.dyndns\.loxonecloud\.com$/i', $cn, $m)) {
+        $name = str_replace('.', '-', $ip) . '.' . strtolower($m[1]) . '.dyndns.loxonecloud.com';
+    }
+    $merk[$schl] = $name;
+    return $name;
+}
+
+/**
+ * Braucht diese Adresse den Loxone-Namen? Ja, wenn sie https:// auf die
+ * IPv4-Adresse eines Miniservers aus der LoxBerry-Einstellung zeigt.
+ * Rueckgabe: null = nichts zu tun; array('fehler') = Name nicht bestimmbar;
+ * array(url, resolve, peer_name) sonst. Jede andere Adresse bleibt, wie
+ * sie ist, mit voller Pruefung gegen ihren eigenen Namen.
+ */
+function rk_ms_tls_ziel($url)
+{
+    if (!preg_match('#^https://(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?(/.*)?$#i', (string) $url, $m)) {
+        return null;
+    }
+    $ip = $m[1];
+    $port = isset($m[2]) && $m[2] !== '' ? (int) $m[2] : 443;
+    $ist_ms = false;
+    foreach (rk_miniserver() as $ms) {
+        if ((string) $ms['adresse'] === $ip) { $ist_ms = true; break; }
+    }
+    if (!$ist_ms) { return null; }
+    $name = rk_ms_tls_name($ip, $port);
+    if ($name === '') { return array('fehler'); }
+    $rest = isset($m[3]) ? $m[3] : '/';
+    return array('https://' . $name . ':' . $port . $rest, $name . ':' . $port . ':' . $ip, $name);
+}
+
 /**
  * Einen Aufruf an den Miniserver. Rueckgabe: array(code, roh, fehler).
  *
@@ -1963,13 +2060,17 @@ function rk_ms_url($ms, $pfad)
 function rk_ms_holen($ms, $pfad, $zeit = 12)
 {
     $url = rk_ms_url($ms, $pfad);
+    /* 0.11.33: HTTPS zum Miniserver ueber den Loxone-Namen, mit Pruefung (rk_ms_tls_ziel). */
+    $tls = rk_ms_tls_ziel($url);
+    if (is_array($tls) && count($tls) === 1) { return array(0, '', rk_t('TEST.E_TLS_MINISERVER')); }
     $kopf = array('Accept: application/json', 'User-Agent: LoxBerry-Raumklima');
     if ($ms['user'] !== '') {
         $kopf[] = 'Authorization: Basic '
                 . base64_encode($ms['user'] . ':' . $ms['pass']);
     }
     if (function_exists('curl_init')) {
-        $ch = curl_init($url);
+        $ch = curl_init(is_array($tls) ? $tls[0] : $url);
+        if (is_array($tls)) { curl_setopt($ch, CURLOPT_RESOLVE, array($tls[1])); }
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
         curl_setopt($ch, CURLOPT_TIMEOUT, (int) $zeit);
@@ -1983,9 +2084,11 @@ function rk_ms_holen($ms, $pfad, $zeit = 12)
     }
     /* follow_location = 0 aus demselben Grund wie in rk_holen(): der Kopf
      * mit den Zugangsdaten darf keiner fremden Weiterleitung folgen. */
-    $ctx = stream_context_create(array('http' => array(
+    $ctx_opt = array('http' => array(
         'timeout' => (int) $zeit, 'header' => implode("\r\n", $kopf),
-        'ignore_errors' => true, 'follow_location' => 0, 'max_redirects' => 1)));
+        'ignore_errors' => true, 'follow_location' => 0, 'max_redirects' => 1));
+    if (is_array($tls)) { $ctx_opt['ssl'] = array('peer_name' => $tls[2], 'verify_peer' => true, 'verify_peer_name' => true); }
+    $ctx = stream_context_create($ctx_opt);
     /* Bauart A (Durchgang 01.10.2026, C5): wie in rk_holen(). */
     $fp = @fopen($url, 'rb', false, $ctx);
     if ($fp === false) { return array(0, '', rk_t('TEST.E_KEINE_ANTWORT')); }

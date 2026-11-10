@@ -3,9 +3,13 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.32 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.33 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.33
+
+- **HTTPS zum Miniserver:** Ist in den LoxBerry-Einstellungen „HTTPS bevorzugen“ eingeschaltet, scheiterte bisher jede Verbindung zum Miniserver – etwa „Räume vom Miniserver holen“ –, weil das Zertifikat des Miniservers nicht auf seine IP-Adresse lautet, sondern auf `*.<Seriennummer>.dyndns.loxonecloud.com` (gemessen: curl-Fehler 60). Das Plugin liest diesen Namen jetzt aus dem Zertifikat (ohne Zugangsdaten), legt ihn fest auf die IP-Adresse aus den LoxBerry-Einstellungen und prüft das Zertifikat vollständig gegen ihn – ohne Abfrage im Internet. Lässt sich der Name nicht bestimmen, verbindet das Plugin nicht ungeprüft, sondern meldet es. Alle anderen Quellen (Shelly, Ecowitt …) werden wie bisher gegen ihren eigenen Namen geprüft.
 
 ## Neu in 0.11.32
 
