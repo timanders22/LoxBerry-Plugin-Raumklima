@@ -3,9 +3,13 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.30 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.31 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.31
+
+- Miniserver-Passwort mit Sonderzeichen: Das Plugin meldet sich jetzt mit dem Klartext aus `Admin_raw`/`Pass_raw` der LoxBerry-Einstellungen an. Bisher nahm es die für Adressen kodierte Form (aus `!` wurde `%21`), und der Miniserver antwortete mit HTTP 401. Fehlen die Klartextfelder, wird die kodierte Form zurückgewandelt.
 
 ## Neu in 0.11.30
 
