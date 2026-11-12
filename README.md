@@ -3,9 +3,17 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.34 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.35 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.35
+
+- **Fühler aus der Projektdatei (Issue #1):** Im Reiter *Einstellungen* steht unter dem Assistenten ein zweiter Weg, „Fühler aus der Projektdatei (Intelligente Raumregelung)“. Das Plugin liest die Loxone-Projektdatei (`.Loxone`) und löst je Intelligenter Raumregelung auf, welcher Baustein an den Eingängen für Raumtemperatur und Luftfeuchtigkeit hängt (in der Datei `Temp` und `InHumid`), auch über einen Verweis hinweg. Ist es ein virtueller Eingang, schlägt es dessen **Namen** als Lesequelle vor (`jdev/sps/io/<Name>/all`, Pfad `LL.value`) und den Raum der Raumregelung als Raum — gleich, ob der Eingang selbst einem Raum zugeordnet oder in der Visualisierung verwendet ist. Damit lassen sich etwa Homematic-Fühler übernehmen, die über ccu-jack und das MQTT-Gateway nur an der Raumregelung hängen und deshalb in der Strukturdatei des Miniservers fehlen.
+- Jeder vorgeschlagene Name wird vorher am Miniserver abgelesen und beim Übernehmen noch einmal. Das Auswerten schreibt keine Einstellung; übernommen wird erst mit dem zweiten Knopf, nur in freie Zeilen und nur für Räume, die noch nicht in der Tabelle stehen. Nicht vorgeschlagen werden: ein Eingang ohne Namen, ein Name, den ein anderer Baustein auch trägt (Verweise zählen nicht mit, sie tragen den Namen ihres Ziels), mehrere Quellen an einem Eingang, ein Raum mit mehreren Raumregelungen und eine Raumregelung ohne Raum. Ein 1-Wire- oder anderer Fühler, der kein virtueller Eingang ist, wird genannt, aber nicht vorgeschlagen; er steht in der Regel in der Strukturdatei, und die bisherige Suche findet ihn.
+- Darunter steht die Liste aller virtuellen Eingänge der Datei mit dem Weg, einen davon von Hand einzutragen.
+- **Woher die Datei kommt:** Das Plugin holt die Projektdatei nicht vom Miniserver. Sie wird auf den LoxBerry gelegt (Windows-Freigabe, WinSCP oder scp; die Seite nennt den Ordner und listet, was sie findet) oder hochgeladen. Das Hochladen scheitert bei einer großen Datei an den Grenzen von PHP (auf einem LoxBerry gemessen: 2 MB je Datei, 8 MB je Absendung); die Seite nennt die geltenden Grenzen vor dem Formular.
+- Für bestehende Anlagen ändert sich nichts: keine neue Einstellung, kein neuer Vorgabewert; der Weg wird nur benutzt, wenn man ihn aufruft.
 
 ## Neu in 0.11.34
 

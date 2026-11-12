@@ -745,6 +745,213 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
     }
 }
 
+/* ---------------- Fuehler aus der Projektdatei (0.11.35, Issue #1) ----------------
+ *
+ * Der zweite Weg des Assistenten: nicht die Strukturdatei, sondern die
+ * Projektdatei. Je Intelligente Raumregelung wird der Baustein an Temp und
+ * InHumid aufgeloest; ist es ein virtueller Eingang, wird sein NAME als
+ * Lesequelle vorgeschlagen - auch wenn er keinem Raum zugeordnet und nicht
+ * sichtbar ist (rk_projekt_irr()).
+ *
+ * Wie beim ersten Weg: das Auswerten schreibt keine Einstellung, es zeigt
+ * nur, was daraus wuerde, und probt jeden vorgeschlagenen Namen am
+ * Miniserver. Uebernommen wird erst auf den zweiten Knopf, und auch dann
+ * nur in freie Plaetze, nur fuer Raeume, die noch nicht eingetragen sind,
+ * und nur, wenn beide Namen bei DIESEM Knopfdruck erneut gelesen werden
+ * konnten. Die Datei wird dafuer nicht ein zweites Mal gebraucht: die
+ * Zeilen reisen als verborgene Felder mit und werden wie eine Eingabe
+ * geprueft - am Miniserver gelesen werden muessen sie ohnehin. */
+$rk_pd = null;
+$rk_pd_auswerten = function ($inhalt, $datei) use (&$rk_stoerung, &$rk_fehler) {
+    if ($inhalt === false || $inhalt === '') {
+        $rk_stoerung[] = sprintf(rk_t('EINST.PD_NICHT_LESBAR'), $datei);
+        return null;
+    }
+    list($ok, $meld, $erg) = rk_projekt_irr($inhalt);
+    if (!$ok) {
+        $rk_fehler[] = sprintf(rk_t($meld), $datei);
+        return null;
+    }
+    $cfg0 = rk_config();
+    list($liste, $frei) = rk_projekt_lage($erg['irr'], $cfg0);
+    $ms = rk_miniserver_gewaehlt($cfg0);
+    $namen = array();
+    foreach ($liste as $x) {
+        if ($x['lage'] === 'wird_angelegt') { $namen[] = $x['t']['name']; $namen[] = $x['rf']['name']; }
+    }
+    $proben = ($ms !== null && $namen) ? rk_projekt_proben($ms, $namen) : array();
+    $bereit = 0;
+    foreach ($liste as $k => $x) {
+        if ($x['lage'] !== 'wird_angelegt') { continue; }
+        $pt = isset($proben[$x['t']['name']]) ? $proben[$x['t']['name']] : null;
+        $prf = isset($proben[$x['rf']['name']]) ? $proben[$x['rf']['name']] : null;
+        if ($pt && $prf && $pt['ok'] && $prf['ok']) { $bereit++; }
+        else { $liste[$k]['lage'] = $ms === null ? 'ohne_ms' : 'nicht_lesbar'; }
+    }
+    /* Als Liste, nicht nach Namen geschluesselt: die Einmalmeldung laesst
+     * Schluessel fallen, die nach Zugangsdaten aussehen (rk_flash_ohne_
+     * geheimnis()), und ein Eingang darf "Benutzer anwesend" heissen. */
+    $pl = array();
+    foreach ($proben as $pn => $pw) { $pw['name'] = (string) $pn; $pl[] = $pw; }
+    $proben = $pl;
+    $n_t = 0; $n_rf = 0;
+    foreach ($liste as $x) {
+        if ($x['t']['art'] === 'ok') { $n_t++; }
+        if ($x['rf']['art'] === 'ok') { $n_rf++; }
+    }
+    return array('datei' => (string) $datei, 'irr' => $liste, 'vi' => $erg['vi'],
+                 'bausteine' => (int) $erg['bausteine'], 'n_t' => $n_t, 'n_rf' => $n_rf,
+                 'frei' => (int) $frei, 'proben' => $proben, 'bereit' => $bereit,
+                 'ms_name' => $ms !== null ? (string) $ms['name'] : '');
+};
+if ($rk_post && isset($_POST['pd_datei_lesen'])) {
+    $rk_tab = 'tab-settings';
+    /* Der Pfad kommt nie aus dem Formular: es nennt Ordnernummer und den
+     * Pfad in der Wurzel, und beides wird gegen die frisch gelesene Liste
+     * gehalten (rk_projekt_datei_finden(), Bauart Fensterbilanz). */
+    $rk_pdw = (isset($_POST['pd_datei']) && is_string($_POST['pd_datei'])) ? $_POST['pd_datei'] : '';
+    $rk_pdt = explode('|', $rk_pdw, 2);
+    $rk_pdd = (count($rk_pdt) === 2 && preg_match('/^\d{1,2}$/', $rk_pdt[0]))
+        ? rk_projekt_datei_finden((int) $rk_pdt[0], $rk_pdt[1]) : null;
+    if ($rk_pdd === null) {
+        $rk_fehler[] = rk_t('EINST.PD_DATEI_WEG');
+    } else {
+        $rk_gr = rk_grenzen();
+        if ($rk_gr['memory_limit'][1] < $rk_pdd['groesse'] * 4) {
+            /* Faktor 4 gewaehlt, nicht gemessen (Bauart Fensterbilanz). */
+            $rk_stoerung[] = sprintf(rk_t('EINST.PD_SPEICHER'), $rk_pdd['name'],
+                $rk_pdd['groesse'] / 1048576.0, $rk_gr['memory_limit'][0]);
+        } else {
+            $rk_pd = $rk_pd_auswerten(rk_holen_datei($rk_pdd['pfad']), $rk_pdd['pfad']);
+        }
+    }
+}
+if ($rk_post && isset($_POST['pd_hochladen'])) {
+    $rk_tab = 'tab-settings';
+    if (!isset($_FILES['pd_upload']) || !is_array($_FILES['pd_upload'])
+        || !isset($_FILES['pd_upload']['error'])) {
+        $rk_fehler[] = rk_t('EINST.PD_KEINE_ABSENDUNG');
+    } elseif ((int) $_FILES['pd_upload']['error'] !== UPLOAD_ERR_OK) {
+        /* Den Grund nennen - und den Weg daran vorbei gleich mit. */
+        list($rk_abl) = rk_ablageordner();
+        $rk_stoerung[] = sprintf(rk_t('EINST.PD_UPLOAD_FEHLER'),
+            (int) $_FILES['pd_upload']['error'], (string) ini_get('upload_max_filesize'),
+            (string) ini_get('post_max_size'), $rk_abl);
+    } elseif (!@is_uploaded_file((string) $_FILES['pd_upload']['tmp_name'])) {
+        $rk_fehler[] = rk_t('EINST.PD_KEINE_ABSENDUNG');
+    } else {
+        $rk_pdn = isset($_FILES['pd_upload']['name']) ? basename((string) $_FILES['pd_upload']['name']) : '';
+        $rk_pd = $rk_pd_auswerten(rk_holen_datei((string) $_FILES['pd_upload']['tmp_name']),
+                                  rk_text_saeubern($rk_pdn));
+    }
+}
+if ($rk_post && isset($_POST['pd_uebernehmen'])) {
+    $rk_tab = 'tab-settings';
+    $rk_cfg0 = rk_config();
+    $rk_ms = rk_miniserver_gewaehlt($rk_cfg0);
+    /* Die Zeilen kommen aus verborgenen Feldern und werden wie jede Eingabe
+     * geprueft: alle Beanstandungen werden gesammelt, und bei einer
+     * einzigen wird nichts geschrieben. */
+    $rk_zr = (isset($_POST['pd_raum']) && is_array($_POST['pd_raum'])) ? array_values($_POST['pd_raum']) : array();
+    $rk_zt = (isset($_POST['pd_t']) && is_array($_POST['pd_t'])) ? array_values($_POST['pd_t']) : array();
+    $rk_zf = (isset($_POST['pd_rf']) && is_array($_POST['pd_rf'])) ? array_values($_POST['pd_rf']) : array();
+    $rk_zeilen = array();
+    $rk_zfehl = 0;
+    if (!$rk_zr || count($rk_zr) !== count($rk_zt) || count($rk_zr) !== count($rk_zf)
+        || count($rk_zr) > RK_RAEUME) {
+        $rk_zfehl++;
+    } else {
+        foreach ($rk_zr as $rk_i => $rk_r0) {
+            $rk_t0 = $rk_zt[$rk_i]; $rk_f0 = $rk_zf[$rk_i];
+            if (!is_string($rk_r0) || !is_string($rk_t0) || !is_string($rk_f0)
+                || trim($rk_r0) === '' || trim($rk_t0) === '' || trim($rk_f0) === ''
+                || strlen($rk_r0) > 200 || strlen($rk_t0) > 200 || strlen($rk_f0) > 200
+                || rk_zeichen_unzulaessig($rk_r0)
+                || preg_match('/[\x00-\x1F\x7F]/', $rk_t0 . $rk_f0)) {
+                $rk_zfehl++;
+                continue;
+            }
+            $rk_zeilen[] = array('raum' => trim($rk_r0), 't' => $rk_t0, 'rf' => $rk_f0);
+        }
+    }
+    if ($rk_zfehl > 0) {
+        $rk_fehler[] = sprintf(rk_t('EINST.PD_ZEILEN_FEHL'), $rk_zfehl);
+    } elseif ($rk_ms === null) {
+        $rk_stoerung[] = rk_t('MELD.MS_KEINER');
+    } else {
+        $rk_namen = array();
+        foreach ($rk_zeilen as $rk_z) { $rk_namen[] = $rk_z['t']; $rk_namen[] = $rk_z['rf']; }
+        $rk_pr = rk_projekt_proben($rk_ms, $rk_namen);
+        $rk_neu2 = $rk_cfg0['raeume'];
+        $rk_frei = array();
+        for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
+            if (rk_platz_frei($rk_cfg0['raeume'][$rk_i])) { $rk_frei[] = $rk_i; }
+        }
+        $rk_n2 = 0; $rk_schon_n = 0; $rk_lesefehl = 0; $rk_ohne_platz = 0;
+        foreach ($rk_zeilen as $rk_z) {
+            $rk_schon = false;
+            foreach ($rk_neu2 as $rk_b) {
+                if (rk_raum_gleich($rk_b['name'], $rk_z['raum'])) { $rk_schon = true; break; }
+            }
+            if ($rk_schon) { $rk_schon_n++; continue; }
+            $rk_pt = isset($rk_pr[$rk_z['t']]) ? $rk_pr[$rk_z['t']] : null;
+            $rk_prf = isset($rk_pr[$rk_z['rf']]) ? $rk_pr[$rk_z['rf']] : null;
+            if (!$rk_pt || !$rk_prf || !$rk_pt['ok'] || !$rk_prf['ok']) {
+                $rk_lesefehl++;
+                $rk_stoerung[] = sprintf(rk_t('EINST.PD_PROBE_FEHL'), $rk_z['raum'],
+                    rk_t($rk_pt && !$rk_pt['ok'] ? $rk_pt['meld'] : ($rk_prf ? $rk_prf['meld'] : 'MELD.MS_HTTP')));
+                continue;
+            }
+            if (!$rk_frei) { $rk_ohne_platz++; continue; }
+            $rk_i = array_shift($rk_frei);
+            $rk_neu2[$rk_i]['name'] = $rk_z['raum'];
+            $rk_neu2[$rk_i]['quelle'] = rk_ms_url($rk_ms, 'jdev/sps/io/' . rawurlencode($rk_z['t']) . '/all');
+            $rk_neu2[$rk_i]['quelle_rf'] = rk_ms_url($rk_ms, 'jdev/sps/io/' . rawurlencode($rk_z['rf']) . '/all');
+            $rk_neu2[$rk_i]['pfad_t'] = $rk_pt['pfad'];
+            $rk_neu2[$rk_i]['pfad_rf'] = $rk_prf['pfad'];
+            $rk_n2++;
+        }
+        if ($rk_schon_n > 0) { $rk_meldungen[] = sprintf(rk_t('EINST.PD_SCHON_N'), $rk_schon_n); }
+        if ($rk_ohne_platz > 0) {
+            $rk_stoerung[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'), $rk_ohne_platz, RK_RAEUME);
+        }
+        if ($rk_n2 === 0) {
+            $rk_meldungen[] = rk_t('EINST.MS_NICHTS_NEU');
+        } else {
+            $rk_cfg0['raeume'] = $rk_neu2;
+            if (rk_config_speichern($rk_cfg0)) {
+                $rk_meldungen[] = sprintf(rk_t('EINST.PD_UEBERNOMMEN'), $rk_n2);
+                /* Zugangsdaten wie im ersten Weg: ohne sie antwortet der
+                 * Miniserver beim Abruf mit 401. */
+                $rk_g2 = rk_geheim();
+                if ($rk_g2['benutzer'] === '' && $rk_ms['user'] !== '') {
+                    if (rk_geheim_speichern(array('benutzer' => $rk_ms['user'],
+                                                  'passwort' => $rk_ms['pass']))) {
+                        $rk_meldungen[] = rk_t('EINST.MS_ZUGANG_GESETZT');
+                    } else {
+                        $rk_stoerung[] = rk_t('EINST.SICH_ZUGANG_FEHL');
+                    }
+                } elseif ($rk_g2['benutzer'] !== '' && $rk_g2['benutzer'] !== $rk_ms['user']) {
+                    $rk_stoerung[] = sprintf(rk_t('EINST.MS_ZUGANG_FREMD'),
+                        $rk_g2['benutzer'], $rk_ms['user']);
+                }
+                rk_log('Projektdatei: ' . $rk_n2 . ' Raum/Raeume ueber den Namen des Eingangs '
+                       . 'uebernommen (' . $rk_lesefehl . ' nicht lesbar, ' . $rk_ohne_platz
+                       . ' ohne Platz, ' . $rk_schon_n . ' schon eingetragen).');
+                list($rk_lief2, $rk_s2) = rk_ui_abrufen();
+                if (!$rk_lief2) {
+                    $rk_stoerung[] = rk_t('ALLG.NICHT_ABGERUFEN');
+                } else {
+                    $rk_meldungen[] = empty($rk_s2['meldungen'])
+                        ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+                }
+            } else {
+                $rk_stoerung[] = rk_t('EINST.SICH_SCHREIBFEHLER');
+            }
+        }
+    }
+}
+
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($rk_post && isset($_POST['vorlage'])) {
     list($rk_name, $rk_inhalt) = rk_vorlage();
@@ -1040,7 +1247,8 @@ if ($rk_war_post) {
     if (rk_flash_schreiben(array('tab' => $rk_tab, 'meldungen' => $rk_meldungen,
                                  'fehler' => $rk_fehler, 'stoerung' => $rk_stoerung,
                                  'abruf' => $rk_abrufhinweise, 'testausgabe' => $rk_testausgabe,
-                                 'ass' => $rk_ass, 'eingaben' => $rk_eingaben))) {
+                                 'ass' => $rk_ass, 'eingaben' => $rk_eingaben,
+                                 'pd' => rk_flash_ohne_geheimnis($rk_pd)))) {
         header('Location: index.php?form=' . rawurlencode(substr($rk_tab, 4)), true, 303);
         exit;
     }
@@ -1066,6 +1274,7 @@ if ($rk_war_post) {
             $rk_tab = (string) $rk_flash['tab'];
         }
         if (isset($rk_flash['ass']) && is_array($rk_flash['ass'])) { $rk_ass = $rk_flash['ass']; }
+        if (isset($rk_flash['pd']) && is_array($rk_flash['pd'])) { $rk_pd = $rk_flash['pd']; }
     }
 }
 
@@ -1535,6 +1744,129 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <?php } ?>
 <?php } else { ?>
 <div class="sm-warnung"><?= rk_t('EINST.MS_NICHTS_GEFUNDEN') ?></div>
+<?php } ?>
+<?php } ?>
+
+<?php /* ---------------- 0.11.35: Fuehler aus der Projektdatei ---------------- */
+$rk_pd_gr = rk_grenzen();
+$rk_pd_liste = rk_projekt_dateien();
+list($rk_pd_ablage, $rk_pd_bleibt) = rk_ablageordner(); ?>
+<h2><?= rk_e(rk_t('EINST.PD_H')) ?></h2>
+<div class="sm-step"><?= rk_t('EINST.PD_ERKLAERUNG') ?></div>
+<?php if (!$rk_mslist) { ?>
+<div class="sm-warnung"><?= rk_e(rk_t('EINST.PD_OHNE_MS')) ?></div>
+<?php } ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+<div class="sm-feld">
+  <label for="rk_pddatei"><?= rk_e(rk_t('EINST.PD_ABGELEGT')) ?></label>
+<?php if ($rk_pd_liste) { ?>
+  <select data-role="none" id="rk_pddatei" name="pd_datei">
+<?php foreach ($rk_pd_liste as $rk_pdx) { ?>
+    <option value="<?= rk_e($rk_pdx['ordner'] . '|' . $rk_pdx['rel']) ?>"><?= rk_e($rk_pdx['pfad']) ?> (<?= rk_e(number_format($rk_pdx['groesse'] / 1048576.0, 1, ',', '')) ?> MB, <?= rk_e(date('d.m.Y H:i', $rk_pdx['zeit'])) ?>)</option>
+<?php } ?>
+  </select>
+<?php } else { ?>
+  <p class="sm-hilfe"><?= rk_e(rk_t('EINST.PD_KEINE_ABGELEGT')) ?></p>
+<?php } ?>
+  <p class="sm-hilfe"><?= sprintf(rk_e(rk_t('EINST.PD_ABLAGE_HILFE')), '<code>' . rk_e($rk_pd_ablage) . '</code>') ?><?= $rk_pd_bleibt ? '' : ' ' . rk_e(rk_t('EINST.PD_ABLAGE_WEG')) ?></p>
+</div>
+<?php if ($rk_pd_liste) { ?>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="pd_datei_lesen" value="1"><?= rk_e(rk_t('EINST.K_PD_LESEN')) ?></button>
+</div>
+<?php } ?>
+</form>
+<form action="index.php" method="post" enctype="multipart/form-data">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+<div class="sm-feld">
+  <label for="rk_pdup"><?= rk_e(rk_t('EINST.PD_HOCHLADEN')) ?></label>
+  <input data-role="none" type="file" id="rk_pdup" name="pd_upload" accept=".Loxone,.loxone">
+  <p class="sm-hilfe"><?= rk_e(sprintf(rk_t('EINST.PD_GRENZEN'), $rk_pd_gr['upload_max_filesize'][0],
+      $rk_pd_gr['post_max_size'][0], $rk_pd_gr['memory_limit'][0])) ?></p>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="pd_hochladen" value="1"><?= rk_e(rk_t('EINST.K_PD_HOCHLADEN')) ?></button>
+</div>
+</form>
+
+<?php if (is_array($rk_pd) && isset($rk_pd['irr']) && is_array($rk_pd['irr'])) {
+    $rk_pd_pr = array();
+    foreach ((array) (isset($rk_pd['proben']) ? $rk_pd['proben'] : array()) as $rk_pdp) {
+        if (is_array($rk_pdp) && isset($rk_pdp['name'])) { $rk_pd_pr[(string) $rk_pdp['name']] = $rk_pdp; }
+    } ?>
+<div class="sm-hinweis"><?= rk_e(sprintf(rk_t('EINST.PD_GELESEN'), (string) $rk_pd['datei'],
+    count($rk_pd['irr']), (int) $rk_pd['n_t'], (int) $rk_pd['n_rf'], count((array) $rk_pd['vi']),
+    (int) $rk_pd['bereit'])) ?></div>
+<?php if ($rk_pd['irr']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= rk_e(rk_t('LOX.SP_RAUM')) ?></th>
+    <th><?= rk_e(rk_t('EINST.PD_SP_REGELUNG')) ?></th>
+    <th><?= rk_e(rk_t('EINST.PD_SP_TEMP')) ?></th>
+    <th><?= rk_e(rk_t('EINST.PD_SP_FEUCHTE')) ?></th>
+    <th><?= rk_e(rk_t('EINST.MS_SP_LAGE')) ?></th></tr>
+<?php
+$rk_pd_lagen = array(
+    'wird_angelegt'  => array('sm-an',  'EINST.MS_WIRD_ANGELEGT'),
+    'schon_da'       => array('',       'EINST.MS_SCHON_DA'),
+    'unvollstaendig' => array('sm-aus', 'EINST.MS_UNVOLLSTAENDIG'),
+    'kein_platz'     => array('sm-aus', 'EINST.MS_KEIN_PLATZ'),
+    'mehrdeutig'     => array('sm-aus', 'EINST.PD_LAGE_MEHRDEUTIG'),
+    'ohne_raum'      => array('sm-aus', 'EINST.PD_LAGE_OHNE_RAUM'),
+    'nicht_lesbar'   => array('sm-aus', 'EINST.PD_LAGE_NICHT_LESBAR'),
+    'ohne_ms'        => array('sm-aus', 'EINST.PD_LAGE_OHNE_MS'),
+);
+foreach ($rk_pd['irr'] as $rk_px) {
+    if (!is_array($rk_px)) { continue; }
+    $rk_pl = isset($rk_pd_lagen[$rk_px['lage']]) ? $rk_pd_lagen[$rk_px['lage']] : array('sm-aus', 'EINST.MS_UNVOLLSTAENDIG'); ?>
+<tr>
+  <td><b><?= $rk_px['raum'] !== '' ? rk_e($rk_px['raum']) : '&ndash;' ?></b></td>
+  <td><?= rk_e($rk_px['titel']) ?></td>
+<?php foreach (array('t', 'rf') as $rk_pg) {
+    $rk_q = $rk_px[$rk_pg]; ?>
+  <td><?php if ($rk_q['art'] === 'ok') { ?><?= rk_e($rk_q['name']) ?><br><span class="sm-hilfe"><?= rk_e($rk_q['typ']) ?><?= !empty($rk_q['verweis']) ? ' &middot; ' . rk_e(rk_t('EINST.PD_UEBER_VERWEIS')) : '' ?></span><?php
+        if (isset($rk_pd_pr[$rk_q['name']])) {
+            $rk_pp = $rk_pd_pr[$rk_q['name']];
+            if (!empty($rk_pp['ok'])) { ?><br><span class="sm-an"><?= rk_e(sprintf(rk_t('EINST.PD_PROBE_OK'), (string) $rk_pp['roh'], (string) $rk_pp['pfad'])) ?></span><?php }
+            else { ?><br><span class="sm-aus"><?= rk_e(rk_t((string) $rk_pp['meld'])) ?></span><?php }
+        }
+    } else { ?><span class="sm-aus"><?= rk_e(sprintf(rk_t('EINST.PD_ART_' . strtoupper($rk_q['art'])), (string) $rk_q['typ'], (int) $rk_q['n'])) ?></span><?php
+        if ($rk_q['art'] === 'typ' && $rk_q['name'] !== '') { ?><br><span class="sm-hilfe"><?= rk_e($rk_q['name']) ?></span><?php }
+    } ?></td>
+<?php } ?>
+  <td><?php if ($rk_pl[0] === '') { ?><?= rk_e(rk_t($rk_pl[1])) ?><?php }
+           else { ?><span class="<?= $rk_pl[0] ?>"><?= rk_e(rk_t($rk_pl[1])) ?></span><?php } ?></td>
+</tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+<?php if ((int) $rk_pd['bereit'] > 0) { ?>
+<div class="sm-warnung"><?= rk_t('EINST.PD_VOR_UEBERNAHME') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+<?php foreach ($rk_pd['irr'] as $rk_px) {
+    if (!is_array($rk_px) || $rk_px['lage'] !== 'wird_angelegt') { continue; } ?>
+<input data-role="none" type="hidden" name="pd_raum[]" value="<?= rk_e($rk_px['raum']) ?>">
+<input data-role="none" type="hidden" name="pd_t[]" value="<?= rk_e($rk_px['t']['name']) ?>">
+<input data-role="none" type="hidden" name="pd_rf[]" value="<?= rk_e($rk_px['rf']['name']) ?>">
+<?php } ?>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="pd_uebernehmen" value="1"><?= rk_e(rk_t('EINST.K_PD_UEBERNEHMEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+<?php if (!empty($rk_pd['vi'])) { ?>
+<details>
+<summary><?= rk_e(sprintf(rk_t('EINST.PD_VI_LISTE'), count((array) $rk_pd['vi']))) ?></summary>
+<p class="sm-hilfe"><?= sprintf(rk_e(rk_t('EINST.PD_VI_HILFE')),
+    '<code>' . rk_e(rk_ms_url(rk_miniserver_gewaehlt($rk_cfg) ?: array('adresse' => 'MINISERVER', 'port' => 80), 'jdev/sps/io/')) . rk_e(rk_t('EINST.MS_IRR_NAME')) . '/all</code>') ?></p>
+<p class="sm-hilfe"><?= implode('<br>', array_map('rk_e', array_map('strval', (array) $rk_pd['vi']))) ?></p>
+</details>
 <?php } ?>
 <?php } ?>
 

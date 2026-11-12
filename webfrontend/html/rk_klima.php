@@ -2511,6 +2511,41 @@ function rk_selbsttest()
             count($vv), 1);
         $pr('  und wird als Raumregelung ohne Fuehler gezaehlt',
             rk_raumregelungen_ohne_fuehler($bs, $vv), 1);
+
+        /* ---- 0.11.35 (Issue #1): Fuehler aus der Projektdatei ----
+         * Ein Auszug in der Form der Projektdatei: Temp ueber einen Verweis,
+         * der den Titel seines Ziels traegt (an der echten Datei gemessen:
+         * alle 1148 Verweise), InHumid unmittelbar an einem virtuellen
+         * Eingang, ein zweiter Raum mit einem 1-Wire-Fuehler. */
+        $px = "\xEF\xBB\xBF<ControlList Version=\"274\">\r\n"
+            . "<C Type=\"Place\" U=\"p1\" Title=\"Bad\"/><C Type=\"Place\" U=\"p2\" Title=\"Flur\"/>\r\n"
+            . "<C Type=\"VirtualIn\" U=\"v1\" Title=\"ccu_x_1_ACTUAL_TEMPERATURE_v\"><Co K=\"Q\" U=\"v1q\"/></C>\r\n"
+            . "<C Type=\"VirtualIn\" U=\"v2\" Title=\"ccu_x_1_HUMIDITY_v\"><Co K=\"Q\" U=\"v2q\"/></C>\r\n"
+            . "<C Type=\"InputRef\" U=\"r1\" Title=\"ccu_x_1_ACTUAL_TEMPERATURE_v\" Ref=\"v1\"><Co K=\"AQ\" U=\"r1q\"/></C>\r\n"
+            . "<C Type=\"Lox1wireAsensor\" U=\"w1\" Title=\"T Flur\"><Co K=\"AQ\" U=\"w1q\"/></C>\r\n"
+            . "<C Type=\"HeatIRoomController2\" U=\"h1\" Title=\"Heizung Bad\"><Co K=\"Temp\" Nc=\"1\" U=\"h1t\">"
+            . "<In Input=\"r1q\"/></Co><Co K=\"InHumid\" Nc=\"1\" U=\"h1h\"><In Input=\"v2q\"/></Co>"
+            . "<IoData Pr=\"p1\"/></C>\r\n"
+            . "<C Type=\"HeatIRoomController2\" U=\"h2\" Title=\"Heizung Flur\"><Co K=\"Temp\" Nc=\"1\" U=\"h2t\">"
+            . "<In Input=\"w1q\"/></Co><Co K=\"InHumid\" U=\"h2h\"/><IoData Pr=\"p2\"/></C>\r\n</ControlList>\r\n";
+        list($pok, , $perg) = rk_projekt_irr($px);
+        $pr('Projektdatei: zwei Raumregelungen gelesen', $pok ? count($perg['irr']) : -1, 2);
+        if ($pok && count($perg['irr']) === 2) {
+            $pr('  Temp ueber den Verweis zum Namen des virtuellen Eingangs',
+                array($perg['irr'][0]['t']['art'], $perg['irr'][0]['t']['name']),
+                array('ok', 'ccu_x_1_ACTUAL_TEMPERATURE_v'));
+            $pr('  InHumid unmittelbar, Raum der Raumregelung',
+                array($perg['irr'][0]['rf']['name'], $perg['irr'][0]['raum']), array('ccu_x_1_HUMIDITY_v', 'Bad'));
+            $pr('  ein 1-Wire-Fuehler ist kein virtueller Eingang',
+                $perg['irr'][1]['t']['art'], 'typ');
+            $pr('  nichts an InHumid', $perg['irr'][1]['rf']['art'], 'leer');
+            list($plage) = rk_projekt_lage($perg['irr'],
+                array('raeume' => array_fill(0, RK_RAEUME, array('name' => ''))));
+            $pr('  Lage: Bad wird angelegt, Flur nicht', array($plage[0]['lage'], $plage[1]['lage']),
+                array('wird_angelegt', 'unvollstaendig'));
+        }
+        list($pok2) = rk_projekt_irr('{"controls":{}}');
+        $pr('  eine Strukturdatei ist keine Projektdatei', $pok2, 0);
     }
 
     array_unshift($z, sprintf('Rechenkern %s: %d Faelle geprueft, %d Fehlschlaege.',

@@ -6595,3 +6595,427 @@ function rk_fassung_aus_datenbank()
     }
     return '';
 }
+
+/* ======================================================================
+ * FUEHLER AUS DER PROJEKTDATEI (0.11.35, Issue #1)
+ *
+ * Wer Homematic ueber ccu-jack und das MQTT-Gateway einbindet, haengt die
+ * Fuehler oft nur an die Eingaenge Temp und InHumid der Intelligenten
+ * Raumregelung und laesst die virtuellen Eingaenge aus der Visualisierung.
+ * Dann stehen sie nicht in der Strukturdatei (LoxAPP3.json), und die Suche
+ * ueber den Raum findet nichts. In der PROJEKTDATEI stehen sie trotzdem -
+ * mit Namen, unabhaengig von Raum und Sichtbarkeit -, und die Raumregelung
+ * sagt dort, welcher Baustein an ihrem Eingang haengt:
+ *
+ *     <C Type="HeatIRoomController2" ...>
+ *         <Co K="Temp" Nc="1" U="..."><In Input="<Anschluss der Quelle>"/></Co>
+ *         <Co K="InHumid" Nc="1" U="..."><In Input="..."/></Co>
+ *         <IoData Pr="<Raum>" .../>
+ *
+ * Die Kennung unter Input ist die eines ANSCHLUSSES (<Co U=...>) des
+ * Quellbausteins. Ist der Quellbaustein ein Verweis (InputRef), zeigt sein
+ * Attribut Ref auf den eigentlichen Baustein. Ist es ein virtueller
+ * Eingang, wird sein Name als Lesequelle vorgeschlagen:
+ * jdev/sps/io/<Name>/all antwortete am 10.11.2026 an zwei nicht
+ * visualisierten Gateway-Eingaengen mit Code 200 und der Zahl unter
+ * LL.value (siehe rk_raumregelungen_ohne_fuehler()). Ob das an der Anlage
+ * des Anwenders genauso ist, misst die Probe vor jeder Uebernahme - je
+ * Name, nicht je Bauart.
+ *
+ * Woher die Datei kommt: vom Anwender, nicht vom Miniserver. Ob und in
+ * welcher Form der Miniserver seine Projektdatei ueber HTTP herausgibt, ist
+ * an keiner Anlage gemessen; der Beschattungswaechter liest - anders als
+ * zunaechst angenommen - nur die Strukturdatei, und Stats4Lox laesst die
+ * .Loxone-Datei im Browser hochladen (uploadconfig.cgi). Die beiden Wege
+ * hier - abgelegte Datei und Absendung - sind aus Beschattung Fensterbilanz
+ * 0.12.8 uebernommen (fb_projekt_ordner, fb_ablageordner,
+ * fb_projekt_dateien, fb_projekt_datei_finden, fb_holen_datei, fb_ini_byte,
+ * fb_grenzen), Bezeichner auf rk_ umbenannt, Kommentare gekuerzt.
+ *
+ * Gemessen am 12.11.2026 an einer echten Projektdatei (4,6 MB, Config
+ * 17.3): 18 Raumregelungen, alle mit Raum; Temp 16-mal ueber einen Verweis
+ * auf einen 1-Wire-Fuehler, 2-mal an einem Mittelwert-Baustein; InHumid
+ * nirgends angeschlossen. Dort liefert dieser Weg also NICHTS - die
+ * Fuehler stehen in der Strukturdatei, und die bisherige Suche findet sie.
+ * Ausserdem gemessen: jeder der 1148 Verweise (InputRef) traegt denselben
+ * Titel wie sein Ziel. Die Eindeutigkeit eines Namens wird deshalb OHNE
+ * InputRef und OutputRef gezaehlt; mit ihnen galten 378 von 600 virtuellen
+ * Eingaengen als mehrfach benannt, ohne sie einer (gleichnamiger
+ * Modbus-Fuehler).
+ * ====================================================================== */
+
+/** Bausteinarten, deren Name als Lesequelle vorgeschlagen wird. */
+function rk_projekt_quelltypen()
+{
+    /* Gemessen lesbar ist nur VirtualIn. Die drei anderen tragen ebenfalls
+     * einen Namen, ueber den ein Wert ankommt (MQTT-Gateway im UDP-Betrieb,
+     * virtueller HTTP-Eingang); ob jdev/sps/io/<Name> sie beantwortet, ist
+     * nicht gemessen - darueber entscheidet die Probe, nicht diese Liste. */
+    return array('VirtualIn', 'VirtualInCmd', 'VirtualUdpInCmd', 'VirtualHttpInCmd');
+}
+
+/** Die Attribute eines Tags, dekodiert. Bei doppelten Attributen gilt das erste (Regeln/08). */
+function rk_projekt_attribute($s)
+{
+    $a = array();
+    if (preg_match_all('/\s([A-Za-z_][\w.:-]*)="([^"]*)"/', (string) $s, $m, PREG_SET_ORDER)) {
+        foreach ($m as $x) {
+            if (!isset($a[$x[1]])) {
+                $a[$x[1]] = html_entity_decode($x[2], ENT_QUOTES | ENT_XML1, 'UTF-8');
+            }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Je Intelligente Raumregelung den Baustein an Temp und InHumid aufloesen.
+ *
+ * Kein XML-Parser: die Datei ist kein wohlgeformtes XML (doppelte
+ * Attribute, Regeln/08) und mehrere Megabyte gross. Gelesen wird Tag fuer
+ * Tag mit einem Stapel, damit ein <Co> und ein <IoData> dem Baustein
+ * zugeordnet werden, in dem sie stehen. Ein Wert mit spitzer Klammer steht
+ * in der Datei maskiert (&gt;); gemessen an der echten Datei: kein rohes >
+ * in einem Attributwert.
+ *
+ * Rueckgabe: array(ok, Meldungsschluessel, Ergebnis). Ergebnis:
+ *   irr  Liste aus array(titel, raum, t, rf); t/rf = array(art, typ, name, n, verweis)
+ *        art: ok | leer | mehrere | tot | typ | ohne_name | mehrfach
+ *   vi   Namen aller virtuellen Eingaenge (rk_projekt_quelltypen()), sortiert
+ *   bausteine  Zahl der <C>
+ */
+function rk_projekt_irr($inhalt)
+{
+    $inhalt = (string) $inhalt;
+    if (strncmp($inhalt, "\xEF\xBB\xBF", 3) === 0) { $inhalt = substr($inhalt, 3); }
+    if (strpos($inhalt, '<ControlList') === false || strpos($inhalt, '<C ') === false) {
+        return array(0, 'EINST.PD_KEINE_DATEI', null);
+    }
+    $c = array();
+    $co = array();
+    $c_u = array();
+    $irr_in = array();
+    $stapel = array();
+    $akt = null;
+    $pos = 0;
+    $re = '/<(\/?)(C|Co|In|IoData)(?=[\s\/>])([^>]*)>/';
+    while (preg_match($re, $inhalt, $m, PREG_OFFSET_CAPTURE, $pos)) {
+        $pos = $m[0][1] + strlen($m[0][0]);
+        $zu = ($m[1][0] === '/');
+        $tag = $m[2][0];
+        $rest = $m[3][0];
+        $leer = (substr($rest, -1) === '/');
+        if ($tag === 'C') {
+            if ($zu) { array_pop($stapel); $akt = null; continue; }
+            $a = rk_projekt_attribute($rest);
+            $i = count($c);
+            $u = isset($a['U']) ? $a['U'] : '';
+            $c[] = array('typ' => isset($a['Type']) ? $a['Type'] : '',
+                         'titel' => isset($a['Title']) ? $a['Title'] : '',
+                         'ref' => isset($a['Ref']) ? $a['Ref'] : '',
+                         'pr' => null);
+            if ($u !== '' && !isset($c_u[$u])) { $c_u[$u] = $i; }
+            if (!$leer) { $stapel[] = $i; }
+        } elseif ($tag === 'Co') {
+            if ($zu) { $akt = null; continue; }
+            if (!$stapel) { continue; }
+            $a = rk_projekt_attribute($rest);
+            $i = $stapel[count($stapel) - 1];
+            if (isset($a['U']) && !isset($co[$a['U']])) { $co[$a['U']] = $i; }
+            $akt = null;
+            $k = isset($a['K']) ? $a['K'] : '';
+            if ($c[$i]['typ'] === 'HeatIRoomController2' && ($k === 'Temp' || $k === 'InHumid')) {
+                if (!isset($irr_in[$i])) { $irr_in[$i] = array('Temp' => array(), 'InHumid' => array()); }
+                if (!$leer) { $akt = array($i, $k); }
+            }
+        } elseif ($tag === 'In') {
+            if ($akt === null || $zu) { continue; }
+            $a = rk_projekt_attribute($rest);
+            $irr_in[$akt[0]][$akt[1]][] = isset($a['Input']) ? $a['Input'] : '';
+        } else {
+            if ($zu || !$stapel) { continue; }
+            $i = $stapel[count($stapel) - 1];
+            if ($c[$i]['pr'] === null) {
+                $a = rk_projekt_attribute($rest);
+                $c[$i]['pr'] = isset($a['Pr']) ? $a['Pr'] : '';
+            }
+        }
+    }
+    if (!$c) { return array(0, 'EINST.PD_KEINE_DATEI', null); }
+
+    /* Namen zaehlen - ohne Verweise, die den Titel ihres Ziels tragen. */
+    $titel_n = array();
+    $orte = array();
+    $vi = array();
+    $quell = rk_projekt_quelltypen();
+    foreach ($c as $x) {
+        if ($x['typ'] === 'Place') { $orte[] = $x; }
+        if ($x['typ'] === 'InputRef' || $x['typ'] === 'OutputRef') { continue; }
+        $t = $x['titel'];
+        $titel_n[$t] = isset($titel_n[$t]) ? $titel_n[$t] + 1 : 1;
+        if (in_array($x['typ'], $quell, true) && trim($t) !== '') { $vi[$t] = 1; }
+    }
+    $ort_titel = array();
+    foreach ($c_u as $u => $i) {
+        if ($c[$i]['typ'] === 'Place') { $ort_titel[$u] = $c[$i]['titel']; }
+    }
+    $vi = array_keys($vi);
+    sort($vi, SORT_STRING);
+
+    $quelle = function ($ins) use ($c, $co, $c_u, $titel_n, $quell) {
+        $leer = array('art' => 'leer', 'typ' => '', 'name' => '', 'n' => 0, 'verweis' => 0);
+        if (!$ins) { return $leer; }
+        if (count($ins) > 1) {
+            $leer['art'] = 'mehrere'; $leer['n'] = count($ins);
+            return $leer;
+        }
+        $u = (string) $ins[0];
+        if (isset($co[$u])) { $i = $co[$u]; }
+        elseif (isset($c_u[$u])) { $i = $c_u[$u]; }
+        else { $leer['art'] = 'tot'; return $leer; }
+        $verweis = 0;
+        if ($c[$i]['typ'] === 'InputRef' && $c[$i]['ref'] !== '' && isset($c_u[$c[$i]['ref']])) {
+            $i = $c_u[$c[$i]['ref']];
+            $verweis = 1;
+        }
+        $typ = $c[$i]['typ'];
+        $name = $c[$i]['titel'];
+        $aus = array('art' => 'ok', 'typ' => $typ, 'name' => $name, 'n' => 1, 'verweis' => $verweis);
+        if (!in_array($typ, $quell, true)) { $aus['art'] = 'typ'; return $aus; }
+        if (trim($name) === '') { $aus['art'] = 'ohne_name'; return $aus; }
+        $n = isset($titel_n[$name]) ? $titel_n[$name] : 0;
+        if ($n > 1) { $aus['art'] = 'mehrfach'; $aus['n'] = $n; }
+        return $aus;
+    };
+
+    $irr = array();
+    foreach ($c as $i => $x) {
+        if ($x['typ'] !== 'HeatIRoomController2') { continue; }
+        $in = isset($irr_in[$i]) ? $irr_in[$i] : array('Temp' => array(), 'InHumid' => array());
+        $pr = (string) $x['pr'];
+        $irr[] = array(
+            'titel' => $x['titel'],
+            'raum'  => ($pr !== '' && isset($ort_titel[$pr])) ? trim($ort_titel[$pr]) : '',
+            't'     => $quelle($in['Temp']),
+            'rf'    => $quelle($in['InHumid']),
+        );
+    }
+    return array(1, '', array('irr' => $irr, 'vi' => $vi, 'bausteine' => count($c)));
+}
+
+/**
+ * Die Lage je Raumregelung - an EINER Stelle, die Tabelle zeigt sie nur an
+ * (dieselbe Regel wie im Assistenten ueber die Strukturdatei).
+ *
+ * Rueckgabe: array(Liste mit 'lage', Zahl freier Plaetze). Lagen:
+ * ohne_raum, mehrdeutig (zwei Raumregelungen im selben Raum), schon_da,
+ * unvollstaendig, kein_platz, wird_angelegt.
+ */
+function rk_projekt_lage($irr, $cfg)
+{
+    $frei = 0;
+    for ($i = 0; $i < RK_RAEUME; $i++) {
+        if (rk_platz_frei(isset($cfg['raeume'][$i]) ? $cfg['raeume'][$i] : null)) { $frei++; }
+    }
+    $je_raum = array();
+    foreach ((array) $irr as $x) {
+        $k = mb_strtolower_ersatz(trim((string) $x['raum']));
+        if ($k !== '') { $je_raum[$k] = isset($je_raum[$k]) ? $je_raum[$k] + 1 : 1; }
+    }
+    $uebrig = $frei;
+    $aus = array();
+    foreach ((array) $irr as $x) {
+        $k = mb_strtolower_ersatz(trim((string) $x['raum']));
+        $schon = false;
+        foreach ((array) $cfg['raeume'] as $b) {
+            if (rk_raum_gleich(isset($b['name']) ? $b['name'] : '', $x['raum'])) { $schon = true; break; }
+        }
+        if ($k === '') { $lage = 'ohne_raum'; }
+        elseif ($je_raum[$k] > 1) { $lage = 'mehrdeutig'; }
+        elseif ($schon) { $lage = 'schon_da'; }
+        elseif ($x['t']['art'] !== 'ok' || $x['rf']['art'] !== 'ok') { $lage = 'unvollstaendig'; }
+        elseif ($uebrig <= 0) { $lage = 'kein_platz'; }
+        else { $lage = 'wird_angelegt'; $uebrig--; }
+        $x['lage'] = $lage;
+        $aus[] = $x;
+    }
+    return array($aus, $frei);
+}
+
+/**
+ * Jeden vorgeschlagenen Namen einmal am Miniserver ablesen.
+ *
+ * Je NAME, nicht je Bauart wie in rk_ms_proben(): ob ein Name ueber die
+ * Adresse lesbar ist, kann am Namen selbst haengen (Zeichen darin). Die
+ * Zahl ist durch die Raumzahl begrenzt (hoechstens zwei je Platz). Ist der
+ * Miniserver stumm oder weist die Anmeldung ab, wird nicht weiter gefragt -
+ * jede weitere Probe kostete nur Wartezeit; die uebrigen stehen dann als
+ * "nicht geprobt" da.
+ *
+ * Rueckgabe: Name => array(ok, meld, pfad, roh, zahl).
+ */
+function rk_projekt_proben($ms, $namen, $zeit = 8)
+{
+    $aus = array();
+    $abbruch = '';
+    foreach (array_slice(array_values(array_unique((array) $namen)), 0, 2 * RK_RAEUME) as $n) {
+        $n = (string) $n;
+        if ($abbruch !== '') {
+            $aus[$n] = array('ok' => 0, 'meld' => $abbruch, 'pfad' => '', 'roh' => '', 'zahl' => null);
+            continue;
+        }
+        list($ok, $meld, $pfad, $roh, $zahl) = rk_ms_probe($ms, $n, $zeit);
+        $aus[$n] = array('ok' => $ok, 'meld' => $meld, 'pfad' => $pfad, 'roh' => $roh, 'zahl' => $zahl);
+        if (!$ok && ($meld === 'MELD.MS_STUMM' || $meld === 'MELD.MS_401')) { $abbruch = $meld; }
+    }
+    return $aus;
+}
+
+/* ---------------- Die Datei hereinholen (aus Fensterbilanz 0.12.8) ---------------- */
+
+/**
+ * In welchen Ordnern wird nach einer abgelegten Projektdatei gesucht?
+ *
+ * Der Weg an der Absendung vorbei: PHP nimmt auf dem LoxBerry dieses
+ * Hauses 2 MB je Datei an (upload_max_filesize = 2M, post_max_size = 8M,
+ * am Geraet gemessen 16.09.2026), eine Projektdatei ist mehrere Megabyte
+ * gross, und das Plugin kann die Grenze nicht anheben. Wer die Datei auf
+ * den LoxBerry LEGT - ueber die Windows-Freigabe, mit WinSCP oder scp -, an
+ * dem kommt keine dieser Grenzen vor. Gesucht wird in einer FESTEN Liste;
+ * ein Pfad aus dem Formular waere ein Leseloch.
+ */
+function rk_projekt_ordner()
+{
+    $p = rk_paths();
+    $basis = $p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__));
+    $o = array($p['datadir'], $basis . '/data',
+               (string) sys_get_temp_dir(), '/tmp', '/media', '/mnt');
+    $raus = array();
+    foreach ($o as $d) {
+        $d = (string) $d;
+        $k = rtrim(str_replace('\\', '/', $d), '/');
+        if ($d === '' || $k === '' || isset($raus[$k])) { continue; }
+        $raus[$k] = $d;
+    }
+    return array_values($raus);
+}
+
+/**
+ * Welcher Ordner wird zum Ablegen empfohlen? Der erste, den es gibt, der
+ * beschreibbar ist und den eine Deinstallation dieses Plugins nicht
+ * abraeumt - also nicht der eigene Datenordner. Gibt es keinen, bleibt der
+ * Datenordner, mit dem Hinweis, was ihm zustoesst.
+ * Rueckgabe: array(Pfad, ueberlebt_deinstallation).
+ */
+function rk_ablageordner($ordner = null, $eigener = null)
+{
+    $p = rk_paths();
+    if ($ordner === null || !is_array($ordner)) { $ordner = rk_projekt_ordner(); }
+    if ($eigener === null) { $eigener = $p['datadir']; }
+    $eigen = rtrim(str_replace('\\', '/', $eigener), '/');
+    foreach ($ordner as $d) {
+        if (rtrim(str_replace('\\', '/', $d), '/') === $eigen) { continue; }
+        if (is_dir($d) && is_writable($d)) { return array($d, true); }
+    }
+    return array($eigener, false);
+}
+
+/**
+ * Die abgelegten Projektdateien, die neueste zuerst. Zwei Ebenen tief,
+ * hoechstens 400 Verzeichnisse und eine Sekunde; Verknuepfungen werden
+ * nicht verfolgt. Der PFAD wird hier gebaut und kommt nie aus dem Formular.
+ * $ordner ist nur fuer den Selbsttest da.
+ */
+function rk_projekt_dateien($hoechstens = 60, $ordner = null)
+{
+    $liste = array();
+    if ($ordner === null || !is_array($ordner)) { $ordner = rk_projekt_ordner(); }
+    $besucht = 0;
+    $schluss = microtime(true) + 1.0;
+    foreach ($ordner as $nr => $d) {
+        $warten = array(array($d, 0));
+        while ($warten) {
+            list($jetzt_d, $tiefe) = array_shift($warten);
+            if ($besucht++ > 400 || microtime(true) > $schluss) { break 2; }
+            if (!is_dir($jetzt_d) || !is_readable($jetzt_d)) { continue; }
+            $eintraege = @scandir($jetzt_d);
+            if (!is_array($eintraege)) { continue; }
+            foreach ($eintraege as $name) {
+                if ($name === '.' || $name === '..' || $name[0] === '.') { continue; }
+                $voll = $jetzt_d . '/' . $name;
+                if (is_link($voll)) { continue; }
+                if (is_dir($voll)) {
+                    if ($tiefe < 2) { $warten[] = array($voll, $tiefe + 1); }
+                    continue;
+                }
+                if (!preg_match('/\.loxone$/i', $name)) { continue; }
+                if (!is_file($voll) || !is_readable($voll)) { continue; }
+                $liste[] = array(
+                    'ordner'     => $nr,
+                    'ordnerpfad' => $d,
+                    'rel'        => ltrim(substr($voll, strlen($d)), '/'),
+                    'name'       => $name,
+                    'pfad'       => $voll,
+                    'groesse'    => (int) filesize($voll),
+                    'zeit'       => (int) filemtime($voll),
+                );
+            }
+        }
+    }
+    usort($liste, function ($a, $b) {
+        if ($a['zeit'] === $b['zeit']) { return strcmp($a['name'], $b['name']); }
+        return $b['zeit'] - $a['zeit'];
+    });
+    return array_slice($liste, 0, $hoechstens);
+}
+
+/** Eine abgelegte Datei anhand von Ordnernummer und Pfad in der Wurzel wiederfinden - nur aus der frisch gelesenen Liste. */
+function rk_projekt_datei_finden($ordner, $rel, $ordnerliste = null)
+{
+    foreach (rk_projekt_dateien(60, $ordnerliste) as $d) {
+        if ((int) $d['ordner'] === (int) $ordner && $d['rel'] === (string) $rel) {
+            return $d;
+        }
+    }
+    return null;
+}
+
+/** Eine Datei lesen, ohne dass eine Warnung als Befund liegenbleibt; false bleibt false. */
+function rk_holen_datei($pfad)
+{
+    set_error_handler(function () { return true; });
+    $inhalt = file_get_contents($pfad);
+    restore_error_handler();
+    return $inhalt;
+}
+
+/** Eine Groessenangabe aus der php.ini in Byte ("2M" -> 2097152, "-1" -> PHP_INT_MAX). */
+function rk_ini_byte($wert)
+{
+    $wert = trim((string) $wert);
+    if ($wert === '') { return 0; }
+    if ($wert === '-1') { return PHP_INT_MAX; }
+    $zahl = (float) $wert;
+    $letzt = strtolower(substr($wert, -1));
+    if ($letzt === 'g') { $zahl *= 1024 * 1024 * 1024; }
+    elseif ($letzt === 'm') { $zahl *= 1024 * 1024; }
+    elseif ($letzt === 'k') { $zahl *= 1024; }
+    return (int) $zahl;
+}
+
+/**
+ * Was laesst dieses PHP bei einer Absendung durch? Die Werte stehen VOR dem
+ * Formular: PHP weist eine zu grosse Absendung ab, bevor eine Zeile des
+ * Plugins laeuft, und ini_set() kann beide Grenzen nicht anheben.
+ * Rueckgabe je Groesse: array(Text, Byte); 'grenze' ist die kleinere.
+ */
+function rk_grenzen()
+{
+    $g = array();
+    foreach (array('upload_max_filesize', 'post_max_size', 'memory_limit') as $k) {
+        $t = (string) ini_get($k);
+        $g[$k] = array($t, rk_ini_byte($t));
+    }
+    $g['grenze'] = min($g['upload_max_filesize'][1], $g['post_max_size'][1]);
+    return $g;
+}
