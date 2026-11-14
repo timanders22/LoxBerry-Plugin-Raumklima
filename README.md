@@ -3,9 +3,22 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.35 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.36 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.36
+
+- **Verhalten geändert – Einstellungen zurückspielen:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe.
+  - Das Kennzeichen `_plugin` = `raumklima`, das seit 0.11.0 im Kopf jeder Sicherung steht, wird jetzt gelesen: Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen. Bis 0.11.35 wurde eine solche Datei gelesen wie eine eigene. Jede Sicherung aus 0.11.0 bis 0.11.35 trägt das Kennzeichen und wird weiter angenommen.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei, in einem Raum, in der Sprachausgabe und in den Zugangsdaten. Die übrigen Einstellungen werden zurückgespielt. Bisher wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Das gilt auch für den Standort (Breite, Länge), die gemeinsame Adresse, die Felder der Sprachausgabe und die Zugangsdaten der Sensorquelle. Bisher löschte etwa ein leerer Standort in der Sicherung den eingetragenen. Die Felder eines Raums sind davon ausgenommen und werden übernommen, wie sie in der Datei stehen.
+  - Fehlt einer Sicherung eine Einstellung, die ihre Fassung noch nicht kannte, behält diese ihren geltenden Wert, und die Meldung nennt sie. Neu gilt das auch für die Regeln „Wann gesprochen wird“ (in Sicherungen bis 0.11.28 nicht enthalten); bis 0.11.35 galten sie danach ab Werk. Die Sprachausgabe behielt ihren geltenden Stand schon bisher, jetzt nennt die Meldung die einzelnen Felder. Eine Sicherung aus 0.11.0 (ohne die Wahl des Miniservers für den Einrichtungs-Assistenten) wird jetzt angenommen; bis 0.11.35 wurde sie wegen dieser fehlenden Einstellung abgewiesen.
+  - Ein leeres Aktionstoken in der Sicherung lässt das geltende stehen wie bisher; die Meldung nennt es jetzt im allgemeinen Satz „In der Sicherung leer, der bisherige Wert bleibt“.
+  - Die gelbe Warnung am Knopf „Einstellungen sichern“ nennt nur noch die Namen der Einstellungen, die das Zurückspielen abwiese, ohne Grund.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, alle Beanstandungen werden genannt. Das Aktionstoken steht immer in der Datei, die Zugangsdaten der Sensorquelle nur mit dem Haken beim Sichern, die Sprechtoken nie. Die Zugangsdaten gehen beim Zurückspielen nach `geheim.json`, nicht in die Konfiguration. Die Zweitschrift zieht mit, und danach werden die Werte sofort neu geholt; die Meldung sagt, wie der Abruf ausging.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul und sind in allen Plugins dieser Reihe gleich.
+- Am Gerät nicht gemessen; geprüft mit einem Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, der über einen Webserver die echten Knöpfe drückt.
 
 ## Neu in 0.11.35
 

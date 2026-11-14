@@ -370,10 +370,11 @@ if ($rk_post && !rk_formtoken_ok()) {
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
  *
- * Der Kopf mit Datum kommt aus rk_sicherung_bauen(); rk_sicherung_lesen()
- * uebergeht die Unterstrich-Schluessel. Beide Seiten wurden im selben Zug
- * gebaut - eine Sicherung, die die eigene Bibliothek zwei Zeilen spaeter
- * ablehnt, ist der Befund vom 26.08.2026 aus dem WiFi-Scanner. */
+ * Kopf, Lesen und Pruefen kommen seit 0.11.36 aus dem gemeinsamen
+ * Sicherungsmodul (rk_sicherung_beschreibung()); Sichern und Zurueckspielen
+ * benutzen dieselbe Beschreibung - eine Sicherung, die die eigene Bibliothek
+ * zwei Zeilen spaeter ablehnt, ist der Befund vom 26.08.2026 aus dem
+ * WiFi-Scanner. */
 if ($rk_post && isset($_POST['rk_sichern'])) {
     /* Die Zugangsdaten kommen nur mit, wenn der Haken gesetzt ist. Ein
      * Passwort geht nicht ungefragt in eine Datei, die jemand herunterlaedt -
@@ -384,15 +385,19 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
      * Zugangsdaten", waehrend der Kopf der Datei das Gegenteil sagte.
      * Wer spaeter nachsieht, ob eine herausgegebene Datei ein Geheimnis
      * trug, bekam die falsche Auskunft - in der gefaehrlichen Richtung.
-     * Deshalb dasselbe Kriterium wie in rk_sicherung_bauen(). */
+     * Deshalb dasselbe Kriterium wie in rk_sicherung_daten(). */
     $rk_mit_zugang = !empty($_POST['sich_zugang']);
     $rk_zug = $rk_mit_zugang ? rk_geheim() : null;
     $rk_zug_drin = is_array($rk_zug)
         && ((string) $rk_zug['benutzer'] !== '' || (string) $rk_zug['passwort'] !== '');
-    $rk_js = rk_sicherung_bauen(rk_config(), $rk_zug);
+    /* 0.11.36: Kopf (_hinweis, _plugin, _fassung, _stand, _zugangsdaten), alle Einstellungen und auf
+     * Wunsch den Block "zugang" baut das gemeinsame Sicherungsmodul (rk_sicherung_daten() ->
+     * sicherung_bauen()). */
+    $rk_daten = rk_sicherung_daten($rk_zug);
+    $rk_js = sicherung_json($rk_daten);
     /* X-3: die Datei kommt vollstaendig, auch wenn das eigene Zurueckspielen
      * sie abweisen wuerde - dann traegt sie "_warnung", und das Protokoll sagt es. */
-    if (is_string($rk_js) && strpos($rk_js, '"_warnung"') !== false) {
+    if (isset($rk_daten['_warnung'])) {
         rk_log('Die Sicherung traegt eine Warnung: das Zurueckspielen wuerde sie abweisen (X-3).');
     }
     if ($rk_zug_drin) {
@@ -400,7 +405,7 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
     } else {
         rk_log('Einstellungen gesichert - ohne Zugangsdaten.');
     }
-    if ($rk_js !== false) {
+    if ($rk_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="raumklima_einstellungen_'
@@ -413,78 +418,69 @@ if ($rk_post && isset($_POST['rk_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen.
+ * 0.11.36: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(),
+ * Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken
+ * zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+ * is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und
+ * die Groessengrenze des Moduls; erst danach wird die Datei gelesen. Lesen,
+ * Pruefen und Speichern macht sicherung_zurueckspielen() mit der Beschreibung
+ * rk_sicherung_beschreibung().
  *
  * Und danach ein sofortiger Abruf: das Abbild stammt sonst aus der alten
  * Konfiguration, und die Tabelle darueber zeigte Werte, die es nicht mehr
  * gibt (Punkt 7 der Hausvorgabe - "nach dem Zurueckspielen den Dienst
- * nachziehen und sagen, was mit ihm geschehen ist"). */
+ * nachziehen und sagen, was mit ihm geschehen ist").
+ *
+ * Die Meldungen des Moduls kommen hier als Klartext ('e' ohne Maskierung): die
+ * Oberflaeche maskiert jede Meldung einmal bei der Ausgabe (U6). */
 if ($rk_post && isset($_POST['rk_zurueck'])) {
-    if (!isset($_FILES['rk_sicherung']) || !is_array($_FILES['rk_sicherung'])
-        || !isset($_FILES['rk_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['rk_sicherung']['tmp_name'])) {
-        $rk_fehler[] = rk_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['rk_sicherung']['size'] > 262144) {
-        $rk_fehler[] = rk_t('EINST.SICH_ZU_GROSS');
+    $rk_klar = array('e' => function ($s) { return $s; });
+    list($rk_roh, $rk_ab) = sicherung_eingang(rk_sicherung_beschreibung(), $_POST, $_FILES, 'rk_sicherung');
+    if ($rk_ab !== null) {
+        $rk_sm = sicherung_meldungen($rk_klar + rk_sicherung_beschreibung(), $rk_ab);
+        foreach ($rk_sm['fehler'] as $rk_x) { $rk_fehler[] = $rk_x; }
     } else {
-        list($rk_neu, $rk_mangel, $rk_n, $rk_zug, $rk_hinw) = rk_sicherung_lesen(
-            (string) @file_get_contents($_FILES['rk_sicherung']['tmp_name']));
-        if ($rk_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $rk_fehler[] = rk_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $rk_mangel);
-        } elseif (rk_config_speichern($rk_neu)) {
-            $rk_meldungen[] = sprintf(rk_t('EINST.SICH_UEBERNOMMEN'), $rk_n);
-            /* C6 (Durchgang 01.10.2026): ein leeres Aktionstoken in der Datei -
-             * das geltende blieb stehen, und das wird gesagt. */
-            if (in_array('TOKEN_BEHALTEN', (array) $rk_hinw, true)) {
-                $rk_meldungen[] = rk_t('EINST.SICH_TOKEN_BEHALTEN');
+        $rk_zug_ok = null;
+        $rk_b = rk_sicherung_beschreibung();
+        $rk_b['speichern'] = function ($neu, $jetzt, $r) use (&$rk_stoerung, &$rk_zug_ok) {
+            if (!rk_config_speichern($neu)) { return false; }
+            /* Die Zugangsdaten wandern nach geheim.json, NICHT in die Konfiguration - wie bis
+             * 0.11.35 nach der Konfiguration; scheitern sie, stehen die uebrigen Einstellungen. */
+            $zg = (isset($r['teile']['zugang']) && is_array($r['teile']['zugang'])) ? $r['teile']['zugang'] : null;
+            if ($zg !== null) {
+                $rk_zug_ok = rk_geheim_speichern($zg);
+                if (!$rk_zug_ok) { $rk_stoerung[] = rk_t('EINST.SICH_ZUGANG_FEHL'); }
             }
-            if (in_array('TOKEN_NEU', (array) $rk_hinw, true)) {
-                $rk_meldungen[] = rk_t('EINST.SICH_TOKEN_NEU');
+            return true;
+        };
+        $rk_b['zweitschrift'] = function () { $p = rk_paths(); return array($p['config'], $p['sicherung']); };
+        $rk_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$rk_stoerung, &$rk_zug_ok) {
+            $h = array();
+            /* Es wird gesagt, ob Zugangsdaten dabei waren - beides, weil beides eine Aussage ist. */
+            if ($rk_zug_ok === true) {
+                $h[] = rk_t('EINST.SICH_MIT_ZUGANG');
+                rk_log('Zugangsdaten aus der Sicherungsdatei uebernommen.');
             }
-            if (in_array('ANSAGE_BEHALTEN', (array) $rk_hinw, true)) {
-                $rk_meldungen[] = rk_t('EINST.SICH_ANSAGE_BEHALTEN');
-            }
-            /* Welle Mehrfach-Ziele (0.11.22): Spaetliste - die Sicherung kannte die weiteren Ziele nicht, sie bleiben. */
-            foreach ((array) $rk_hinw as $rk_hw1) {
-                if (is_string($rk_hw1) && strpos($rk_hw1, 'SPAET|') === 0) {
-                    $rk_meldungen[] = sprintf(rk_t('EINST.SICH_SPAET'), substr($rk_hw1, 6));
-                }
-            }
-            /* Die Zugangsdaten wandern nach geheim.json, NICHT in die
-             * Konfiguration. Und es wird gesagt, ob welche dabei waren -
-             * beides, weil beides eine Aussage ist. */
-            if (is_array($rk_zug)) {
-                if (rk_geheim_speichern($rk_zug)) {
-                    $rk_meldungen[] = rk_t('EINST.SICH_MIT_ZUGANG');
-                    rk_log('Zugangsdaten aus der Sicherungsdatei uebernommen.');
-                } else {
-                    $rk_stoerung[] = rk_t('EINST.SICH_ZUGANG_FEHL');
-                }
-            }
-            /* Was mit dem Abruf geschehen ist. Ohne diesen Satz sucht der
-             * Anwender auf dem zweiten LoxBerry lange nach dem Grund fuer
-             * HTTP 401. Und nur, wenn wirklich abgerufen wurde (U11). */
-            list($rk_lief, $rk_s) = rk_ui_abrufen();
-            if (!$rk_lief) {
+            /* Was mit dem Abruf geschehen ist. Ohne diesen Satz sucht der Anwender auf dem
+             * zweiten LoxBerry lange nach dem Grund fuer HTTP 401. Und nur, wenn wirklich
+             * abgerufen wurde (U11). */
+            list($lief, $s) = rk_ui_abrufen();
+            if (!$lief) {
                 $rk_stoerung[] = rk_t('ALLG.NICHT_ABGERUFEN');
             } else {
-                $rk_meldungen[] = empty($rk_s['meldungen'])
-                    ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
+                $h[] = empty($s['meldungen']) ? rk_t('EINST.SICH_ABRUF_OK') : rk_t('EINST.SICH_ABRUF_FEHL');
             }
-            $rk_g0 = rk_geheim();
-            if ($rk_g0['benutzer'] === '' && $rk_g0['passwort'] === '') {
-                $rk_meldungen[] = rk_t('EINST.SICH_OHNE_ZUGANG');
+            $g0 = rk_geheim();
+            if ($g0['benutzer'] === '' && $g0['passwort'] === '') {
+                $h[] = rk_t('EINST.SICH_OHNE_ZUGANG');
             }
-            rk_log('Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
-                   . (int) $rk_n . ' Werte).');
-        } else {
-            $rk_stoerung[] = rk_t('EINST.SICH_SCHREIBFEHLER');
-        }
+            return $h;
+        };
+        $rk_b['log'] = function ($z) { rk_log($z); };
+        $rk_r = sicherung_zurueckspielen($rk_b, $rk_roh);
+        $rk_sm = sicherung_meldungen($rk_klar + $rk_b, $rk_r);
+        foreach ($rk_sm['fehler'] as $rk_x) { $rk_fehler[] = $rk_x; }
+        foreach ($rk_sm['hinweise'] as $rk_x) { $rk_meldungen[] = $rk_x; }
     }
     $rk_tab = 'tab-settings';
 }
@@ -2182,14 +2178,13 @@ foreach ($rk_pd['irr'] as $rk_px) {
 <p class="sm-hilfe"><?= rk_e(rk_t('EINST.SICH_OHNE_SPRECHTOKEN')) ?></p>
 <?php /* X-3 (Durchgang 01.10.2026): wuerde das eigene Zurueckspielen die
          Sicherung abweisen, steht es gelb am Knopf - mit dem Namen der
-         Einstellung und dem Grund, nie mit dem Wert. DIESELBE Pruefung wie
+         Einstellung, nie mit dem Wert (seit 0.11.36 ohne Grund: die Pruefung des
+         Sicherungsmoduls nennt nur Namen, sicherung_selbstpruefung()). DIESELBE Pruefung wie
          beim Zurueckspielen. Gesichert wird trotzdem vollstaendig (die Datei
          traegt dann "_warnung"). Bauart AWM-Abfuhr 1.4.19. */
-$rk_x3 = rk_sicherung_maengel($rk_cfg, rk_geheim());
-if ($rk_x3) {
-    $rk_x3l = array();
-    foreach ($rk_x3 as $rk_xk => $rk_xg) { $rk_x3l[] = ($rk_xk === '_' ? '' : $rk_xk . ': ') . $rk_xg; } ?>
-<div class="sm-warnung" id="sicherung-altwerte"><?= rk_e(sprintf(rk_t('EINST.SICH_ALTWERT'), implode('; ', $rk_x3l))) ?></div>
+$rk_x3 = rk_rueckspiel_altwerte(rk_geheim());
+if ($rk_x3) { ?>
+<div class="sm-warnung" id="sicherung-altwerte"><?= rk_e(sprintf(rk_t('EINST.SICH_ALTWERT'), implode(', ', $rk_x3))) ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
@@ -2206,6 +2201,7 @@ if ($rk_x3) {
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
     <input data-role="none" type="file" name="rk_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(rk_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="rk_zurueck" value="1"><?= rk_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

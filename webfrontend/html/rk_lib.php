@@ -46,6 +46,10 @@ require_once __DIR__ . '/rk_klima.php';
  * mit weiteren Ausgabezielen, rk_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 0.11.36): "Einstellungen
+ * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
+ * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 
 /** Wie viele Raeume die Oberflaeche fuehrt. */
 define('RK_RAEUME', 12);
@@ -6208,204 +6212,209 @@ function rk_t($schluessel)
 
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 0.11.36: "Einstellungen sichern" und "Einstellungen zurueckspielen" ueber das
+ * gemeinsame Sicherungsmodul (Abschrift webfrontend/html/sicherung.php von
+ * Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn 12.11.2026). Lesen,
+ * Pruefen und Zurueckspielen macht das Modul; bis 0.11.35 stand hier eine eigene
+ * Schleife (rk_sicherung_lesen()): ein unbekannter Schluessel oben, in einem Raum,
+ * in der Sprachausgabe oder in den Zugangsdaten wies die ganze Datei ab, und eine
+ * Datei mit dem Kennzeichen eines anderen Plugins oder ganz ohne Kennzeichen wurde
+ * gelesen wie eine eigene (gemessen 14.11.2026 an 0.11.35 mit
+ * Werkzeuge/sicherung_pruefstand.py --profil ist, Klasse A).
  *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
+ * Seither: das Kennzeichen _plugin = 'raumklima' (seit 0.11.0 im Kopf jeder
+ * Sicherung, bis 0.11.35 nicht gelesen) muss stimmen, sonst wird die Datei als
+ * Ganzes abgewiesen; unbekannte Schluessel oben, in den Raeumen, in der
+ * Sprachausgabe und in den Zugangsdaten werden verworfen und mit Namen gemeldet;
+ * ein leerer Wert ueberschreibt keinen bestehenden; eine halb gueltige Datei
+ * aendert nichts, alle Beanstandungen werden gesammelt.
  *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ * Wie bisher: jeder Wert geht durch rk_wert_pruefen() (dieselben Regeln wie im
+ * Formular, rk_wert_regeln() und rk_raum_regeln()) und wird in deren Normalform
+ * uebernommen ('wandeln'); die Sprachausgabe durch ansage_wert_pruefen(), eine
+ * Datei mit Sprechtoken wird abgewiesen, die geltenden Sprechtoken bleiben; die
+ * Ruhezeit der Ansagen und die Kuehlfreigabe werden ueber zwei Felder geprueft
+ * (rk_sicherung_quer()). Die Zugangsdaten der Sensorquelle stehen nur mit dem
+ * Haken beim Sichern im Block "zugang" und gehen beim Zurueckspielen nach
+ * geheim.json (0600), nie in raumklima.json (Teil "zugang"). Der Vermerk
+ * ansage_token_herkunft kommt nie aus einer Datei ('nie_aus_datei').
  *
- * ------------------------------------------------------------------
- * Die Zugangsdaten kommen SEPARAT zurueck, nicht in der Konfiguration
- * ------------------------------------------------------------------
- *
- * Seit dem 28.08.2026 darf die Sicherung auf Wunsch Benutzername und
- * Passwort der Sensorquelle mitfuehren. Sie duerfen aber auf keinen Fall in
- * raumklima.json landen: die Datei liegt mit 0600 im Konfigordner, die
- * Zugangsdaten gehoeren in geheim.json daneben, und wer beides vermischt,
- * schreibt ein Passwort in eine Datei, die es nie tragen sollte.
- *
- * Deshalb der vierte Rueckgabewert. $neu bleibt reine Konfiguration.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
- *                  Zugangsdaten|null).
+ * $mit_zugang: nur fuer den Kopf (_hinweis, _zugangsdaten) beim Sichern.
  */
-function rk_sicherung_lesen($roh, &$namen = null)
+function rk_sicherung_beschreibung($mit_zugang = false)
 {
-    /* $namen (Durchgang 01.10.2026, X-3): je beanstandetem Schluessel der kurze
-     * Grund, nie der Wert - fuer die Warnung am Knopf "Einstellungen sichern"
-     * und den Kopf _warnung. Fuenfter Rueckgabewert: Hinweise zum Token (C6). */
-    $mangel = array();
-    $namen = array();
-    $hinweise = array();
-    $zugang = null;
-    $rk_tsspaet = array();     // Welle Mehrfach-Ziele (0.11.22): tts.ziele, wenn die Sicherung die Liste nicht kannte
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        $namen['_'] = rk_grund('FEHLER.KEIN_JSON');
-        return array(null, array(rk_t('EINST.SICH_KEIN_JSON')), 0, null, array());
+    /* Die Sprachausgabe: alle Felder des Blocks und die Sprechtoken (die nie in einer
+     * Sicherung stehen). Fehlt ein Feld in der Datei (Sicherung einer frueheren Fassung),
+     * bleibt der geltende Wert - wie bis 0.11.35 ("Block der Datei + geltender Block"),
+     * jetzt mit Namen in der Meldung. Die Sprechtoken nicht: sie fehlen in jeder Sicherung
+     * und bleiben ueber rk_sicherung_vorbereiten(). */
+    $werk = array_keys(ansage_werk_block());
+    $tts_knoten = array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                   + array('fehlt' => 'behalten'));
+    foreach (array_diff($werk, ansage_geheim()) as $n) {
+        if (!isset($tts_knoten[$n])) { $tts_knoten[$n] = array('art' => 'wert', 'fehlt' => 'behalten'); }
     }
-    $neu = rk_vorgaben();
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        /* Die Zugangsdaten sind KEINE Einstellung - sie wandern an
-         * $neu vorbei und werden getrennt zurueckgegeben. */
-        if ($k === 'zugang') {
-            list($z, $f) = rk_wert_pruefen('zugang', $w);
-            if ($f !== '') {
-                $mangel[] = rk_sicherung_mangeltext($k, '', $f);
-                $namen[$k] = rk_grund($f);
-                continue;
-            }
-            $zugang = $z;
-            $anzahl++;
-            continue;
-        }
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet (seit 28.08.2026),
-         * ebenso _warnung (X-3). */
-        if ($k !== '' && $k[0] === '_') { continue; }
+    $schluessel = array(
+        'tts' => sicherung_block(array_merge($werk, ansage_geheim()), $tts_knoten)
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines,
+                          * wird sie abgewiesen. Gemessen am Block der DATEI, denn Regel 3 des Moduls setzt ein
+                          * leeres Feld vorher auf den geltenden Wert. */
+                         $tm = ansage_sicherung_mangel($roh);
+                         if ($tm) { return sprintf(rk_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm)); }
+                         $g = '';
+                         if (!is_array($w) || ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, rk_ansage_modi()) === null) {
+                             return sprintf(rk_t('EINST.SICH_TTS'), ansage_kennung_text($g, rk_ansage_k()));
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, rk_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben()))
+                 + array(
+                     'pruefen' => function ($w) {
+                         $g = '';
+                         if (ansage_regeln_wert($w, $g) === null) {
+                             return sprintf(rk_t('EINST.SICH_WERT'), 'ansage_regeln', rk_sicherung_wert_text('ansage_regeln', $w),
+                                            ansage_kennung_text($g !== '' ? $g : 'M_R_BLOCK', rk_ansage_k()));
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_regeln_wert($w, $g);
+                     }),
+        /* Die Raeume: Felder wie rk_raum_vorgabe(); ohne Zuordnungsschluessel (die Nummer ist der Platz in
+         * der Tabelle), Regel 3 greift in den Raeumen deshalb nicht (Regeln/05). */
+        'raeume' => sicherung_liste(array_keys(rk_raum_vorgabe())),
+        'zugang' => sicherung_block(array('benutzer', 'passwort')),
+    );
+    /* Normalform wie im Formular: der Wert, den rk_wert_pruefen() zurueckgibt (je Schluessel eine Funktion). */
+    foreach (array_keys(rk_wert_regeln()) as $k) {
+        if ($k === 'zugang') { continue; }
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        $schluessel[$k]['wandeln'] = function ($w) use ($k) {
+            $e = rk_wert_pruefen($k, $w);
+            return $e[0];
+        };
+    }
+    foreach (rk_sicherung_spaete_schluessel() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
+    }
+    $mit = (bool) $mit_zugang;
+    return array(
+        'kennzeichen' => 'raumklima',
+        /* Der Kopftext wie bis 0.11.35: er sagt, was wirklich in der Datei steht. */
+        'hinweis' => 'Sicherung des LoxBerry-Plugins Raumklima. Sie enthaelt das'
+            . ' Aktionstoken dieser Anlage'
+            . ($mit ? ' UND Benutzername und Passwort der Sensorquelle.'
+                    : '. Zugangsdaten der Sensorquelle sind NICHT enthalten.')
+            . ' Wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
+        'kopf' => array('_zugangsdaten' => $mit ? 'ja' : 'nein'),
+        /* _fassung aus plugin.cfg bzw. der Plugin-Datenbank ueber den Leser dieser Linie, der die
+         * Installationslage kennt (drei Orte, rk_fassung()) - keine Zahl im Code. */
+        'fassung' => 'rk_fassung',
+        'vorgaben' => rk_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'teile' => array('zugang' => 'rk_sicherung_zugang_lesen'),
+        'teile_jetzt' => array('zugang' => 'rk_geheim'),
+        'pruefen' => 'rk_sicherung_pruefen',
+        'quer' => 'rk_sicherung_quer',
+        'vorbereiten' => 'rk_sicherung_vorbereiten',
+        'jetzt' => 'rk_config',
+        't' => 'rk_t',
+        'e' => 'rk_e',
+    );
+}
 
-        /* Sprachausgabe (seit 0.11.15): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
-         * traegt die Datei eines (auch als Liste oder Zahl), stammt sie nicht aus "Einstellungen
-         * sichern" und wird abgewiesen. Ausgabeart, Adresse und Vorlage werden wie im Formular
-         * geprueft (Heimnetz). Die geltenden Sprechtoken bleiben. */
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) {
-                /* 0.11.29: bis 0.11.28 stand hier nur der Name in der Warnliste - die Datei galt sonst als gueltig, und
-                 * die ungueltigen Regeln fielen still weg (Bauart Robonect 1.1.31 / aWATTar 1.2.46). Jetzt abgewiesen. */
-                $mangel[] = sprintf(rk_t('EINST.SICH_WERT'), 'ansage_regeln', rk_sicherung_wert_text('ansage_regeln', $w),
-                    ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', rk_ansage_k()));
-                $namen['ansage_regeln'] = rk_grund('FEHLER.TTS');
-                continue;
-            }
-            $neu['ansage_regeln'] = $s2_r;
-            
-            continue;
-        }
-        if ($k === 'tts') {
-            $tm = ansage_sicherung_mangel($w);
-            if ($tm) {
-                $mangel[] = sprintf(rk_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm));
-                $namen['tts'] = rk_grund('FEHLER.TTS_TOKEN');
-                continue;
-            }
-            $tg = '';
-            $tp = ansage_wert_pruefen($w, $tg, rk_ansage_modi());
-            if ($tp === null) {
-                $mangel[] = sprintf(rk_t('EINST.SICH_TTS'), ansage_kennung_text($tg, rk_ansage_k()));
-                $namen['tts'] = rk_grund('FEHLER.TTS');
-                continue;
-            }
-            $tj = rk_tts();
-            /* Welle Mehrfach-Ziele (0.11.22): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
-            $rk_tsneu = array('tts' => $tp);
-            $rk_tsjetzt = array('tts' => $tj);
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $rk_spaete = array();
-            if (is_array($rk_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($rk_tsneu['tts'], $rk_spaete) = ansage_sicherung_spaet($rk_tsneu['tts'],
-                    (isset($rk_tsjetzt['tts']) && is_array($rk_tsjetzt['tts'])) ? $rk_tsjetzt['tts'] : null);
-            }
-            foreach ($rk_spaete as $rk_sn) { $rk_tsspaet[] = $rk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($tv) = ansage_vervollstaendigen($rk_tsneu['tts'] + $tj, 'aus');
-            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
-            $anzahl++;
-            continue;
-        }
-        $erg = rk_wert_pruefen($k, $w);
-        if ($erg[1] !== '') {
-            $wo = isset($erg[2]) ? $erg[2] : null;
-            $mangel[] = rk_sicherung_mangeltext($k, $w, $erg[1], $wo);
-            $namen[$wo ? sprintf(rk_t('EINST.SICH_RAUMFELD_KURZ'), (int) $wo[0], $wo[1]) : $k]
-                = rk_grund($erg[1]);
-            continue;
-        }
-        /* C6 (Durchgang 01.10.2026): ein LEERES Aktionstoken wird nicht
-         * uebernommen. Bis 0.11.13 hiess das "37 Werte uebernommen", der
-         * naechste Seitenaufruf wuerfelte still ein neues Token, und jede
-         * Adresse in Loxone bekam 403 (gemessen, Berichte code Nr. 6 und
-         * oberflaeche Nr. 5). Jetzt bleibt das geltende Token stehen, und die
-         * Meldung sagt es; gibt es keines, entsteht eines mit Protokollzeile. */
-        if ($k === 'aktionstoken' && $erg[0] === '') {
-            $geltend = rk_token_lesen();
-            $hinweise[] = $geltend !== '' ? 'TOKEN_BEHALTEN' : 'TOKEN_NEU';
-            $neu[$k] = $geltend;
-            $anzahl++;
-            continue;
-        }
-        $neu[$k] = $erg[0];
-        $anzahl++;
+/**
+ * 0.11.36: Die Schluessel, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte. Fehlen sie, behalten sie den geltenden Wert, und die Meldung
+ * nennt sie (Regeln/05 Punkt 6): die Sprachausgabe seit 0.11.15 (tts,
+ * ansage_lueften, ansage_schimmel; bis 0.11.35 ebenso, Hinweis
+ * SICH_ANSAGE_BEHALTEN), die Ruhezeit der Ansagen (ansage_ruhe_von,
+ * ansage_ruhe_bis) und die Regeln "Wann gesprochen wird" (ansage_regeln, seit
+ * 0.11.29 in der Sicherung; bis 0.11.35 galten sie nach einer Sicherung ohne sie
+ * ab Werk) und der Miniserver des Einrichtungs-Assistenten (ms_nr; fehlt der
+ * Sicherung aus 0.11.0, die bis 0.11.35 deshalb abgewiesen wurde - gemessen
+ * 14.11.2026 mit Werkzeuge/sicherung_pruefstand.py --alt alle).
+ */
+function rk_sicherung_spaete_schluessel()
+{
+    return array('tts', 'ansage_lueften', 'ansage_schimmel', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_regeln',
+                 'ms_nr');
+}
+
+/**
+ * 0.11.36: Einen Wert der Sicherung pruefen - dieselbe Regel wie im Formular
+ * (rk_wert_pruefen()). Rueckgabe '' oder die Beanstandung im Klartext, roh (die
+ * Oberflaeche maskiert jede Meldung einmal bei der Ausgabe, U6).
+ */
+function rk_sicherung_pruefen($k, $w)
+{
+    $e = rk_wert_pruefen((string) $k, $w);
+    if ($e[1] === '') { return ''; }
+    return rk_sicherung_mangeltext((string) $k, $w, $e[1], isset($e[2]) ? $e[2] : null);
+}
+
+/**
+ * 0.11.36: Der Teil "zugang" einer Sicherung (nur mit dem Haken beim Sichern).
+ * Er gehoert NICHT in die Konfiguration, sondern nach geheim.json (0600); das
+ * Schreiben macht der Handler. Geprueft wie bis 0.11.35 (rk_wert_pruefen('zugang')).
+ * Rueckgabe fuer das Sicherungsmodul: array(Zugangsdaten|null, Beanstandungen[]).
+ */
+function rk_sicherung_zugang_lesen($w)
+{
+    $e = rk_wert_pruefen('zugang', $w);
+    if ($e[1] !== '') {
+        return array(null, array(rk_sicherung_mangeltext('zugang', '', $e[1])));
     }
-    /* Ueber zwei Felder: die Ausschaltschwelle liegt unter der
-     * Einschaltschwelle - rk_config() hat sie bis 0.11.13 still angeglichen. */
-    if (!$mangel && rk_ansage_ruhe_grund($neu['ansage_ruhe_von'], $neu['ansage_ruhe_bis']) !== '') {
-        $mangel[] = rk_t('EINST.SICH_ANSAGE_RUHE');
-        $namen['ansage_ruhe_von'] = rk_grund('FEHLER.ANSAGE_RUHE');
+    return array($e[0], array());
+}
+
+/**
+ * 0.11.36: Was nur im ZUSAMMENSPIEL falsch sein kann (wie bis 0.11.35): die
+ * Ruhezeit der Ansagen braucht beide Uhrzeiten oder keine, und die
+ * Ausschaltschwelle der Kuehlfreigabe liegt nicht ueber der Einschaltschwelle.
+ * Nur wenn die beteiligten Werte selbst bestanden haben. Rueckgabe fuer das
+ * Sicherungsmodul: Liste von array(Name, Text).
+ */
+function rk_sicherung_quer($neu, $r, $daten)
+{
+    $aus = array();
+    $bean = array();
+    foreach ($r['beanstandet'] as $x) { $bean[] = $x['name']; }
+    if (!in_array('ansage_ruhe_von', $bean, true) && !in_array('ansage_ruhe_bis', $bean, true)
+        && rk_ansage_ruhe_grund($neu['ansage_ruhe_von'], $neu['ansage_ruhe_bis']) !== '') {
+        $aus[] = array('ansage_ruhe_von', rk_t('EINST.SICH_ANSAGE_RUHE'));
     }
-    if (!$mangel && (float) $neu['kuehlfrei_aus'] > (float) $neu['kuehlfrei_ein']) {
-        $mangel[] = rk_t('EINST.SICH_KUEHLFREI');
-        $namen['kuehlfrei_aus'] = rk_grund('FEHLER.KUEHLFREI');
+    if (!in_array('kuehlfrei_ein', $bean, true) && !in_array('kuehlfrei_aus', $bean, true)
+        && (float) $neu['kuehlfrei_aus'] > (float) $neu['kuehlfrei_ein']) {
+        $aus[] = array('kuehlfrei_aus', rk_t('EINST.SICH_KUEHLFREI'));
     }
-    /* Nur wenn wirklich nichts Bekanntes DRINSTAND. */
-    if ($anzahl === 0 && !$mangel) {
-        $mangel[] = rk_t('EINST.SICH_LEER');
-        $namen['_'] = rk_grund('FEHLER.LEER');
+    return $aus;
+}
+
+/**
+ * 0.11.36: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Der Block tts
+ * wird wie bis 0.11.35 vervollstaendigt, und die geltenden Sprechtoken bleiben
+ * (die Sicherung traegt keine). Kam der Block nicht aus der Datei, steht dort
+ * schon der geltende.
+ */
+function rk_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall
-     * (VolkswagenID 0.9.11, 03.09.2026; am 07.09.2026 ueber den Bestand
-     * ausgerollt). Verglichen wird gegen die VORGABEN: was ausserhalb der
-     * Konfigurationsdatei liegt - Zugangsdaten in einer eigenen Datei -,
-     * darf hier fehlen. */
-    $fehlend = array();
-    /* Sprachausgabe (seit 0.11.15): eine Sicherung aelterer Fassungen kennt diese drei
-     * Schluessel nicht. Fehlen sie, bleibt, was jetzt gilt (samt Sprechtoken), und die Meldung
-     * sagt es. Jeder andere fehlende Schluessel bleibt eine Beanstandung. */
-    $seit_ansage = array('tts', 'ansage_lueften', 'ansage_schimmel', 'ansage_ruhe_von', 'ansage_ruhe_bis');
-    $jetzt_cfg = null;
-    foreach (array_keys(rk_vorgaben()) as $fk) {
-        /* 0.11.29: ansage_regeln fehlt jeder Sicherung bis 0.11.28 - dann gelten die Regeln ab Werk, wie bisher nach
-         * dem Zurueckspielen. ansage_token_herkunft steht nie in einer Sicherung; die geltende bleibt (unten). */
-        if ($fk === 'ansage_regeln' || $fk === 'ansage_token_herkunft') { continue; }
-        if (!array_key_exists($fk, $daten) && in_array($fk, $seit_ansage, true)) {
-            if ($jetzt_cfg === null) { $jetzt_cfg = rk_config(); }
-            $neu[$fk] = $jetzt_cfg[$fk];
-            if (!in_array('ANSAGE_BEHALTEN', $hinweise, true)) { $hinweise[] = 'ANSAGE_BEHALTEN'; }
-            continue;
-        }
-        if (!array_key_exists($fk, $daten)) {
-            $fehlend[] = $fk;
-            $namen[$fk] = rk_grund('FEHLER.FEHLT');
-        }
-    }
-    if ($fehlend) {
-        /* Roh, nicht maskiert: maskiert wird EINMAL, bei der Ausgabe (U6). */
-        $mangel[] = sprintf(rk_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
-    }
-    foreach ($rk_tsspaet as $rk_sp1) { $hinweise[] = 'SPAET|' . $rk_sp1; }     // 0.11.22: im Handler EINST.SICH_SPAET
-    /* 0.11.29: die Herkunft der Sprechtoken bleibt, wie sie gilt - ein uebernommenes Token bleibt uebernommen. Nur Namen
-     * der Sprechtoken mit dem Vermerk 'nachbar'; alles andere faellt auf leer. Bis 0.11.28 fiel sie beim Zurueckspielen weg. */
-    if (!$mangel) {
-        if ($jetzt_cfg === null) { $jetzt_cfg = rk_config(); }
-        $rk_her = (isset($jetzt_cfg['ansage_token_herkunft']) && is_array($jetzt_cfg['ansage_token_herkunft']))
-            ? $jetzt_cfg['ansage_token_herkunft'] : array();
-        foreach ($rk_her as $rk_hk => $rk_hv) {
-            if (!in_array((string) $rk_hk, array_values(ansage_token_felder()), true) || $rk_hv !== 'nachbar') { $rk_her = array(); break; }
-        }
-        $neu['ansage_token_herkunft'] = $rk_her;
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang,
-                 $mangel ? array() : $hinweise);
+    return $neu;
 }
 
 /**
@@ -6448,91 +6457,44 @@ function rk_sicherung_wert_text($k, $w)
 }
 
 /**
- * Die Sicherungsdatei bauen - VOLLSTAENDIG und mit lesbarem Kopf.
- *
- * Punkt 1 und 2 der Hausvorgabe: geschrieben werden ALLE Schluessel aus
- * rk_vorgaben(), nicht nur die abweichenden - ein Schluessel, der in der
- * Sicherung fehlt, kaeme beim Zurueckspielen aus der Vorgabe, und das ist
- * genau dann falsch, wenn der Anwender ihn bewusst auf den Vorgabewert
- * gesetzt hatte und die Vorgabe sich spaeter aendert.
- *
- * Der Kopf traegt ein Unterstrich-Praefix; rk_sicherung_lesen() uebergeht
- * genau diese Schluessel.
+ * Die Sicherung als Feld: lesbarer Kopf (_hinweis, _plugin, _fassung, _stand,
+ * _zugangsdaten, bei Bedarf _warnung) und ALLE Schluessel aus rk_vorgaben(),
+ * nicht nur die abweichenden. Seit 0.11.36 gebaut vom gemeinsamen
+ * Sicherungsmodul (sicherung_bauen()); nie ein Sprechtoken, nie der Vermerk
+ * ansage_token_herkunft.
  *
  * Der AKTIONSTOKEN gehoert hinein: ohne ihn stuenden nach dem Zurueckspielen
  * alle Felder richtig, und das Plugin kaeme trotzdem nicht an die Anlage.
  *
- * Die ZUGANGSDATEN der Quelle kommen nur mit, wenn $zugang gesetzt ist -
- * also wenn der Bediener den Haken gesetzt hat. Ab Werk ist er aus: ein
- * Passwort geht nicht ungefragt in eine Datei, die jemand herunterlaedt.
- * Sie stehen unter dem Schluessel 'zugang' und wandern beim Zurueckspielen
- * nach geheim.json, NICHT in raumklima.json.
- *
- * Der Kopf sagt, was wirklich drin ist - nicht, was ueblicherweise drin
- * waere. Ein Hinweistext, der bei gesetztem Haken behauptet, es seien keine
- * Zugangsdaten enthalten, waere die naechste stille Falschaussage.
+ * Die ZUGANGSDATEN der Quelle kommen nur mit, wenn $zugang gesetzt ist und
+ * etwas traegt - also wenn der Bediener den Haken gesetzt hat. Ab Werk ist er
+ * aus: ein Passwort geht nicht ungefragt in eine Datei, die jemand
+ * herunterlaedt. Der Kopf sagt, was wirklich drin ist. X-3: wuerde das eigene
+ * Zurueckspielen die Datei abweisen, nennt _warnung die Namen, nie Werte;
+ * geliefert wird sie trotzdem.
  */
-function rk_sicherung_bauen($cfg, $zugang = null)
+function rk_sicherung_daten($zugang = null)
 {
     $mit = is_array($zugang)
         && (trim((string) $zugang['benutzer']) !== ''
             || (string) $zugang['passwort'] !== '');
-    $kopf = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Raumklima. Sie enthaelt das'
-            . ' Aktionstoken dieser Anlage'
-            . ($mit ? ' UND Benutzername und Passwort der Sensorquelle.'
-                    : '. Zugangsdaten der Sensorquelle sind NICHT enthalten.')
-            . ' Wie ein Passwort behandeln. Die Sprechtoken der Sprachausgabe sind nie enthalten.',
-        '_plugin'  => 'raumklima',
-        '_fassung' => rk_fassung(),
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_zugangsdaten' => $mit ? 'ja' : 'nein',
-    );
-    $voll = array();
-    foreach (rk_vorgaben() as $k => $v) {
-        $voll[$k] = array_key_exists($k, $cfg) ? $cfg[$k] : $v;
-    }
-    /* Sprachausgabe (seit 0.11.15): die Sprechtoken gehen nie in eine Sicherung. */
-    unset($voll['ansage_token_herkunft']);     // 0.11.23
-    if (isset($voll['tts']) && is_array($voll['tts'])) {
-        $voll['tts'] = ansage_sicherung_bereinigen($voll['tts']);
-    }
-    if ($mit) {
-        $voll['zugang'] = array('benutzer' => (string) $zugang['benutzer'],
-                                'passwort' => (string) $zugang['passwort']);
-    }
-    $js = json_encode($kopf + $voll,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) { return false; }
-    /* X-3 (Durchgang 01.10.2026): wuerde das eigene Zurueckspielen diese Datei
-     * abweisen, sagt es der Kopf - mit den Namen der Einstellungen, nie mit
-     * ihren Werten. Geliefert wird trotzdem vollstaendig. Bis 0.11.13 nahm das
-     * Formular ein Passwort mit 300 Zeichen, die Sicherung warnte nicht, und
-     * erst auf dem zweiten LoxBerry stellte sich heraus, dass die Datei
-     * wertlos war (gemessen, Bericht oberflaeche Nr. 6). "_warnung" beginnt
-     * mit "_" und wird beim Zurueckspielen uebergangen. */
-    $namen = array();
-    rk_sicherung_lesen($js, $namen);
-    if ($namen) {
-        $kopf['_warnung'] = sprintf(rk_t('EINST.SICH_WARNKOPF'), implode(', ', array_keys($namen)));
-        $js = json_encode($kopf + $voll,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    }
-    return $js;
+    $teile = $mit ? array('zugang' => array('benutzer' => (string) $zugang['benutzer'],
+                                            'passwort' => (string) $zugang['passwort'])) : array();
+    return sicherung_bauen(rk_sicherung_beschreibung($mit), rk_config(), $teile);
 }
 
 /**
  * X-3: Welche gespeicherten Werte wuerde das eigene Zurueckspielen abweisen?
- * Rueckgabe array(Name => Grund), leer = keine. Dieselbe Pruefung wie beim
- * Zurueckspielen, angewandt auf das Erzeugnis von rk_sicherung_bauen().
+ * Seit 0.11.36 dieselbe Pruefung wie beim Zurueckspielen ueber das
+ * Sicherungsmodul (sicherung_selbstpruefung()) an genau der Datei, die
+ * "Einstellungen sichern" liefert. Rueckgabe: Liste der NAMEN, nie der Werte;
+ * leer = die Sicherung liesse sich zurueckspielen.
  */
-function rk_sicherung_maengel($cfg, $zugang = null)
+function rk_rueckspiel_altwerte($zugang = null)
 {
-    $js = rk_sicherung_bauen($cfg, $zugang);
-    if ($js === false) { return array('_' => rk_grund('FEHLER.KEIN_JSON')); }
-    $namen = array();
-    rk_sicherung_lesen($js, $namen);
-    return $namen;
+    $d = rk_sicherung_daten($zugang);
+    unset($d['_warnung']);
+    return sicherung_selbstpruefung(rk_sicherung_beschreibung(), $d, rk_config());
 }
 
 /**
