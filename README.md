@@ -3,9 +3,14 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.38 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.39 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.39
+
+- **Geändert – Takt ruht während des Updates schon in der Schale:** Der Takt alle fünf Minuten endet bei laufender Aktualisierung jetzt, bevor ein Programm startet. Bis 0.11.38 hielt erst das aufgerufene Skript an; Daten gingen dabei nicht verloren. Ist die Marke eine Stunde oder älter, liegt sie in der Zukunft oder enthält sie keine Unixzeit, gilt sie nicht, damit eine abgebrochene Aktualisierung den Takt nicht dauerhaft stilllegt. Alle Plugins dieser Reihe fragen die Marke mit demselben Block ab. Es wirkt schon beim Update auf diese Fassung, denn der Installer legt die Takte der neuen Fassung vor der Lücke an, und das `preupgrade.sh` der neuen Fassung legt die Marke an. Gemessen in einer Nachstellung des Update-Ablaufs auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Gemeinsames Sprachmodul 1.4.4:** Das Modul bringt einen gemeinsamen Weg mit, die Einstellungen der Sprachausgabe in der Konfiguration zu prüfen: unbekannte Einträge verwerfen, jeden ungültigen Eintrag einzeln nennen und alles mit denselben Sätzen melden. Dieses Plugin ruft diesen Weg nicht auf; an seinem Verhalten ändert sich dadurch nichts. Gemessen auf dem Arbeitsrechner: Abschrift byte-gleich mit der Stammfassung 1.4.4, Abschnitt [ANSAGE] der Sprachdateien um die drei Sätze dieses Wegs ergänzt und gleich der Textdatei 1.4.4 (317 Schlüssel), Syntax unter PHP 7.4 und 8.4; am Gerät nicht gemessen.
 
 ## Neu in 0.11.38
 
