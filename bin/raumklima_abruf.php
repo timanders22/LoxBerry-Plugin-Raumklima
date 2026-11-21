@@ -99,12 +99,26 @@ if (rk_upgrade_laeuft()) {
  * sie dann mit Protokollzeile ergaenzen - siehe rk_config_vervollstaendigen(). */
 rk_config_vervollstaendigen();
 
-$rk_stand = rk_abrufen(in_array('--sofort', $rk_argv, true));
+/* 0.11.40 (Haus-Themen): die Lesesitzung am Broker VOR dem Rechnen - nur wenn eine Haus-Quelle eingeschaltet ist und der
+ * Abruf faellig wird (dieselbe Schranke wie rk_abrufen(): Takt minus 30 s). Bis zu RK_HAUS_FENSTER s, bis jeder
+ * Zaehler der gemeldeten Anbieter einmal live kam; gerechnet wird gleich danach mit genau diesem Stand. */
+$rk_sofort = in_array('--sofort', $rk_argv, true);
+$rk_alt0 = rk_stand();
+$rk_ll0 = isset($rk_alt0['lauf_ts']) ? (int) $rk_alt0['lauf_ts'] : (isset($rk_alt0['ts']) ? (int) $rk_alt0['ts'] : 0);
+$rk_ab0 = time() - $rk_ll0;
+if ($rk_sofort || $rk_ll0 <= 0 || $rk_ab0 < 0 || $rk_ab0 >= max(30, (int) rk_config()['takt'] - 30)) {
+    rk_haus_lesen();
+}
+$rk_stand = rk_abrufen($rk_sofort);
 
-/* Sprachausgabe (Nr. 36 b, seit 0.11.15, ab Werk aus): die Ansagen beim Eintritt
+/* Sprachausgabe (Nr. 36 b, seit 0.11.15, ab Werk an seit 0.11.23): die Ansagen beim Eintritt
  * "Lueften empfohlen" und "Schimmelgefahr" - siehe rk_ansage_lauf(). Der Rueckgabewert
  * dieses Skripts haengt weiter nur am Abruf. */
 rk_ansage_lauf($rk_stand);
+
+/* 0.11.40 (R4): der Anbieter haus/raumklima (Haken ab Werk aus, nur mit MQTT) - ausgeschaltet raeumt er ab, was er
+ * gesendet hat. Der Rueckgabewert dieses Skripts haengt weiter nur am Abruf. */
+rk_haus_anbieter($rk_stand);
 
 if (!empty($rk_stand['meldungen'])) {
     /* Ueber die gebremste Meldung im Protokoll - eine Quelle, die eine Woche

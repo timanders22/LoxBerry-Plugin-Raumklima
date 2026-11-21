@@ -3,9 +3,30 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.39 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.40 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.40
+
+- **Geändert – die Ansage nennt den Raum:** „Raumklima: im Raum … wird Lüften empfohlen.“ bzw. „… besteht Schimmelgefahr an der kältesten Stelle.“, bei mehreren Räumen „in den Räumen A, B und C …“. Bis 0.11.39 nannte der Satz den Raum nur, wenn mehr als ein Raum eingerichtet war; mit einem einzigen Raum klang „Raumklima: Lüften wird empfohlen.“ aus jedem Lautsprecher, und wer gerade in einem anderen Raum stand, bezog es auf diesen. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4); am Gerät nicht gesprochen.
+- **Neu – Hinweis bei einem Raum, der unbeheizt wirkt:** Liegt die letzte Messung eines eingerichteten Raums unter 15 °C (etwa ein Fühler draußen, im Keller oder in einer Wetterstation), sagen der Reiter *Einstellungen* unter „Wann ansagen“ und die Prüfzeile der Sprachausgabe im Reiter *Test*, dass die Ansagen an allen Ausgabezielen klingen, nicht in diesem Raum. Es wird nur gemeldet; an den Ansagen ändert sich nichts.
+- **Behoben – Einrichtungs-Assistent:** Der Knopf „Übernehmen“ und die Übernahme hingen an der ersten Probe überhaupt. Scheiterte die Probe der ersten Bausteinart, ließ sich auch ein Raum einer zweiten, funktionierenden Bausteinart nicht übernehmen. Jetzt genügt ein Raum, dessen beide Proben gelungen sind; eingetragen werden wie bisher nur solche Räume.
+- **Behoben – Reiter Test, „Sicherung prüfen“:** Der Test endete seit 0.11.36 mit einem Fehler der Seite, weil er Funktionen rief, die das gemeinsame Sicherungsmodul abgelöst hat. Er prüft jetzt über dasselbe Modul wie die beiden Knöpfe und misst am Ende, dass die Konfiguration unverändert ist.
+- **Behoben – Prüfzeile der Sprachausgabe:** Sie nennt die Nachtruhe aus „Wann gesprochen wird“, nach der wirklich gesprochen wird, statt der alten Felder der Ruhezeit aus 0.11.22.
+- **Berichtigt – „ab Werk an“:** Die Sprachausgabe ist seit 0.11.23 ab Werk an (Loxone Music Server, solange die Ausgabeart nie gespeichert wurde). Die Hilfe unter „Wann ansagen“ und der Hinweis im Reiter *Einbindung in Loxone* sagten noch „ab Werk aus“.
+- **Geändert – Protokoll leeren:** wie in den anderen Plugins nur mit dem Haken „Ja, das Protokoll leeren“.
+- **Geändert – Projektdatei auswerten:** Vor dem Lesen wird geprüft, ob der Arbeitsspeicher reicht (belegter Speicher plus das Doppelte der Datei, dieselbe Rechnung wie in Fensterbilanz) – jetzt auch beim Hochladen, wo bisher gar nicht geprüft wurde. Reicht er nicht, wird die Datei nicht gelesen, und die Meldung nennt den Bedarf.
+- **Geändert – gleichzeitiges Speichern:** Speichern, neues Wortzeichen, Übernahme aus dem Assistenten und aus der Projektdatei, Zurückspielen einer Sicherung, das Ergänzen fehlender Einstellungen und die Übernahme des Sprechtokens lesen und schreiben die Konfiguration jetzt unter einer gemeinsamen Sperre. Zwei gleichzeitige Vorgänge können sich damit keine Änderung mehr gegenseitig überschreiben.
+- **Geändert – Installation und Deinstallation:** `postinstall.sh`, `postupgrade.sh` und `uninstall` lehnen einen unbrauchbaren Ordnernamen (leer, `.`, `..`, mit `/`, bei der Deinstallation auch `system`) ab, bevor sie etwas anlegen oder löschen – wie `preupgrade.sh` schon bisher.
+- **Geändert – Sprachdateien:** Der Ordner der Sprachdateien kommt aus derselben Stelle wie alle übrigen Pfade des Plugins.
+- Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
+- **Neu – Ansage je Raum:** In der neuen Tabelle *Haus-Themen und Ansage je Raum* (Reiter *Einstellungen*) trägt jeder Raum den Haken „Ansage für diesen Raum“. Ohne ihn nennt keine Ansage den Raum, etwa einen Fühler draußen oder in einer Wetterstation. Ab Werk an – bestehende Räume sagen weiter an wie bisher. Eine ältere Sicherung ohne das Feld spielt den Haken als „an“ zurück.
+- **Neu – Raumwerte aus `haus/klima`:** Je Raum lässt sich als Quelle statt einer Adresse `haus/klima/<name>/` wählen, das ein anderes Plugin liefert (heute Zigbee2MqttNG ab 4.2.5). Gelesen werden `temperatur`, `feuchte`, bei eingetragener CO₂-Grenze `co2`, dazu `zeit` und `anbieter`; der Abruf alle fünf Minuten liest sie vor dem Rechnen in einer kurzen Sitzung am Broker (genaue Themen, höchstens 50, bis zu 65 s, bis der Zähler `haus/klima/zaehler/<anbieter>` jedes Anbieters einmal live kam). Ein Wert zählt nur, wenn sich dieser Zähler binnen 120 s geändert hat und `zeit` jünger als eine Stunde ist; sonst steht der Raum ohne Werte da, nie mit alten. Ab Werk liest jeder Raum wie bisher über seine Adresse.
+- **Neu – Außenwerte aus `haus/wetter`:** Quelle der Außenluft „haus/wetter“ mit einem Namen: Temperatur und Feuchte kommen aus `haus/wetter/<name>/temperatur` und `feuchte`, Regen, Wind und Vorhersage weiter von Open-Meteo. Schweigt die Quelle, gilt der Augenblickswert von Open-Meteo, und die Meldung sagt es. Ab Werk unverändert Open-Meteo.
+- **Neu – `haus/raumklima` für andere Plugins** (Reiter *MQTT*, ab Werk aus, wirkt nur mit MQTT): je Raum `haus/raumklima/raum/<name>/lueften`, `schimmel`, `ampel` (-1 ohne Aussage), `taupunkt` (°C, -999 ohne Aussage), `absolut` (g/m³, -1 ohne Aussage), `grund` (Kennung, `-` ohne); dazu `haus/raumklima/raeume`, `lueften_anzahl`, `schimmel_anzahl`, `kuehlfrei` (1/0/-1), `takt`, `anbieter`, `zeit` – alle retained – und `haus/raumklima/zaehler` (0…999, je Abruf, nie retained). `<name>` ist der Raumname nach der Namensregel der Haus-Themen; zwei Räume mit demselben Namen gehen beide nicht hinaus. Gesendet wird über eine kurze Sitzung direkt am Broker, nicht über das Gateway; Ausschalten, ein entfernter oder umbenannter Raum und die Deinstallation räumen die Themen mit Rücklesen ab. Ein Abnehmer verwendet die Werte nur, solange sich `zaehler` binnen zwei Takten plus einer Minute ändert.
+- **Neu – Sonnenlast der Fensterbilanz** (ab Werk aus): Je Raum lässt sich der Raum der Fensterbilanz eintragen; mit dem Haken „Sonnenlast der Fensterbilanz je Raum anzeigen“ steht neben der Empfehlung, mit wie viel Watt die Sonne den Raum gerade heizt und was in 30 Minuten zu erwarten ist (`haus/sonne/raum/<raum>/watt_rein`, `watt30`, `wh_heute` aus Beschattung/Fensterbilanz ab 0.12.37, gültig solange `haus/sonne/ts` jünger als 15 Minuten ist). Ein Hinweis – Lüften und Kühlen werden nicht anders gerechnet.
+- Der Reiter *Test* trägt je eine Zeile für `haus/klima`, `haus/wetter`, `haus/raumklima` (am Broker nachgelesen) und die Sonnenlast; die Zeile der Sprachausgabe nennt die Räume ohne Ansage.
 
 ## Neu in 0.11.39
 
@@ -523,13 +544,13 @@ Für jeden eingerichteten Raum:
 Dazu die Sammelwerte: wie viele Räume gerade gelüftet werden sollten, wie
 viele gefährdet sind, wie viele außerhalb ihres Feuchtekorridors liegen.
 
-- **Ansagen (seit 0.11.15, ab Werk aus):** Auf Wunsch sagt das Plugin selbst an, wenn in einem Raum
+- **Ansagen (seit 0.11.15, ab Werk an seit 0.11.23):** Das Plugin sagt selbst an, wenn in einem Raum
   Lüften empfohlen wird oder Schimmelgefahr eintritt – einmal beim Eintritt, nicht in jedem Abruf;
-  jeder Anlass ist einzeln abwählbar, bei mehreren Räumen nennt der Satz den Raum. Ausgabe über die
+  jeder Anlass ist einzeln abwählbar, der Satz nennt den Raum (seit 0.11.40 auch bei nur einem). Ausgabe über die
   gemeinsame Sprachausgabe der Plugins dieses Hauses: Loxone Music Server, MusicServer4Home, eine eigene
   Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG). Adresse und Vorlage müssen im
-  Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung. Eine eigene Ruhezeit der Ansagen (ab Werk
-  leer) hält die Nacht frei; was in sie fällt, wird nicht nachgeholt. Testansage und Prüfzeile im Reiter Test.
+  Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung. Die Nachtruhe der Ansagen (ab Werk
+  22:00 bis 07:00) hält die Nacht frei; was in sie fällt, wird nicht nachgeholt. Testansage und Prüfzeile im Reiter Test.
 
 ## Warum absolute Feuchte
 

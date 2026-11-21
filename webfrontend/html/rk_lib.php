@@ -405,6 +405,14 @@ function rk_raum_vorgabe()
          * 0 = keine Angabe. Ohne sie laesst sich der CO2-Verlauf nicht
          * rechnen, und eine geratene Zahl waere schlimmer als keine. */
         'personen'   => 0,
+        /* ---- Neu in 0.11.40 (Haus-Themen, Entscheidungen des Hausherrn 21.11.2026) ----
+         * ansage: nennt die Ansage diesen Raum? AB WERK AN - bestehende Raeume behalten ihr Verhalten.
+         * quelle_art: 'adresse' (wie bisher: Adresse, Miniserver) | 'haus' (haus/klima/<haus_name>/..., ab Werk nicht).
+         * sonne_raum: <raum> der Fensterbilanz unter haus/sonne/raum/ - nur ein Hinweis, '' = keiner. */
+        'ansage'     => 1,
+        'quelle_art' => 'adresse',
+        'haus_name'  => '',
+        'sonne_raum' => '',
     );
 }
 
@@ -474,8 +482,9 @@ function rk_vorgaben()
         'mqtt_topic'  => 'raumklima',
         'aktionstoken' => '',
         /* ---- Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.11.15) ----
-         * Ab Werk KEINE Ausgabe (Ausgabeart 'aus'). Die beiden Anlaesse sind ab
-         * Werk angehakt: wer die Ausgabe einschaltet, hoert sofort beide. */
+         * Ab Werk AN seit 0.11.23: ansage_werk_block() traegt die Ausgabeart des Stamms (ansage_werk_modus(),
+         * gemessen 21.11.2026: 'musicserver'), bis 0.11.22 stand hier 'aus'. Die beiden Anlaesse sind ab Werk
+         * angehakt. (0.11.40, fremder Pruefer A7: Kommentar an den Code angeglichen.) */
         'tts'             => ansage_werk_block(),
         'ansage_lueften'  => 1,
         'ansage_schimmel' => 1,
@@ -488,6 +497,13 @@ function rk_vorgaben()
          * Vorgabenschluessel ausgibt (gemessen 07.11.2026). Bauart Saugroboter 1.1.33 / Pumpenwacht 1.0.16. */
         'ansage_regeln'   => ansage_regeln_vorgaben(),
         'ansage_token_herkunft' => array(),
+        /* ---- Neu in 0.11.40 (Haus-Themen), alle AB WERK AUS ----
+         * aussen_haus_name: <name> unter haus/wetter, gilt nur mit aussen_art 'haus'.
+         * sonne_ein: die Sonnenlast der Fensterbilanz je Raum lesen und als Hinweis zeigen.
+         * haus_raumklima_ein: Anbieter haus/raumklima/... (wirkt nur mit mqtt_ein). */
+        'aussen_haus_name'   => '',
+        'sonne_ein'          => 0,
+        'haus_raumklima_ein' => 0,
     );
 }
 
@@ -568,7 +584,7 @@ function rk_wert_regeln()
             // Fuenftes Feld: leer erlaubt (seit 0.11.7 - kein Standort).
             'breite'        => array('zahl', -90.0, 90.0, false, true),
             'laenge'        => array('zahl', -180.0, 180.0, false, true),
-            'aussen_art'    => array('wahl', array('meteo', 'eigen')),
+            'aussen_art'    => array('wahl', array('meteo', 'eigen', 'haus')),     // 0.11.40: 'haus' (haus/wetter)
             'aussen_einheit_t'  => array('wahl', array('C', 'F')),
             'aussen_einheit_rf' => array('wahl', array('proz', 'anteil')),
             'quelle'        => array('adr'),
@@ -586,6 +602,10 @@ function rk_wert_regeln()
             'ansage_schimmel' => array('flag'),
             'ansage_ruhe_von' => array('zeit'),
             'ansage_ruhe_bis' => array('zeit'),
+            /* 0.11.40 (Haus-Themen) */
+            'aussen_haus_name'   => array('hausname', 'wetter'),
+            'sonne_ein'          => array('flag'),
+            'haus_raumklima_ein' => array('flag'),
         );
     }
     return $regeln;
@@ -652,6 +672,13 @@ function rk_regel_pruefen($r, $wert)
             if (!is_string($wert)) { return array(null, 'FEHLER.UNBEKANNT'); }
             $s = trim($wert);
             if (rk_zeichen_unzulaessig($s)) { return array(null, 'FEHLER.ZEICHEN'); }
+            return array($s, '');
+        case 'hausname':
+            /* 0.11.40: ein <name> der Haus-Themen - genau in der Form der Namensregel, nie zurechtgebogen. */
+            if (!is_string($wert)) { return array(null, 'FEHLER.HAUSNAME'); }
+            $s = trim($wert);
+            if ($s === '') { return array('', ''); }
+            if (!rk_haus_name_ok($s, isset($r[1]) ? $r[1] : 'klima')) { return array(null, 'FEHLER.HAUSNAME'); }
             return array($s, '');
         case 'zeit':
             if (!is_string($wert)) { return array(null, 'FEHLER.ZEIT'); }
@@ -766,6 +793,11 @@ function rk_raum_regeln()
         'ruhe_von'     => array('zeit'),
         'ruhe_bis'     => array('zeit'),
         'personen'     => array('zahl', 0.0, 20.0, false),
+        /* 0.11.40 (Haus-Themen) */
+        'ansage'       => array('flag'),
+        'quelle_art'   => array('wahl', array('adresse', 'haus')),
+        'haus_name'    => array('hausname', 'klima'),
+        'sonne_raum'   => array('hausname', 'klima'),
     );
 }
 
@@ -779,9 +811,14 @@ function rk_raum_quer_pruefen($r)
     $name = trim((string) $r['name']);
     $pt = trim((string) $r['pfad_t']);
     $prf = trim((string) $r['pfad_rf']);
-    if ($name === '' && $pt === '' && $prf === '') { return null; }
+    /* 0.11.40: ein Raum mit der Quellenart haus/klima braucht statt der Pfade den Namen unter haus/klima. */
+    $haus = isset($r['quelle_art']) && $r['quelle_art'] === 'haus';
+    $hn = isset($r['haus_name']) ? trim((string) $r['haus_name']) : '';
+    if ($name === '' && $pt === '' && $prf === '' && !($haus && $hn !== '')) { return null; }
     if ($name === '') { return array('FEHLER.NAME_FEHLT', 'name'); }
-    if ($pt === '' && $prf === '') { return array('FEHLER.PFAD_FEHLT', 'pfad_t'); }
+    if ($haus) {
+        if ($hn === '') { return array('FEHLER.HAUSNAME_FEHLT', 'haus_name'); }
+    } elseif ($pt === '' && $prf === '') { return array('FEHLER.PFAD_FEHLT', 'pfad_t'); }
     if ((float) $r['soll_min'] > 0 && (float) $r['soll_max'] > 0
         && (float) $r['soll_min'] >= (float) $r['soll_max']) {
         return array('FEHLER.KORRIDOR', 'soll_min');
@@ -1094,6 +1131,13 @@ function rk_config($heilen = true)
                        'pfad_zuluft', 'quelle', 'quelle_rf') as $pf) {
             if (!is_string($r[$pf])) { $r[$pf] = ''; }
         }
+        /* 0.11.40 (Haus-Themen): wie die Felder darueber. */
+        $r['ansage'] = !empty($r['ansage']) ? 1 : 0;
+        if (!in_array($r['quelle_art'], array('adresse', 'haus'), true)) { $r['quelle_art'] = 'adresse'; }
+        foreach (array('haus_name', 'sonne_raum') as $hk) {
+            $r[$hk] = is_string($r[$hk]) ? trim($r[$hk]) : '';
+            if ($r[$hk] !== '' && !rk_haus_name_ok($r[$hk], 'klima')) { $r[$hk] = ''; }
+        }
         $cfg['raeume'][$i] = $r;
     }
     /* Untergrenze 300, nicht 60: cron.05min ruft alle fuenf Minuten auf.
@@ -1121,7 +1165,7 @@ function rk_config($heilen = true)
         ? '' : max(-90.0, min(90.0, (float) str_replace(',', '.', (string) $cfg['breite'])));
     $cfg['laenge'] = trim((string) $cfg['laenge']) === ''
         ? '' : max(-180.0, min(180.0, (float) str_replace(',', '.', (string) $cfg['laenge'])));
-    if (!in_array($cfg['aussen_art'], array('meteo', 'eigen'), true)) {
+    if (!in_array($cfg['aussen_art'], array('meteo', 'eigen', 'haus'), true)) {
         $cfg['aussen_art'] = 'meteo';
     }
     /* ---- Neu in 0.11.0 ---- */
@@ -1169,6 +1213,11 @@ function rk_config($heilen = true)
     list($cfg['tts']) = ansage_vervollstaendigen(is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
     $cfg['ansage_lueften'] = !empty($cfg['ansage_lueften']) ? 1 : 0;
     $cfg['ansage_schimmel'] = !empty($cfg['ansage_schimmel']) ? 1 : 0;
+    /* 0.11.40 (Haus-Themen) */
+    $cfg['aussen_haus_name'] = is_string($cfg['aussen_haus_name']) ? trim($cfg['aussen_haus_name']) : '';
+    if ($cfg['aussen_haus_name'] !== '' && !rk_haus_name_ok($cfg['aussen_haus_name'], 'wetter')) { $cfg['aussen_haus_name'] = ''; }
+    $cfg['sonne_ein'] = !empty($cfg['sonne_ein']) ? 1 : 0;
+    $cfg['haus_raumklima_ein'] = !empty($cfg['haus_raumklima_ein']) ? 1 : 0;
     foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis') as $rz) {
         $cfg[$rz] = is_string($cfg[$rz]) ? trim($cfg[$rz]) : '';
     }
@@ -1217,9 +1266,12 @@ function rk_config_vervollstaendigen()
         foreach (array_keys(array_diff_key(ansage_vorgaben('aus'), $daten['tts'])) as $k) { $fehlt[] = 'tts.' . $k; }
     }
     if (!$fehlt) { return array(); }
+    $rk_sp = rk_config_sperre();     // 0.11.40 (A10): Lesen-Aendern-Schreiben unter der Konfigurationssperre
     $cfg = rk_config();
-    if (rk_config_lage() !== 'ok') { return array(); }
-    if (!rk_config_speichern($cfg)) {
+    $rk_ok = rk_config_lage() === 'ok' ? rk_config_speichern($cfg) : null;
+    rk_config_freigeben($rk_sp);
+    if ($rk_ok === null) { return array(); }
+    if (!$rk_ok) {
         rk_log_gebremst('cfg_ergaenzen', 'Konfiguration: ' . count($fehlt)
             . ' fehlende Schluessel liessen sich nicht schreiben.', 3600);
         return array();
@@ -1248,6 +1300,43 @@ function rk_sicherung_schreiben($cfg)
 {
     $p = rk_paths();
     return rk_json_schreiben($p['sicherung'], $cfg, 0600);
+}
+
+/**
+ * 0.11.40 (fremder Pruefer A10): die Konfigurationssperre um Lesen, Aendern und Schreiben - Bauart
+ * fb_config_sperre() aus Fensterbilanz 0.12.37, verschachtelbar. Jeder schreibende Vorgang liest die Konfiguration,
+ * aendert einen Teil und schreibt sie ganz zurueck; laufen zwei gleichzeitig (zwei Reiter, Takt und Oberflaeche),
+ * schreibt der zweite die Aenderung des ersten weg (in Fensterbilanz gemessen: sechs Verluste in acht Durchgaengen).
+ * Der Aufrufer holt die Sperre VOR rk_config() und gibt sie nach rk_config_speichern() zurueck. Haelt DIESER
+ * Vorgang sie schon, kommt das Merkzeichen true statt eines zweiten Griffs (flock() auf zwei Griffen derselben
+ * Datei im selben Vorgang blockierte sich selbst). null: die Sperre liess sich nicht holen - dann wird ohne sie
+ * gearbeitet wie bis 0.11.39 (melden statt blockieren).
+ */
+function rk_config_sperre()
+{
+    if (!empty($GLOBALS['rk_config_sperre_tiefe'])) {
+        $GLOBALS['rk_config_sperre_tiefe']++;
+        return true;
+    }
+    $p = rk_paths();
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) {
+        return null;
+    }
+    $fp = @fopen($p['datadir'] . '/config.lock', 'c+');
+    if ($fp === false) { return null; }
+    if (!@flock($fp, LOCK_EX)) { fclose($fp); return null; }
+    $GLOBALS['rk_config_sperre_tiefe'] = 1;
+    return $fp;
+}
+
+/** Die Gegenstelle zu rk_config_sperre(). Vertraegt null und das Merkzeichen true. */
+function rk_config_freigeben($fp)
+{
+    if ($fp === true) {
+        if (!empty($GLOBALS['rk_config_sperre_tiefe'])) { $GLOBALS['rk_config_sperre_tiefe']--; }
+        return;
+    }
+    if ($fp) { @flock($fp, LOCK_UN); fclose($fp); $GLOBALS['rk_config_sperre_tiefe'] = 0; }
 }
 
 function rk_config_speichern($cfg)
@@ -1312,13 +1401,34 @@ function rk_raeume()
     $out = array();
     foreach ($cfg['raeume'] as $i => $r) {
         if (trim((string) $r['name']) === '') { continue; }
-        if (trim((string) $r['pfad_t']) === '' && trim((string) $r['pfad_rf']) === '') { continue; }
+        /* 0.11.40: ein Raum mit der Quellenart haus/klima ist mit seinem Namen unter haus/klima eingerichtet. */
+        $rk_hr = isset($r['quelle_art']) && $r['quelle_art'] === 'haus' && trim((string) $r['haus_name']) !== '';
+        if (!$rk_hr && trim((string) $r['pfad_t']) === '' && trim((string) $r['pfad_rf']) === '') { continue; }
         $nr = (int) $i + 1;
         $r['nr'] = $nr;
         $out[$nr] = $r;
     }
     ksort($out);
     return $out;
+}
+
+/**
+ * 0.11.40 (fremder Pruefer A2): Kann der Einrichtungs-Assistent uebernehmen? Ja, sobald fuer mindestens einen
+ * vorgeschlagenen Raum BEIDE Proben seiner Bauarten gelungen sind - dieselbe Bedingung, unter der die Uebernahme
+ * einen Raum eintraegt (Probe der Temperatur- und der Feuchte-Bauart). Bis 0.11.39 hingen Knopf und Handler an der
+ * ersten Probe ueberhaupt ($ass['probe']): scheiterte die Probe der ersten Bauart, liess sich auch ein Raum einer
+ * zweiten, gelungenen Bauart nicht uebernehmen, und der Knopf fehlte.
+ */
+function rk_ass_uebernehmbar($ass)
+{
+    if (!is_array($ass) || empty($ass['voll']) || !is_array($ass['voll'])) { return false; }
+    $pr = (isset($ass['proben']) && is_array($ass['proben'])) ? $ass['proben'] : array();
+    foreach ($ass['voll'] as $v) {
+        $tt = (is_array($v) && isset($v['t']['typ'])) ? (string) $v['t']['typ'] : '';
+        $ft = (is_array($v) && isset($v['rf']['typ'])) ? (string) $v['rf']['typ'] : '';
+        if (!empty($pr['t'][$tt]['ok']) && !empty($pr['rf'][$ft]['ok'])) { return true; }
+    }
+    return false;
 }
 
 function rk_token_erzeugen($laenge = 24)
@@ -1375,9 +1485,19 @@ function rk_token()
          * in Loxone 403, und im Protokoll stand nichts (gemessen, Bericht
          * oberflaeche Nr. 5). Jetzt steht es dort, und ein Token, das sich
          * nicht speichern laesst, wird nicht als gueltig angezeigt. */
+        /* 0.11.40 (A10): unter der Konfigurationssperre neu lesen - hat ein zweiter Vorgang inzwischen ein Token
+         * angelegt, gilt dieses. */
+        $rk_sp = rk_config_sperre();
+        $cfg = rk_config();
+        if (trim((string) $cfg['aktionstoken']) !== '') {
+            rk_config_freigeben($rk_sp);
+            return (string) $cfg['aktionstoken'];
+        }
         $bestand = rk_json_lesen(rk_paths()['config']);
         $cfg['aktionstoken'] = rk_token_erzeugen();
-        if (!rk_config_speichern($cfg)) {
+        $rk_tok_ok = rk_config_speichern($cfg);
+        rk_config_freigeben($rk_sp);
+        if (!$rk_tok_ok) {
             rk_log_gebremst('token_nicht_gespeichert', 'Ein Aktionstoken liess sich nicht speichern - '
                 . 'die Konfiguration ist nicht schreibbar. Es wird keine Adresse angezeigt.', 3600);
             return '';
@@ -2347,7 +2467,7 @@ function rk_platz_frei($r)
 {
     if (!is_array($r)) { return true; }
     foreach (array('name', 'quelle', 'quelle_rf', 'pfad_t', 'pfad_rf',
-                   'pfad_co2', 'pfad_fenster', 'pfad_zuluft') as $k) {
+                   'pfad_co2', 'pfad_fenster', 'pfad_zuluft', 'haus_name', 'sonne_raum') as $k) {     // 0.11.40: Haus-Namen
         if (isset($r[$k]) && trim((string) $r[$k]) !== '') { return false; }
     }
     return true;
@@ -3194,13 +3314,19 @@ function rk_abrufen($erzwingen = false)
                    'raeume' => array(), 'aussen' => null,
                    'meldungen' => array(), 'vorher_n' => 0);
     $verlauf = !empty($cfg['verlauf_ein']) ? rk_verlauf_lesen() : array('raeume' => array());
+    /* 0.11.40 (Haus-Themen): die Ablage der letzten Lesesitzung (rk_haus_lesen() im Abruf alle fuenf Minuten). */
+    $hq = rk_haus_quellen();
 
     /* ---- Aussen ---- */
     $vorher = array();
-    if ($cfg['aussen_art'] === 'meteo' && ($cfg['breite'] === '' || $cfg['laenge'] === '')) {
+    /* 0.11.40 (R3): mit der Quelle haus/wetter kommt die Vorhersage (Regen, Wind, die Stunden voraus) weiter von
+     * Open-Meteo; nur Temperatur und Feuchte des Augenblicks kommen aus haus/wetter (unten). */
+    $rk_meteo = in_array($cfg['aussen_art'], array('meteo', 'haus'), true);
+    if ($rk_meteo && ($cfg['breite'] === '' || $cfg['laenge'] === '')) {
         /* Ohne Standort kein Abruf - und keine stille Vorgabe (seit 0.11.7). */
-        $stand['meldungen']['aussen'] = 'KEIN_STANDORT';
-    } elseif ($cfg['aussen_art'] === 'meteo') {
+        if ($cfg['aussen_art'] === 'haus') { $stand['meldungen']['vorhersage'] = 'HAUS_OHNE_VORHERSAGE'; }
+        else { $stand['meldungen']['aussen'] = 'KEIN_STANDORT'; }
+    } elseif ($rk_meteo) {
         list($d, $m) = rk_holen(rk_meteo_url($cfg['breite'], $cfg['laenge'], 2));
         if ($d !== null) {
             list($vorher, $m) = rk_meteo_lesen($d);
@@ -3259,6 +3385,22 @@ function rk_abrufen($erzwingen = false)
          * Meldung da und nicht nur im Handbuch. */
         $stand['meldungen']['vorhersage'] = 'EIGENE_QUELLE_OHNE_VORHERSAGE';
     }
+    /* 0.11.40 (R3): Temperatur und Feuchte draussen aus haus/wetter/<name>/ - nur frisch (Zaehler binnen 120 s, zeit
+     * juenger als eine Stunde). Schweigt die Quelle, gilt der Augenblickswert von Open-Meteo (das bisherige Verhalten,
+     * Regeln/07), und die Meldung sagt es; ohne Standort steht die Aussenluft dann ohne Werte da. */
+    $stand['aussen_quelle'] = '';
+    if ($cfg['aussen_art'] === 'haus') {
+        $rk_aw = rk_haus_wert($hq, 'wetter', (string) $cfg['aussen_haus_name'], $jetzt);
+        if ($rk_aw['lage'] === 'frisch' && $rk_aw['t'] !== null && $rk_aw['rf'] !== null && rk_t_gueltig($rk_aw['t'])
+            && $rk_aw['rf'] >= RK_RF_MIN && $rk_aw['rf'] <= 100.0) {
+            $stand['aussen'] = array_merge(is_array($stand['aussen']) ? $stand['aussen'] : array(),
+                                           array('t' => (float) $rk_aw['t'], 'rf' => (float) $rk_aw['rf']));
+            $stand['aussen_quelle'] = 'haus';
+        } else {
+            $stand['meldungen']['aussen_haus'] = 'HAUS_WETTER_' . strtoupper($rk_aw['lage'] === 'frisch' ? 'ohne' : $rk_aw['lage']);
+            $stand['aussen_quelle'] = is_array($stand['aussen']) ? 'meteo' : '';
+        }
+    }
     $stand['vorher_n'] = count($vorher);
     if ($vorher) {
         // Nur die naechsten zwei Tage aufheben - mehr braucht niemand, und
@@ -3291,9 +3433,13 @@ function rk_abrufen($erzwingen = false)
     $aussen = is_array($stand['aussen']) ? $stand['aussen'] : array('t' => null, 'rf' => null);
 
     foreach (rk_raeume() as $nr => $r) {
+        /* 0.11.40 (R2): ein Raum mit der Quellenart haus/klima holt keine Adresse - weder die eigene noch die
+         * gemeinsame; seine Werte kommen aus der Ablage der Lesesitzung (rk_haus_wert()). */
+        $rk_haus_r = ($r['quelle_art'] === 'haus');
+        if ($rk_haus_r) { $r['quelle'] = ''; $r['quelle_rf'] = ''; }
         $quelle = trim((string) $r['quelle']) !== '' ? $r['quelle'] : $cfg['quelle'];
         $daten = null;
-        if (trim((string) $r['quelle']) === '' && trim((string) $cfg['quelle']) !== '') {
+        if (!$rk_haus_r && trim((string) $r['quelle']) === '' && trim((string) $cfg['quelle']) !== '') {
             // Die gemeinsame Adresse wird EINMAL geholt, nicht je Raum.
             if ($gemeinsam === null) {
                 list($gd, $gm) = rk_holen($cfg['quelle'], true);
@@ -3301,7 +3447,7 @@ function rk_abrufen($erzwingen = false)
                 if ($gd === null) { $stand['meldungen']['quelle'] = $gm; }
             }
             $daten = $gemeinsam[0];
-        } elseif (trim((string) $quelle) !== '') {
+        } elseif (!$rk_haus_r && trim((string) $quelle) !== '') {
             list($daten, $m) = rk_holen($quelle, true);
             if ($daten === null) { $stand['meldungen']['raum' . $nr] = $m; }
         }
@@ -3347,6 +3493,19 @@ function rk_abrufen($erzwingen = false)
                 $roh['zuluft'] = rk_pfad($daten, $r['pfad_zuluft']);
             }
         }
+        /* 0.11.40 (R2): haus/klima in Grad Celsius und Prozent (Regeln/07) - nur ein FRISCHER Wert zaehlt; schweigt
+         * der Anbieter, ist die Meldung des Geraets alt oder fehlt der Wert, steht der Raum ohne Werte da. */
+        $rk_hl = '';
+        if ($rk_haus_r) {
+            $rk_hw = rk_haus_wert($hq, 'klima', (string) $r['haus_name'], $jetzt);
+            $rk_hl = $rk_hw['lage'];
+            $roh['einheit_t'] = 'C';
+            $roh['einheit_rf'] = 'proz';
+            $roh['t'] = $rk_hl === 'frisch' ? $rk_hw['t'] : null;
+            $roh['rf'] = $rk_hl === 'frisch' ? $rk_hw['rf'] : null;
+            $roh['co2'] = ($rk_hl === 'frisch' && (int) $r['co2_max'] > 0) ? $rk_hw['co2'] : null;
+            if ($rk_hl !== 'frisch') { $stand['meldungen']['raum' . $nr] = 'HAUS_' . strtoupper($rk_hl); }
+        }
         /* Der vorige Eintrag desselben Raums - daraus entsteht die
          * Ausfallerkennung: seit wann kein Wert mehr kam und seit wann sich
          * der vorhandene nicht mehr bewegt. */
@@ -3356,7 +3515,19 @@ function rk_abrufen($erzwingen = false)
         $abgeleitet = !empty($cfg['verlauf_ein'])
             ? rk_verlauf_werte($vr, $jetzt, $r['volumen'], $cfg['trend_min']) : null;
         $e = rk_raum_rechnen($roh, $aussen, $vorher, $bewertung, $jetzt, $letzt, $abgeleitet);
+        if ($rk_haus_r) { $e['haus_lage'] = $rk_hl; }     // 0.11.40 (R2): fuer Oberflaeche und Test
         $e['nr'] = $nr;
+        /* 0.11.40 (R5): die Sonnenlast der Fensterbilanz (haus/sonne/raum/<raum>/) - NUR als Hinweis neben dem Urteil;
+         * Lueften und Kuehlen sind oben ohne sie gerechnet und bleiben, wie sie sind. */
+        if (!empty($cfg['sonne_ein']) && $r['sonne_raum'] !== '') {
+            $rk_so = rk_haus_sonne($hq, (string) $r['sonne_raum'], $jetzt);
+            $e['sonne_lage'] = $rk_so['lage'];
+            if ($rk_so['lage'] === 'frisch') {
+                $e['sonne_w'] = $rk_so['watt_rein'];
+                $e['sonne_w30'] = $rk_so['watt30'];
+                $e['sonne_wh'] = $rk_so['wh_heute'];
+            }
+        }
         $stand['raeume'][$nr] = $e;
         if (!empty($cfg['verlauf_ein'])) {
             rk_verlauf_raum($vr, $e, $jetzt, $cfg['takt']);
@@ -3468,6 +3639,821 @@ function rk_abrufen($erzwingen = false)
     /* M2 braucht den vorigen Stand: welcher Raum war beim letzten Lauf noch da. */
     rk_mqtt_senden($stand, $alt);
     return $stand;
+}
+
+/* ==================================================================
+ * Haus-Themen (0.11.40, Entscheidungen des Hausherrn 21.11.2026: "Raumklima, Ansage je Raum bauen"; "Setze
+ * Raum-Themen unter haus/raumklima um. Mache die Kopplung.") - alles ab Werk aus bzw. ohne Verhaltensaenderung:
+ *   Lesen  haus/klima/<name>/temperatur|feuchte|co2|zeit|anbieter je Raum mit der Quellenart "haus/klima",
+ *          haus/wetter/<name>/temperatur|feuchte|zeit|anbieter fuer die Aussenluft (aussen_art 'haus'),
+ *          haus/sonne/ts und haus/sonne/raum/<raum>/watt_rein|watt30|wh_heute (Fensterbilanz 0.12.37, sonne_ein),
+ *          dazu die Zaehler haus/klima|wetter/zaehler/<anbieter> der gemeldeten Anbieter.
+ *   Senden haus/raumklima/... (haus_raumklima_ein, wirkt nur mit mqtt_ein).
+ * Technik wie die Linien ohne Dauerdienst (Regeln/07, Abfahrts-Assistent 1.6.45 abfahrt_haus_sitzung()): eine kurze
+ * TCP-Sitzung am Broker aus general.json, genaue Themen (keine Platzhalter), hoechstens RK_HAUS_THEMEN_MAX, Kennwort nur
+ * im CONNECT-Paket. Raumklima hat keinen Minutenlauf, sondern den Abruf alle fuenf Minuten: der Abruf liest VOR dem
+ * Rechnen selbst (rk_haus_lesen(), bis RK_HAUS_FENSTER s, bis jeder gewartete Zaehler einmal live kam) - derselbe
+ * handgeschriebene Client wie rk_mqtt_behalten_liste(), um Senden und Fenster erweitert. Ein abgekoppelter Leser
+ * braucht es hier nicht: der Takt (mindestens 300 s) ist laenger als das Fenster, und gerechnet wird mit dem Stand
+ * genau dieser Sitzung. Eigene Haus-Themen gehen direkt an den Broker, nie ueber den UDP-Eingang des Gateways.
+ * Ein Abnehmer schreibt nichts unter fremden Haus-Themen und raeumt nie fremde Themen ab.
+ * ================================================================== */
+
+/** Frist der Haus-Themen (Regeln/07 Nr. 15): ein Zaehler, der sich binnen 120 s nicht aendert, heisst "schweigt". */
+if (!defined('RK_HAUS_FRIST')) { define('RK_HAUS_FRIST', 120); }
+/** haus/klima und haus/wetter: Werte nur, solange zeit juenger als eine Stunde ist (Regeln/07). */
+if (!defined('RK_HAUS_KLIMA_ALTER')) { define('RK_HAUS_KLIMA_ALTER', 3600); }
+/** haus/sonne: der Satz gilt, solange ts juenger als 15 Minuten ist (Regeln/07, Fensterbilanz). */
+if (!defined('RK_HAUS_SONNE_ALTER')) { define('RK_HAUS_SONNE_ALTER', 900); }
+/** Hoechstens so viele genaue Themen in einer Sitzung (wie ABFAHRT_HAUS_THEMEN_MAX). */
+if (!defined('RK_HAUS_THEMEN_MAX')) { define('RK_HAUS_THEMEN_MAX', 50); }
+/** Platz fuer die Zaehler der Anbieter, die erst die Sitzung selbst nennt (zweites SUBSCRIBE). */
+if (!defined('RK_HAUS_ZAEHLER_PLATZ')) { define('RK_HAUS_ZAEHLER_PLATZ', 4); }
+/** Das Fenster der Lesesitzung in Sekunden (eine Sendeperiode der Zaehler von 60 s plus Spiel). */
+if (!defined('RK_HAUS_FENSTER')) { define('RK_HAUS_FENSTER', 65); }
+
+/** Reservierte Namen je Bereich (Regeln/07, Namensregel): nie ein <name>. */
+function rk_haus_reserviert($bereich)
+{
+    $r = array('zaehler', 'anbieter');
+    if ($bereich === 'wetter') {
+        $r = array_merge($r, array('jetzt', 'heute', 'morgen', 'warnung', 'pollen', 'ok', 'datum', 'zeit', 'sprache'));
+    }
+    return $r;
+}
+
+/**
+ * Ist $n ein Name in der Form der Namensregel (Regeln/07): klein, nur a-z, 0-9, _ und -, hoechstens 40 Zeichen, nicht
+ * reserviert? Eingetragen wird der Name GENAU so, wie ihn der Anbieter meldet - das Formular biegt nichts zurecht.
+ */
+function rk_haus_name_ok($n, $bereich = 'klima')
+{
+    $n = (string) $n;
+    return (bool) preg_match('/^[a-z0-9_\-]{1,40}$/', $n) && !in_array($n, rk_haus_reserviert($bereich), true);
+}
+
+/**
+ * Ein Raumname als <name> nach der Namensregel (Regeln/07; wortgleich fb_sonne_raumname(), Fensterbilanz 0.12.37):
+ * klein, ae/oe/ue/ss, jedes andere Zeichen ausser a-z, 0-9, _ und - wird _, hoechstens 40 Zeichen; '' = unbrauchbar.
+ */
+function rk_haus_name($text)
+{
+    $t = strtr((string) $text, array('Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'));
+    $t = preg_replace('/[^a-z0-9_\-]/u', '_', strtolower($t));
+    if (!is_string($t)) { return ''; }
+    $t = substr($t, 0, 40);
+    return rk_haus_name_ok($t, 'klima') ? $t : '';
+}
+
+/**
+ * Eine kurze Sitzung am Broker - Abschrift von abfahrt_haus_sitzung() (Abfahrts-Assistent 1.6.45), die Anmeldung wie
+ * rk_mqtt_behalten_liste() dieser Linie. Erweitert um $nachlesen: function (Werte) -> array('lesen' => [], 'warten' =>
+ * []) fuer ein zweites SUBSCRIBE nach dem Zurueckbehaltenen (die Zaehler der Anbieter, deren Namen erst unter
+ * .../anbieter stehen).
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden ab dem ersten SUBACK, hoechstens 66; ohne $warten endet das Lesen 1 s nach dem SUBACK
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
+ * 'gesendet' => n, 'themen' => n gelesen, 'weggelassen' => Themen ueber der Grenze). Client-ID 'rkhaus<pid>'.
+ */
+function rk_haus_sitzung(array $senden, array $lesen, array $warten, $fenster, $nachlesen = null)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0,
+                 'themen' => 0, 'weggelassen' => array());
+    $p = rk_paths();
+    if ($p['home'] === '') { return $aus; }
+    $gen = rk_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $genau = function (array $liste) {
+        $o = array();
+        foreach ($liste as $t) {
+            $t = (string) $t;
+            if ($t !== '' && strpbrk($t, "#+\0") === false) { $o[$t] = true; }
+        }
+        return array_keys($o);
+    };
+    $alle = $genau($lesen);
+    $soll = array_slice($alle, 0, RK_HAUS_THEMEN_MAX);
+    $aus['weggelassen'] = array_slice($alle, RK_HAUS_THEMEN_MAX);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Eine Frist ueber allem: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, haelt die Sitzung
+     * nicht ueber ihr Fenster hinaus fest (wie abfahrt_haus_sitzung() seit 1.6.35). */
+    $lies_bis = microtime(true) + $fenster + 8.0;
+    $lies = function ($n) use ($s, $lies_bis) {
+        $d = '';
+        while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    /* Ein PUBLISH merken: Wert und, ohne Retain-Bit, "live gesehen". Nur abonnierte Themen. */
+    $merke = function ($pk) use (&$aus, &$soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+    /* SUBSCRIBE mit Kennung $id, bis zu 3 s auf das passende SUBACK warten. ok | abgelehnt | zeit */
+    $abonnieren = function (array $themen, $id) use ($s, $zk, $laenge, $paket, $merke) {
+        $sub = pack('n', $id);
+        foreach ($themen as $t) { $sub .= $zk($t) . chr(0); }
+        if (@fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub) === false) { return 'zeit'; }
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9 && strlen($pk[1]) >= 2) {
+                $k = unpack('n', substr($pk[1], 0, 2));
+                if ((int) $k[1] !== (int) $id) { continue; }
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($themen)) { return 'abgelehnt'; }
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { return 'abgelehnt'; }
+                }
+                return 'ok';
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        return 'zeit';
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('rkhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 90);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) === false) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $lage = $abonnieren($soll, 1);
+        $suback_zeit = microtime(true);
+        /* Zurueckbehaltenes kommt unmittelbar nach dem SUBACK - eine Sekunde einsammeln. */
+        if ($lage === 'ok') {
+            $ende = $suback_zeit + 1.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { if (feof($s)) { break; } continue; }
+                if (($pk[0] >> 4) === 3) { $merke($pk); }
+            }
+        }
+        if ($lage === 'ok' && is_callable($nachlesen)) {
+            $x = call_user_func($nachlesen, $aus['werte']);
+            $neu = array();
+            foreach ($genau(isset($x['lesen']) ? (array) $x['lesen'] : array()) as $t) {
+                if (!in_array($t, $soll, true)) { $neu[] = $t; }
+            }
+            $platz = max(0, RK_HAUS_THEMEN_MAX - count($soll));
+            $aus['weggelassen'] = array_merge($aus['weggelassen'], array_slice($neu, $platz));
+            $neu = array_slice($neu, 0, $platz);
+            if ($neu) {
+                $soll = array_merge($soll, $neu);
+                $lage = $abonnieren($neu, 2);
+                foreach ((isset($x['warten']) ? (array) $x['warten'] : array()) as $t) {
+                    if (in_array((string) $t, $neu, true)) { $warte[(string) $t] = true; }
+                }
+            }
+        }
+    }
+    $aus['themen'] = count($soll);
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if (@fwrite($s, chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf) !== false) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll && $warte) {
+        $offen = function () use (&$aus, &$warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $suback_zeit + max(1.0, $fenster);
+        while (microtime(true) < $ende && $offen()) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    @fwrite($s, chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/** Die Ablage der gelesenen Haus-Quellen (Datenordner, 0600): der Abruf schreibt, Oberflaeche und Test lesen. */
+function rk_haus_quellen_datei()
+{
+    return rk_paths()['datadir'] . '/haus_quellen.json';
+}
+
+/** Die gelesenen Haus-Quellen: array('sitzung', 'werte', 'zaehler', 'sonne') oder array() vor der ersten Sitzung. */
+function rk_haus_quellen()
+{
+    $d = rk_json_lesen(rk_haus_quellen_datei());
+    return is_array($d) ? $d : array();
+}
+
+/**
+ * Was ist eingeschaltet? array('klima' => Namen, 'co2' => Namen, 'wetter' => Name|'', 'sonne' => Raeume). Nur
+ * eingerichtete Raeume (rk_raeume()); ein Name, den zwei Raeume tragen, wird einmal gelesen.
+ */
+function rk_haus_bedarf()
+{
+    $cfg = rk_config();
+    $k = array();
+    $co2 = array();
+    $so = array();
+    foreach (rk_raeume() as $r) {
+        if ($r['quelle_art'] === 'haus' && $r['haus_name'] !== '') {
+            $k[$r['haus_name']] = true;
+            if ((int) $r['co2_max'] > 0) { $co2[$r['haus_name']] = true; }
+        }
+        if (!empty($cfg['sonne_ein']) && $r['sonne_raum'] !== '') { $so[$r['sonne_raum']] = true; }
+    }
+    return array('klima' => array_keys($k), 'co2' => array_keys($co2),
+                 'wetter' => ($cfg['aussen_art'] === 'haus' ? (string) $cfg['aussen_haus_name'] : ''),
+                 'sonne' => array_keys($so));
+}
+
+/**
+ * Die Themen der Lesesitzung in Rangfolge - was ueber der Grenze liegt, faellt von hinten weg: zuerst je Raum
+ * Temperatur, Feuchte, Zeit und Anbieter, dann die Aussenluft, dann haus/sonne/ts, dann die Sonnenwerte je Raum, zuletzt
+ * CO2.
+ */
+function rk_haus_lesethemen(array $b)
+{
+    $kern = array();
+    $spaet = array();
+    foreach ($b['klima'] as $n) {
+        foreach (array('temperatur', 'feuchte', 'zeit', 'anbieter') as $f) { $kern[] = 'haus/klima/' . $n . '/' . $f; }
+    }
+    if ($b['wetter'] !== '') {
+        foreach (array('temperatur', 'feuchte', 'zeit', 'anbieter') as $f) { $kern[] = 'haus/wetter/' . $b['wetter'] . '/' . $f; }
+    }
+    if ($b['sonne']) {
+        $kern[] = 'haus/sonne/ts';
+        foreach ($b['sonne'] as $r) {
+            foreach (array('watt_rein', 'watt30', 'wh_heute') as $f) { $spaet[] = 'haus/sonne/raum/' . $r . '/' . $f; }
+        }
+    }
+    foreach ($b['co2'] as $n) { $spaet[] = 'haus/klima/' . $n . '/co2'; }
+    return array_merge($kern, $spaet);
+}
+
+/**
+ * Das Ergebnis einer Lesesitzung in die Ablage einarbeiten (Bauart abfahrt_haus_merken()). Werte: die retained
+ * gelesenen (ein bestaetigtes Abo ohne Wert heisst ''); scheitert die Sitzung, bleiben die alten Werte - gewertet wird
+ * ueber die Zaehler, nie ueber das Alter der Ablage. Zaehler je bereich/anbieter: der zuletzt LIVE gesehene Wert und
+ * 'seit' = Zeitpunkt seiner letzten Aenderung; ein live gesehener, aber unveraenderter Zaehler verlaengert nichts
+ * (Anbieter klemmt). Sonne: nur ein live gesehenes haus/sonne/ts mit den live gesehenen Raumwerten derselben Sitzung.
+ */
+function rk_haus_merken(array $alt, array $erg, array $themen, $jetzt)
+{
+    $c = array('werte' => array(),
+               'zaehler' => (isset($alt['zaehler']) && is_array($alt['zaehler'])) ? $alt['zaehler'] : array(),
+               'sonne' => (isset($alt['sonne']) && is_array($alt['sonne'])) ? $alt['sonne'] : null);
+    if ($erg['lage'] === 'ok') {
+        foreach ($themen as $t) {
+            if (strpos($t, 'haus/sonne/') === 0) { continue; }
+            $c['werte'][$t] = isset($erg['werte'][$t]) ? (string) $erg['werte'][$t] : '';
+        }
+    } else {
+        $c['werte'] = (isset($alt['werte']) && is_array($alt['werte'])) ? $alt['werte'] : array();
+    }
+    foreach ($erg['werte'] as $t => $w) {
+        if (!preg_match('#^haus/(klima|wetter)/zaehler/([A-Za-z0-9_\-]{1,64})$#', (string) $t, $mm)) { continue; }
+        $k = $mm[1] . '/' . $mm[2];
+        $e = (isset($c['zaehler'][$k]) && is_array($c['zaehler'][$k])) ? $c['zaehler'][$k] : array('wert' => null, 'seit' => 0);
+        if (!empty($erg['live'][$t]) && (string) $w !== (string) $e['wert']) {
+            $e = array('wert' => (string) $w, 'seit' => (int) $jetzt);
+        }
+        $c['zaehler'][$k] = $e;
+    }
+    if (!empty($erg['live']['haus/sonne/ts']) && isset($erg['werte']['haus/sonne/ts'])
+        && preg_match('/^\d{9,11}$/', (string) $erg['werte']['haus/sonne/ts'])) {
+        $r = array();
+        foreach ($erg['werte'] as $t => $w) {
+            if (!empty($erg['live'][$t]) && is_numeric($w)
+                && preg_match('#^haus/sonne/raum/([a-z0-9_\-]{1,40})/(watt_rein|watt30|wh_heute)$#', (string) $t, $mm)) {
+                $r[$mm[1]][$mm[2]] = (int) round((float) $w);
+            }
+        }
+        $c['sonne'] = array('ts' => (int) $erg['werte']['haus/sonne/ts'], 'gesehen' => (int) $jetzt, 'raeume' => $r);
+    }
+    return $c;
+}
+
+/**
+ * Die Lesesitzung des Abrufs (bin/raumklima_abruf.php, vor dem Rechnen). Nichts eingeschaltet: die Ablage weg, keine
+ * Sitzung. Eigene Sperre (.haus_lesen.lock, nicht blockierend). Rueckgabe aus | laeuft | Lage der Sitzung.
+ */
+function rk_haus_lesen($fenster = RK_HAUS_FENSTER)
+{
+    $datei = rk_haus_quellen_datei();
+    $themen = rk_haus_lesethemen(rk_haus_bedarf());
+    if (!$themen) {
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $p = rk_paths();
+    if (!is_dir($p['datadir'])) { return 'aus'; }
+    $fh = @fopen($p['datadir'] . '/.haus_lesen.lock', 'c');
+    if ($fh === false) { return 'laeuft'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) { fclose($fh); return 'laeuft'; }
+    $grenze = RK_HAUS_THEMEN_MAX - RK_HAUS_ZAEHLER_PLATZ;
+    $weg = array_slice($themen, $grenze);
+    $themen = array_slice($themen, 0, $grenze);
+    $warten = in_array('haus/sonne/ts', $themen, true) ? array('haus/sonne/ts') : array();
+    $erg = rk_haus_sitzung(array(), $themen, $warten, $fenster, function ($werte) {
+        $l = array();
+        foreach ($werte as $t => $w) {
+            if (preg_match('#^haus/(klima|wetter)/[a-z0-9_\-]{1,40}/anbieter$#', (string) $t, $mm)
+                && preg_match('/^[A-Za-z0-9_\-]{1,64}$/', (string) $w)) {
+                $l['haus/' . $mm[1] . '/zaehler/' . $w] = true;
+            }
+        }
+        $l = array_keys($l);
+        return array('lesen' => $l, 'warten' => $l);
+    });
+    $jetzt = time();
+    $c = rk_haus_merken(rk_haus_quellen(), $erg, $themen, $jetzt);
+    $c['sitzung'] = array('zeit' => $jetzt, 'lage' => $erg['lage'], 'themen' => (int) $erg['themen'],
+                          'weggelassen' => array_values(array_merge($weg, $erg['weggelassen'])));
+    if (!rk_json_schreiben($datei, $c, 0600)) {
+        rk_log_gebremst('haus_ablage', 'Haus-Themen: die Ablage ' . basename($datei) . ' liess sich nicht schreiben.', 3600);
+    }
+    if ($erg['lage'] !== 'ok') {
+        rk_log_gebremst('haus_lesen', 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage']
+            . ') - die Raeume dieser Quelle stehen ohne Werte da, bis eine Sitzung gelingt.', 3600);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg['lage'];
+}
+
+/**
+ * Ist die Lesesitzung juenger als ein Takt plus 90 s? Gerechnet wird mit dem Stand der letzten Sitzung; der Knopf
+ * "Jetzt abrufen" und ?aktion=abrufen lesen nicht selbst (kein Warten im Webserver) und nehmen den Stand der letzten
+ * Sitzung, solange der naechste Abruf noch nicht faellig war.
+ */
+function rk_haus_sitzung_frisch(array $c, $jetzt)
+{
+    $z = isset($c['sitzung']['zeit']) ? (int) $c['sitzung']['zeit'] : 0;
+    $takt = (int) rk_config()['takt'];
+    return $z > 0 && $z <= (int) $jetzt + 60 && (int) $jetzt - $z <= $takt + 90;
+}
+
+/**
+ * Die Werte eines Namens unter haus/klima bzw. haus/wetter. Rueckgabe array('lage' => frisch | nie | kein_broker |
+ * kein_anbieter | schweigt | alt | ohne, 't', 'rf', 'co2', 'zeit', 'anbieter'). Nur 'frisch' traegt Werte; ein
+ * schweigender Anbieter, eine alte Meldung oder eine Aussage ohne Wert (-999, -1) liefern keine - nie alte Werte als
+ * frische.
+ */
+function rk_haus_wert(array $c, $bereich, $name, $jetzt)
+{
+    $aus = array('lage' => 'nie', 't' => null, 'rf' => null, 'co2' => null, 'zeit' => 0, 'anbieter' => '');
+    if (!isset($c['sitzung']) || !is_array($c['sitzung'])) { return $aus; }
+    if (!rk_haus_sitzung_frisch($c, $jetzt)) { $aus['lage'] = 'schweigt'; return $aus; }
+    $b = 'haus/' . $bereich . '/' . $name . '/';
+    $w = (isset($c['werte']) && is_array($c['werte'])) ? $c['werte'] : array();
+    if (!array_key_exists($b . 'anbieter', $w)) {
+        $aus['lage'] = (isset($c['sitzung']['lage']) && $c['sitzung']['lage'] !== 'ok') ? 'kein_broker' : 'nie';
+        return $aus;
+    }
+    $an = (string) $w[$b . 'anbieter'];
+    $aus['anbieter'] = $an;
+    if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $an)) { $aus['lage'] = 'kein_anbieter'; return $aus; }
+    $z = (isset($c['zaehler'][$bereich . '/' . $an]) && is_array($c['zaehler'][$bereich . '/' . $an]))
+        ? $c['zaehler'][$bereich . '/' . $an] : array('seit' => 0);
+    $seit = (int) $z['seit'];
+    $sz = (int) $c['sitzung']['zeit'];
+    if (!($seit > 0 && $seit <= $sz && $sz - $seit <= RK_HAUS_FRIST)) { $aus['lage'] = 'schweigt'; return $aus; }
+    $zeit = isset($w[$b . 'zeit']) && is_numeric($w[$b . 'zeit']) ? (int) $w[$b . 'zeit'] : -1;
+    $aus['zeit'] = $zeit;
+    if ($zeit <= 0 || $zeit > (int) $jetzt + 60 || (int) $jetzt - $zeit > RK_HAUS_KLIMA_ALTER) {
+        $aus['lage'] = 'alt';
+        return $aus;
+    }
+    $t = isset($w[$b . 'temperatur']) ? trim((string) $w[$b . 'temperatur']) : '';
+    $rf = isset($w[$b . 'feuchte']) ? trim((string) $w[$b . 'feuchte']) : '';
+    $co2 = isset($w[$b . 'co2']) ? trim((string) $w[$b . 'co2']) : '';
+    if (is_numeric($t) && (float) $t > -900.0) { $aus['t'] = (float) $t; }
+    if (is_numeric($rf) && (float) $rf >= 0.0) { $aus['rf'] = (float) $rf; }
+    if (is_numeric($co2) && (float) $co2 >= 0.0) { $aus['co2'] = (float) $co2; }
+    $aus['lage'] = ($aus['t'] === null && $aus['rf'] === null) ? 'ohne' : 'frisch';
+    return $aus;
+}
+
+/**
+ * Die Sonnenlast eines Raums aus haus/sonne (Fensterbilanz 0.12.37): array('lage' => nie | schweigt | ohne_raum |
+ * frisch, 'watt_rein', 'watt30', 'wh_heute', 'ts'). Gueltig, solange ts juenger als 15 Minuten ist; watt30 -1 heisst
+ * "ohne Vorausschau".
+ */
+function rk_haus_sonne(array $c, $raum, $jetzt)
+{
+    $aus = array('lage' => 'nie', 'watt_rein' => null, 'watt30' => null, 'wh_heute' => null, 'ts' => 0);
+    if (!isset($c['sonne']) || !is_array($c['sonne']) || empty($c['sonne']['ts'])) { return $aus; }
+    $ts = (int) $c['sonne']['ts'];
+    $aus['ts'] = $ts;
+    if ($ts > (int) $jetzt + 60 || (int) $jetzt - $ts > RK_HAUS_SONNE_ALTER) { $aus['lage'] = 'schweigt'; return $aus; }
+    $r = (isset($c['sonne']['raeume'][$raum]) && is_array($c['sonne']['raeume'][$raum])) ? $c['sonne']['raeume'][$raum] : array();
+    if (!isset($r['watt_rein'])) { $aus['lage'] = 'ohne_raum'; return $aus; }
+    $aus['watt_rein'] = (int) $r['watt_rein'];
+    $aus['watt30'] = isset($r['watt30']) ? (int) $r['watt30'] : -1;
+    $aus['wh_heute'] = isset($r['wh_heute']) ? (int) $r['wh_heute'] : -1;
+    $aus['lage'] = 'frisch';
+    return $aus;
+}
+
+/**
+ * Der Themenvertrag des Anbieters haus/raumklima - EINE Liste fuer Senden, Reiter MQTT und README: Thema =>
+ * array(Sprachschluessel, retained). <name> ist der Raumname nach der Namensregel (rk_haus_name()).
+ */
+function rk_haus_anbieter_vertrag()
+{
+    return array(
+        'haus/raumklima/raum/<name>/lueften'  => array('MQTT.HV_LUEFTEN', 1),
+        'haus/raumklima/raum/<name>/schimmel' => array('MQTT.HV_SCHIMMEL', 1),
+        'haus/raumklima/raum/<name>/ampel'    => array('MQTT.HV_AMPEL', 1),
+        'haus/raumklima/raum/<name>/taupunkt' => array('MQTT.HV_TAUPUNKT', 1),
+        'haus/raumklima/raum/<name>/absolut'  => array('MQTT.HV_ABSOLUT', 1),
+        'haus/raumklima/raum/<name>/grund'    => array('MQTT.HV_GRUND', 1),
+        'haus/raumklima/raeume'               => array('MQTT.HV_RAEUME', 1),
+        'haus/raumklima/lueften_anzahl'       => array('MQTT.HV_LUEFTEN_ANZAHL', 1),
+        'haus/raumklima/schimmel_anzahl'      => array('MQTT.HV_SCHIMMEL_ANZAHL', 1),
+        'haus/raumklima/kuehlfrei'            => array('MQTT.HV_KUEHLFREI', 1),
+        'haus/raumklima/takt'                 => array('MQTT.HV_TAKT', 1),
+        'haus/raumklima/anbieter'             => array('MQTT.HV_ANBIETER', 1),
+        'haus/raumklima/zeit'                 => array('MQTT.HV_ZEIT', 1),
+        'haus/raumklima/zaehler'              => array('MQTT.HV_ZAEHLER', 0),
+    );
+}
+
+/**
+ * Die Werte des Anbieters fuer DIESEN Stand: array(Thema => Text, retained, in Sendereihenfolge - zeit zuletzt;
+ * Liste der Raumnamen, die nicht hinausgehen). Zwei Raeume mit demselben <name> gehen beide nicht hinaus (melden,
+ * nicht waehlen, wie Fensterbilanz). Ohne Aussage: lueften, schimmel, ampel -1, taupunkt -999, absolut -1, grund '-'.
+ * kuehlfrei: 1, wenn alle Raeume mit Aussage die Kuehlung freigeben, 0, wenn einer sperrt, -1 ohne Aussage.
+ */
+function rk_haus_anbieter_werte(array $stand)
+{
+    $cfg = rk_config();
+    $quelle = array();
+    $doppelt = array();
+    foreach (rk_raeume() as $nr => $r) {
+        $n = rk_haus_name($r['name']);
+        if ($n === '') { $doppelt[(string) $r['name']] = true; continue; }
+        if (isset($quelle[$n])) { $doppelt[$n] = true; continue; }
+        $quelle[$n] = $nr;
+    }
+    foreach (array_keys($doppelt) as $d) { unset($quelle[$d]); }
+    ksort($quelle);
+    $raeume = (isset($stand['raeume']) && is_array($stand['raeume'])) ? $stand['raeume'] : array();
+    $w = array();
+    $kf = array();
+    foreach ($quelle as $n => $nr) {
+        $e = (isset($raeume[$nr]) && is_array($raeume[$nr])) ? $raeume[$nr] : array();
+        $ok = !empty($e['ok']);
+        $b = 'haus/raumklima/raum/' . $n . '/';
+        $w[$b . 'lueften'] = $ok ? (!empty($e['lueften']) ? '1' : '0') : '-1';
+        $w[$b . 'schimmel'] = (isset($e['schimmel']) && is_numeric($e['schimmel']) && (int) $e['schimmel'] >= 0)
+            ? (string) (int) $e['schimmel'] : '-1';
+        $w[$b . 'ampel'] = (isset($e['ampel']) && is_numeric($e['ampel']) && (int) $e['ampel'] >= 0)
+            ? (string) (int) $e['ampel'] : '-1';
+        $w[$b . 'taupunkt'] = ($ok && isset($e['taupunkt']) && is_numeric($e['taupunkt']))
+            ? number_format(round((float) $e['taupunkt'], 1), 1, '.', '') : '-999';
+        $w[$b . 'absolut'] = ($ok && isset($e['absolut']) && is_numeric($e['absolut']))
+            ? number_format(round((float) $e['absolut'], 1), 1, '.', '') : '-1';
+        $w[$b . 'grund'] = (isset($e['grund']) && is_string($e['grund']) && preg_match('/^[a-z0-9_]{1,40}$/', $e['grund']))
+            ? $e['grund'] : '-';
+        if (isset($e['kuehlfrei']) && is_numeric($e['kuehlfrei']) && (int) $e['kuehlfrei'] >= 0) { $kf[] = (int) $e['kuehlfrei']; }
+    }
+    $w['haus/raumklima/raeume'] = $quelle ? implode(',', array_keys($quelle)) : '-';
+    $w['haus/raumklima/lueften_anzahl'] = (string) (isset($stand['lueften_n']) ? (int) $stand['lueften_n'] : 0);
+    $w['haus/raumklima/schimmel_anzahl'] = (string) (isset($stand['schimmel_n']) ? (int) $stand['schimmel_n'] : 0);
+    $w['haus/raumklima/kuehlfrei'] = !$kf ? '-1' : (in_array(0, $kf, true) ? '0' : '1');
+    $w['haus/raumklima/takt'] = (string) (int) $cfg['takt'];
+    $w['haus/raumklima/anbieter'] = 'raumklima';
+    $w['haus/raumklima/zeit'] = (string) (isset($stand['lauf_ts']) ? (int) $stand['lauf_ts'] : 0);
+    return array($w, array_keys($doppelt));
+}
+
+/** Der Merker des Anbieters (Datenordner, 0600): zuletzt gesendete Werte, Vollversand, Zaehler, Lage. */
+function rk_haus_anbieter_datei()
+{
+    return rk_paths()['datadir'] . '/haus_anbieter.json';
+}
+
+/**
+ * Die eigenen retained Themen abraeumen: leere retained Nutzlast ueber die Haus-Sitzung, danach Ruecklesen ueber
+ * rk_mqtt_behalten_liste(), hoechstens $runden Runden. Nur die uebergebenen (eigenen) Themen, nie haus/#.
+ * Rueckgabe nichts | geleert | rest | nicht_nachgelesen | kein_broker.
+ */
+function rk_haus_abraeumen(array $themen, $runden = 3)
+{
+    $themen = array_values(array_unique(array_map('strval', $themen)));
+    if (!$themen) { return 'nichts'; }
+    $f = rk_mqtt_behalten_liste($themen);
+    if ($f['lage'] === 'ok' && !$f['belegt']) { return 'nichts'; }
+    $offen = ($f['lage'] === 'ok') ? array_keys($f['belegt']) : $themen;
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        $leer = array();
+        foreach ($offen as $t) { $leer[$t] = array('', true); }
+        $e = rk_haus_sitzung($leer, array(), array(), 0);
+        if ($e['lage'] !== 'ok') { return 'kein_broker'; }
+        $f = rk_mqtt_behalten_liste($offen);
+        if ($f['lage'] !== 'ok') { return 'nicht_nachgelesen'; }
+        if (!$f['belegt']) { return 'geleert'; }
+        $offen = array_keys($f['belegt']);
+    }
+    return 'rest';
+}
+
+/**
+ * Der Anbieter haus/raumklima im Abruf (nach dem Rechnen). Nur mit haus_raumklima_ein UND mqtt_ein; sonst raeumt er
+ * ab, was der Merker als gesendet kennt (mit Ruecklesen). Retained bei Aenderung gegen den Merker, voll nach dem
+ * Einschalten, ohne Merker (nach einem Update) und alle 30 Minuten; haus/raumklima/zaehler 0...999 in jedem Lauf, nie
+ * retained. Themen eines entfernten oder umbenannten Raums bekommen eine leere retained Nutzlast und werden
+ * nachgelesen. Der Merker entsteht nur nach einer Sitzung mit Lage 'ok'. Rueckgabe: Lage.
+ */
+function rk_haus_anbieter(array $stand)
+{
+    $cfg = rk_config();
+    $mf = rk_haus_anbieter_datei();
+    list($m, $ml) = rk_json_lage($mf);
+    $m = ($ml === 'ok' && is_array($m)) ? $m : array();
+    $alt = (isset($m['werte']) && is_array($m['werte'])) ? $m['werte'] : array();
+    if (empty($cfg['haus_raumklima_ein']) || empty($cfg['mqtt_ein'])) {
+        if (!$alt) {
+            if (is_file($mf)) { @unlink($mf); }
+            return 'aus';
+        }
+        $erg = rk_haus_abraeumen(array_keys($alt));
+        if ($erg === 'geleert' || $erg === 'nichts') {
+            @unlink($mf);
+            rk_log('Haus-Themen haus/raumklima: ausgeschaltet, ' . count($alt) . ' Themen am Broker abgeraeumt ('
+                . $erg . ').');
+        } else {
+            rk_log_gebremst('haus_abraeumen', 'Haus-Themen haus/raumklima: Abraeumen nicht belegt (' . $erg
+                . ') - der naechste Lauf versucht es erneut.', 3600);
+        }
+        return $erg;
+    }
+    list($w, $doppelt) = rk_haus_anbieter_werte($stand);
+    $jetzt = time();
+    $voll = !isset($m['voll']) || (int) $m['voll'] > $jetzt || $jetzt - (int) $m['voll'] >= 1800;
+    $n = isset($m['zaehler']) ? (((int) $m['zaehler']) + 1) % 1000 : 0;
+    $weg = array_values(array_diff(array_keys($alt), array_keys($w)));
+    $senden = array();
+    foreach ($weg as $t) { $senden[$t] = array('', true); }
+    foreach ($w as $t => $v) {
+        if ($voll || !array_key_exists($t, $alt) || (string) $alt[$t] !== (string) $v) { $senden[$t] = array((string) $v, true); }
+    }
+    $senden['haus/raumklima/zaehler'] = array((string) $n, false);
+    $erg = rk_haus_sitzung($senden, array(), array(), 0);
+    if ($erg['lage'] === 'ok') {
+        $neu = array('voll' => $voll ? $jetzt : (int) $m['voll'], 'zaehler' => $n, 'werte' => $w, 'zeit' => $jetzt,
+                     'lage' => 'ok', 'gesendet' => (int) $erg['gesendet'], 'doppelt' => $doppelt);
+        if ($weg) {
+            /* Was nach dem Leeren noch dasteht, bleibt im Merker (Wert '') und wird im naechsten Lauf wieder geleert. */
+            $f = rk_mqtt_behalten_liste($weg);
+            $rest = ($f['lage'] === 'ok') ? array_keys($f['belegt']) : $weg;
+            foreach ($rest as $t) { $neu['werte'][$t] = ''; }
+            rk_log('Haus-Themen haus/raumklima: ' . count($weg) . ' Themen eines entfernten oder umbenannten Raums '
+                . 'geleert' . ($rest ? ', ' . count($rest) . ' stehen noch da' : '') . '.');
+        }
+        if (!isset($m['werte'])) {
+            rk_log('Haus-Themen haus/raumklima: ' . count($w) . ' Themen gesendet (Vollversand).');
+        }
+        if (!rk_json_schreiben($mf, $neu, 0600)) {
+            rk_log_gebremst('haus_merker', 'Haus-Themen haus/raumklima: der Merker liess sich nicht schreiben; jeder Lauf '
+                . 'sendet deshalb den vollen Satz.', 3600);
+        }
+    } else {
+        $m['lage'] = $erg['lage'];
+        $m['zeit_fehl'] = $jetzt;
+        if ($m) { rk_json_schreiben($mf, $m, 0600); }
+        rk_log_gebremst('haus_anbieter', 'Haus-Themen haus/raumklima: Sitzung am Broker gescheitert (' . $erg['lage']
+            . ') - naechster Versuch im naechsten Lauf.', 3600);
+    }
+    return $erg['lage'];
+}
+
+/**
+ * Fuer die Deinstallation (rk_mqtt_leeren()): alle Themen, die der Anbieter gesendet haben kann - der Merker und die
+ * Themen des geltenden Stands (der Merker faellt bei einem Update weg) - abraeumen. Rueckgabe wie rk_haus_abraeumen().
+ */
+function rk_haus_anbieter_deinstallation()
+{
+    list($m, $ml) = rk_json_lage(rk_haus_anbieter_datei());
+    $themen = ($ml === 'ok' && isset($m['werte']) && is_array($m['werte'])) ? array_keys($m['werte']) : array();
+    list($w, ) = rk_haus_anbieter_werte(rk_stand());
+    $themen = array_merge($themen, array_keys($w));
+    return rk_haus_abraeumen($themen);
+}
+
+/** Der Hinweis zur Sonnenlast eines Raums (Stand mit sonne_w), roh - maskiert wird bei der Ausgabe; '' ohne Werte. */
+function rk_haus_sonne_text(array $e)
+{
+    if (!isset($e['sonne_w']) || $e['sonne_w'] === null) { return ''; }
+    $w30 = (isset($e['sonne_w30']) && (int) $e['sonne_w30'] >= 0)
+        ? sprintf(rk_t('TAB.SONNE_IN30'), (int) $e['sonne_w30']) : rk_t('TAB.SONNE_OHNE30');
+    return sprintf(rk_t('TAB.SONNE_HINWEIS'), (int) $e['sonne_w'], $w30);
+}
+
+/** Lage eines Haus-Werts als kurzer Text (Reiter Test). */
+function rk_haus_lage_text($lage)
+{
+    $t = rk_t('PRUEFTEXT.HL_' . strtoupper((string) $lage));
+    return $t === 'PRUEFTEXT.HL_' . strtoupper((string) $lage) ? (string) $lage : $t;
+}
+
+/* ==================================================================
+ * Reiter Test: die Haus-Themen (0.11.40). Je eine Zeile mit der WIRKUNG: gelesen wird die Ablage der letzten
+ * Lesesitzung des Abrufs (rk_haus_lesen()) bzw. - beim Anbieter - der Broker selbst. Rueckgabe array(ok, Text) mit
+ * ok 1 Haken (frisch), 0 Kreuz (schweigt, nie, alt, nicht pruefbar), 2 Strich (aus).
+ * ================================================================== */
+
+/** Raumwerte aus haus/klima: je Raum mit der Quellenart "haus/klima" die Lage. */
+function rk_pruefe_haus_klima()
+{
+    $raeume = array();
+    foreach (rk_raeume() as $r) {
+        if ($r['quelle_art'] === 'haus' && $r['haus_name'] !== '') { $raeume[] = $r; }
+    }
+    if (!$raeume) { return array(2, rk_t('PRUEFTEXT.HK_AUS')); }
+    $c = rk_haus_quellen();
+    if (!isset($c['sitzung'])) { return array(0, rk_t('PRUEFTEXT.HK_NIE')); }
+    $jetzt = time();
+    $teile = array();
+    $alle = true;
+    foreach ($raeume as $r) {
+        $hw = rk_haus_wert($c, 'klima', $r['haus_name'], $jetzt);
+        if ($hw['lage'] !== 'frisch') { $alle = false; }
+        $teile[] = sprintf(rk_t('PRUEFTEXT.HK_RAUM'), (string) $r['name'], (string) $r['haus_name'], rk_haus_lage_text($hw['lage']),
+                           $hw['anbieter'] !== '' ? $hw['anbieter'] : '-');
+    }
+    $text = sprintf(rk_t('PRUEFTEXT.HK_LISTE'), max(0, $jetzt - (int) $c['sitzung']['zeit']), implode('; ', $teile));
+    if (!empty($c['sitzung']['weggelassen'])) {
+        $text .= ' ' . sprintf(rk_t('PRUEFTEXT.HK_WEG'), implode(', ', array_slice((array) $c['sitzung']['weggelassen'], 0, 6)));
+    }
+    return array($alle ? 1 : 0, $text);
+}
+
+/** Aussenwerte aus haus/wetter. */
+function rk_pruefe_haus_wetter()
+{
+    $cfg = rk_config();
+    if ($cfg['aussen_art'] !== 'haus') { return array(2, rk_t('PRUEFTEXT.HW_AUS')); }
+    $c = rk_haus_quellen();
+    if (!isset($c['sitzung'])) { return array(0, rk_t('PRUEFTEXT.HK_NIE')); }
+    $hw = rk_haus_wert($c, 'wetter', (string) $cfg['aussen_haus_name'], time());
+    if ($hw['lage'] === 'frisch') {
+        return array(1, sprintf(rk_t('PRUEFTEXT.HW_FRISCH'), (string) $cfg['aussen_haus_name'], $hw['anbieter'],
+            $hw['t'] !== null ? number_format((float) $hw['t'], 1, rk_sprache() === 'de' ? ',' : '.', '') : '-',
+            $hw['rf'] !== null ? (string) round((float) $hw['rf']) : '-'));
+    }
+    return array(0, sprintf(rk_t('PRUEFTEXT.HW_NICHT'), (string) $cfg['aussen_haus_name'], rk_haus_lage_text($hw['lage'])));
+}
+
+/** Sonne der Fensterbilanz (haus/sonne): ts und die Raumwerte. */
+function rk_pruefe_haus_sonne()
+{
+    $cfg = rk_config();
+    if (empty($cfg['sonne_ein'])) { return array(2, rk_t('PRUEFTEXT.HS_AUS')); }
+    $raeume = array();
+    foreach (rk_raeume() as $r) {
+        if ($r['sonne_raum'] !== '') { $raeume[] = $r; }
+    }
+    if (!$raeume) { return array(0, rk_t('PRUEFTEXT.HS_KEIN_RAUM')); }
+    $c = rk_haus_quellen();
+    if (!isset($c['sonne']) || !is_array($c['sonne'])) { return array(0, rk_t('PRUEFTEXT.HS_NIE')); }
+    $jetzt = time();
+    $teile = array();
+    $alle = true;
+    foreach ($raeume as $r) {
+        $so = rk_haus_sonne($c, $r['sonne_raum'], $jetzt);
+        if ($so['lage'] !== 'frisch') { $alle = false; }
+        $teile[] = sprintf(rk_t('PRUEFTEXT.HS_RAUM'), (string) $r['name'], (string) $r['sonne_raum'],
+                           $so['lage'] === 'frisch' ? sprintf(rk_t('PRUEFTEXT.HS_WATT'), (int) $so['watt_rein']) : rk_haus_lage_text($so['lage']));
+    }
+    return array($alle ? 1 : 0, sprintf(rk_t('PRUEFTEXT.HS_LISTE'), max(0, $jetzt - (int) $c['sonne']['ts']), implode('; ', $teile)));
+}
+
+/** Anbieter haus/raumklima: am Broker nachgelesen (zeit und anbieter, retained). */
+function rk_pruefe_haus_anbieter()
+{
+    $cfg = rk_config();
+    list($m, $ml) = rk_json_lage(rk_haus_anbieter_datei());
+    if (empty($cfg['haus_raumklima_ein'])) {
+        $n = ($ml === 'ok' && isset($m['werte']) && is_array($m['werte'])) ? count($m['werte']) : 0;
+        return array(2, $n > 0 ? sprintf(rk_t('PRUEFTEXT.HA_AUS_REST'), $n) : rk_t('PRUEFTEXT.HA_AUS'));
+    }
+    if (empty($cfg['mqtt_ein'])) { return array(0, rk_t('PRUEFTEXT.HA_OHNE_MQTT')); }
+    $f = rk_mqtt_behalten_liste(array('haus/raumklima/zeit', 'haus/raumklima/anbieter'));
+    if ($f['lage'] !== 'ok') { return array(0, rk_t('PRUEFTEXT.HA_UNBEKANNT')); }
+    $z = isset($f['werte']['haus/raumklima/zeit']) && is_numeric($f['werte']['haus/raumklima/zeit'])
+        ? (int) $f['werte']['haus/raumklima/zeit'] : 0;
+    if ($z <= 0) { return array(0, rk_t('PRUEFTEXT.HA_NIE')); }
+    $alter = time() - $z;
+    if ($alter < -60 || $alter > 2 * (int) $cfg['takt'] + 60) {
+        return array(0, sprintf(rk_t('PRUEFTEXT.HA_ALT'), rk_dauer_text(max(0, $alter))));
+    }
+    $text = sprintf(rk_t('PRUEFTEXT.HA_FRISCH'), max(0, $alter),
+        ($ml === 'ok' && isset($m['werte']['haus/raumklima/raeume'])) ? (string) $m['werte']['haus/raumklima/raeume'] : '-');
+    if ($ml === 'ok' && !empty($m['doppelt'])) {
+        $text .= ' ' . sprintf(rk_t('PRUEFTEXT.HA_DOPPELT'), implode(', ', (array) $m['doppelt']));
+    }
+    return array(1, $text);
 }
 
 /* ==================================================================
@@ -3631,10 +4617,19 @@ function rk_ansage_token_pflegen($cfg = null)
     if ($cfg === null) { $cfg = rk_config(); }
     list($neu, $her2, $g) = ansage_token_abgleich(rk_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), rk_ansage_k());
     if (!$g) { return false; }
+    /* 0.11.40 (A10): unter der Konfigurationssperre neu lesen und neu abgleichen - sonst schriebe der Takt einen
+     * Block tts zurueck, der vor einer gleichzeitig gespeicherten Aenderung gelesen wurde. */
+    $sp = rk_config_sperre();
     $cfg = rk_config();
-    $cfg['tts'] = $neu;
-    $cfg['ansage_token_herkunft'] = $her2;
-    if (!rk_config_speichern($cfg)) { return false; }
+    list($neu, $her2, $g) = ansage_token_abgleich(rk_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), rk_ansage_k());
+    $ok = false;
+    if ($g) {
+        $cfg['tts'] = $neu;
+        $cfg['ansage_token_herkunft'] = $her2;
+        $ok = rk_config_speichern($cfg);
+    }
+    rk_config_freigeben($sp);
+    if (!$ok) { return false; }
     rk_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
     return true;
 }
@@ -3756,7 +4751,7 @@ function rk_ansage_k()
         't'      => function ($s) { return rk_t($s); },
         /* K_TTS_EINTRAG und K_KEIN_FELD: die Saetze bringt das Modul seit 1.1.2 selbst mit (wortgleich
          * mit den bisherigen EINST.SICH_TTS_EINTRAG/SICH_TTS_KEIN_FELD); die Umlenkungen sind seit
-         * 0.11.17 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
+         * 0.11.17 gestrichen (X-10). Ab Werk an: 'werk' = ansage_werk_modus() (0.11.23). */
     );
 }
 
@@ -3802,11 +4797,55 @@ function rk_ansage_ruhe_jetzt($cfg, $jetzt)
                          isset($cfg['ansage_ruhe_bis']) ? $cfg['ansage_ruhe_bis'] : '', $jetzt) === 1;
 }
 
-/** Der Satz: mit Raumnamen nur, wenn mehrere Raeume eingerichtet sind. */
-function rk_ansage_satz($anlass, array $namen, $mehrere)
+/**
+ * Der Satz nennt den Raum IMMER (0.11.40, B1): ein Raum "im Raum <Name>", mehrere "in den Raeumen <A>, <B> und <C>".
+ * Bis 0.11.39 nannte er den Raum nur, wenn mehr als ein Raum eingerichtet war; mit einem einzigen Raum - am Geraet
+ * gemessen 21.11.2026: eine Wetterstation als einziger Raum - klang "Raumklima: Lueften wird empfohlen." aus jedem
+ * Lautsprecher, und wer im Bad oder in der Kueche stand, bezog es auf diesen Raum.
+ */
+function rk_ansage_satz($anlass, array $namen)
 {
     $s = 'EINST.SAG_' . strtoupper($anlass);
-    return $mehrere ? sprintf(rk_t($s . '_RAEUME'), implode(', ', $namen)) : rk_t($s . '_EINER');
+    $namen = array_values(array_map('strval', $namen));
+    if (count($namen) <= 1) {
+        return sprintf(rk_t($s . '_EINER'), $namen ? $namen[0] : '');
+    }
+    $letzter = array_pop($namen);
+    return sprintf(rk_t($s . '_RAEUME'), implode(', ', $namen) . ' ' . rk_t('EINST.SAG_UND') . ' ' . $letzter);
+}
+
+/** 0.11.40 (B2): unter dieser Temperatur der letzten Messung gilt ein Raum als unbeheizt (Hinweis, keine Sperre). */
+if (!defined('RK_UNBEHEIZT_T')) { define('RK_UNBEHEIZT_T', 15.0); }
+
+/**
+ * 0.11.40 (B2, am Geraet gemessen 21.11.2026): Welche eingerichteten Raeume wirken unbeheizt? Die Ansagen klingen an
+ * allen Ausgabezielen des Hauses, nicht im Raum; ist ein "Raum" in Wahrheit ein Fuehler draussen, im Keller oder in
+ * einer Wetterstation, sagt das Plugin auch fuer ihn "Lueften" an. Das wird GEMELDET (Einstellungen und Reiter Test),
+ * nicht abgeschaltet: geaendert wird nichts. Rueckgabe: Liste array(Name, Temperatur in Grad Celsius) der Raeume,
+ * deren letzte gelungene Messung unter RK_UNBEHEIZT_T lag; ohne Messung kein Eintrag.
+ */
+function rk_ansage_unbeheizt($stand = null)
+{
+    if ($stand === null) { $stand = rk_stand(); }
+    $werte = (is_array($stand) && isset($stand['raeume']) && is_array($stand['raeume'])) ? $stand['raeume'] : array();
+    $aus = array();
+    foreach (rk_raeume() as $nr => $r) {
+        if (empty($r['ansage'])) { continue; }     // 0.11.40 (R1): Raum ohne Ansage - der Hinweis entfaellt
+        $e = (isset($werte[$nr]) && is_array($werte[$nr])) ? $werte[$nr] : null;
+        if (!$e || empty($e['ok']) || !isset($e['t']) || !is_numeric($e['t'])) { continue; }
+        if ((float) $e['t'] < RK_UNBEHEIZT_T) { $aus[] = array((string) $r['name'], (float) $e['t']); }
+    }
+    return $aus;
+}
+
+/** Die Liste aus rk_ansage_unbeheizt() als Text: „Name“ (9,4 °C), ... - roh, maskiert wird bei der Ausgabe. */
+function rk_ansage_unbeheizt_text(array $liste)
+{
+    $t = array();
+    foreach ($liste as $x) {
+        $t[] = '„' . $x[0] . '“ (' . number_format((float) $x[1], 1, rk_sprache() === 'de' ? ',' : '.', '') . ' °C)';
+    }
+    return implode(', ', $t);
 }
 
 /**
@@ -3850,6 +4889,9 @@ function rk_ansage_lauf($stand)
         $namen = array();
         $nummern = array();
         foreach ($raeume as $nr => $r) {
+            /* 0.11.40 (R1): ein Raum ohne Haken "Ansage fuer diesen Raum" wird nicht genannt und nicht gemerkt - wer
+             * den Haken setzt, hoert einen anhaltenden Zustand einmal (wie beim Einschalten der Ausgabe). */
+            if (empty($r['ansage'])) { continue; }
             $v = (isset($alt[$anlass][$nr]) && is_array($alt[$anlass][$nr])) ? $alt[$anlass][$nr] : array();
             $war = !empty($v['an']);
             $e = array('an' => $war ? 1 : 0,
@@ -3878,7 +4920,7 @@ function rk_ansage_lauf($stand)
     rk_ansage_token_pflegen($cfg);
     $legen = array();
     foreach ($sprechen as $anlass => $x) {
-        $legen[] = array('schluessel' => $anlass . '|' . implode(',', $x[1]), 'text' => rk_ansage_satz($anlass, $x[0], count($raeume) > 1));
+        $legen[] = array('schluessel' => $anlass . '|' . implode(',', $x[1]), 'text' => rk_ansage_satz($anlass, $x[0]));
         $n++;
     }
     rk_ansage_legen($legen, $jetzt);
@@ -3907,11 +4949,21 @@ function rk_pruefe_ansage($offen = true)
         if ($text !== '' && substr($text, -1) !== '.') { $text .= '.'; }
         $text .= ' ' . ($an ? sprintf(rk_t('PRUEFTEXT.ANSAGE_ANLAESSE'), implode(', ', $an))
                             : rk_t('PRUEFTEXT.ANSAGE_KEIN_ANLASS'));
+        /* 0.11.40 (B2): ein Raum, der unbeheizt wirkt, wird genannt - der Stand der Zeile bleibt. */
+        $ub = $an ? rk_ansage_unbeheizt() : array();
+        if ($ub) { $text .= ' ' . sprintf(rk_t('PRUEFTEXT.ANSAGE_UNBEHEIZT'), rk_ansage_unbeheizt_text($ub)); }
+        /* 0.11.40 (R1): die Raeume ohne Haken "Ansage fuer diesen Raum" werden genannt. */
+        $rk_oa = array();
+        foreach (rk_raeume() as $rk_r1) { if (empty($rk_r1['ansage'])) { $rk_oa[] = (string) $rk_r1['name']; } }
+        if ($rk_oa) { $text .= ' ' . sprintf(rk_t('PRUEFTEXT.ANSAGE_OHNE_RAEUME'), implode(', ', $rk_oa)); }
         if (!$an && $st === 1) { $st = -1; }
-        if (rk_ansage_ruhe_grund($cfg['ansage_ruhe_von'], $cfg['ansage_ruhe_bis']) === ''
-            && $cfg['ansage_ruhe_von'] !== '') {
-            $text .= ' ' . sprintf(rk_t('PRUEFTEXT.ANSAGE_RUHE'), $cfg['ansage_ruhe_von'], $cfg['ansage_ruhe_bis']);
-        }
+        /* 0.11.40 (fremder Pruefer A5): die Nachtruhe aus den Regeln "Wann gesprochen wird" (ansage_regeln, seit
+         * 0.11.23) - dieselben, nach denen der Sender spricht. Bis 0.11.39 nannte die Zeile die alten Felder
+         * ansage_ruhe_von/bis, die seit 0.11.23 nur noch gelten, solange ansage_regeln fehlt. */
+        $rg = rk_ansage_regeln($cfg);
+        $text .= ' ' . (!empty($rg['nachtruhe'])
+            ? sprintf(rk_t('PRUEFTEXT.ANSAGE_RUHE'), $rg['von'], $rg['bis'])
+            : rk_t('PRUEFTEXT.ANSAGE_OHNE_RUHE'));
     }
     return array($st === 1 ? 1 : ($st === 0 ? 0 : 2), $text);
 }
@@ -4987,6 +6039,10 @@ function rk_mqtt_leeren($runden = 3, $pause_us = 1000000)
         foreach ($z2 as $zl) { echo $zl, "\n"; }
         $rc = max($rc, $rc2);
     }
+    /* 0.11.40 (R4): die Haus-Themen haus/raumklima - Merker und geltender Stand, mit Ruecklesen. */
+    $rk_hz = rk_haus_anbieter_deinstallation();
+    echo '<INFO> Haus-Themen haus/raumklima: ' . $rk_hz . "\n";
+    if (in_array($rk_hz, array('rest', 'kein_broker', 'nicht_nachgelesen'), true)) { $rc = max($rc, 1); }
     return $rc;
 }
 
@@ -6192,7 +7248,10 @@ function rk_t($schluessel)
          * rk_paths(), damit ein Archiv unter einer echten Wurzel auch hier im
          * eigenen Ordner bleibt. */
         $home = rk_paths()['home'];
-        $ordner = basename(dirname(__FILE__));
+        /* 0.11.40 (fremder Pruefer A6): der Ordnername aus rk_paths() wie ueberall sonst (LBPPLUGINDIR vor dem
+         * Ablageort). Bis 0.11.39 stand hier basename(dirname(__FILE__)): mit LBPPLUGINDIR und einer Bibliothek in
+         * einem anders benannten Ordner las rk_t() die Sprachdateien eines anderen Baums als rk_paths(). */
+        $ordner = rk_paths()['plugin'];
         $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
         if ($pfad === '' || !is_dir($pfad)) {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
@@ -6348,7 +7407,11 @@ function rk_sicherung_beschreibung($mit_zugang = false)
 function rk_sicherung_spaete_schluessel()
 {
     return array('tts', 'ansage_lueften', 'ansage_schimmel', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_regeln',
-                 'ms_nr');
+                 'ms_nr',
+                 /* 0.11.40 (Haus-Themen): fehlen sie in einer aelteren Sicherung, bleibt der geltende Wert. Die
+                  * Raumfelder ansage, quelle_art, haus_name und sonne_raum fehlen dort ebenfalls; die Raeume haben
+                  * keinen Zuordnungsschluessel, deshalb gilt dort die Vorgabe (ansage an, Quelle Adresse). */
+                 'aussen_haus_name', 'sonne_ein', 'haus_raumklima_ein');
 }
 
 /**
@@ -6940,6 +8003,20 @@ function rk_projekt_datei_finden($ordner, $rel, $ordnerliste = null)
         }
     }
     return null;
+}
+
+/**
+ * 0.11.40 (fremder Pruefer A9): Reicht der Arbeitsspeicher, um eine Projektdatei von $groesse Byte zu lesen und
+ * auszuwerten? Bedarf = belegter Speicher (memory_get_usage(true): daran misst PHP die Grenze) plus das Doppelte der
+ * Datei - dieselbe Form wie Fensterbilanz 0.12.37, dort an einer Projektdatei von 4,4 MB gemessen (Lesen und
+ * Zerlegen kosten das 1,4-Fache zusaetzlich). Bis 0.11.39 stand beim Lesen aus dem Ablageordner der gewaehlte
+ * Faktor 4 x Datei, beim Hochladen gar keine Pruefung. Rueckgabe array(reicht, Bedarf in Byte, memory_limit als Text).
+ */
+function rk_speicher_reicht($groesse)
+{
+    $g = rk_grenzen();
+    $bedarf = memory_get_usage(true) + 2 * max(0, (int) $groesse);
+    return array($g['memory_limit'][1] >= $bedarf, $bedarf, $g['memory_limit'][0]);
 }
 
 /** Eine Datei lesen, ohne dass eine Warnung als Befund liegenbleibt; false bleibt false. */

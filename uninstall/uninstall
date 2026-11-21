@@ -43,6 +43,11 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-raumklima}"
+# 0.11.40 (fremder Pruefer A3): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (Fensterbilanz 0.12.37, Alexa-NG 1.0.22). Vor jedem rm und rm -rf; "system" wie Alexa-NG (Regeln/06).
+case "$PFOLDER" in
+    ''|.|..|*/*|system) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts geloescht."; exit 1 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     SELF=$(cd "$(dirname "$0")" && pwd)

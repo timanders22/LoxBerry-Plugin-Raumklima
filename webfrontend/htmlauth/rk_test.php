@@ -315,6 +315,19 @@ function rk_selbstpruefung()
     list($aok, $atext) = rk_pruefe_ansage(true);
     $add('PRUEF.ANSAGE', $aok, $atext);
 
+    /* ---- 12. Raumwerte aus haus/klima (0.11.40, R2) ---- */
+    list($rk_hk, $rk_hkt) = rk_pruefe_haus_klima();
+    $add('PRUEF.HAUS_KLIMA', $rk_hk, $rk_hkt);
+    /* ---- 13. Aussenwerte aus haus/wetter (0.11.40, R3) ---- */
+    list($rk_hw, $rk_hwt) = rk_pruefe_haus_wetter();
+    $add('PRUEF.HAUS_WETTER', $rk_hw, $rk_hwt);
+    /* ---- 14. Anbieter haus/raumklima (0.11.40, R4): am Broker nachgelesen ---- */
+    list($rk_ha, $rk_hat) = rk_pruefe_haus_anbieter();
+    $add('PRUEF.HAUS_ANBIETER', $rk_ha, $rk_hat);
+    /* ---- 15. Sonnenlast der Fensterbilanz (0.11.40, R5) ---- */
+    list($rk_hs, $rk_hst) = rk_pruefe_haus_sonne();
+    $add('PRUEF.HAUS_SONNE', $rk_hs, $rk_hst);
+
     return $z;
 }
 
@@ -445,27 +458,50 @@ function rk_test_namen_vergleich()
  */
 function rk_test_sicherung()
 {
+    /* 0.11.40 (fremder Pruefer A4): ueber das gemeinsame Sicherungsmodul, dieselben Wege wie die beiden Knoepfe.
+     * Bis 0.11.39 rief dieser Test rk_sicherung_bauen() und rk_sicherung_lesen(), die es seit 0.11.36 nicht mehr
+     * gibt: "Sicherung pruefen" endete mit einem Fatal error (gemessen 21.11.2026 unter PHP 7.4.33 und 8.4.27).
+     * Jetzt baut rk_sicherung_daten() die Datei wie "Einstellungen sichern", und sicherung_lesen() prueft sie gegen
+     * die geltende Konfiguration wie "Einstellungen zurueckspielen" - ohne zu schreiben. Dass nichts geschrieben
+     * wurde, wird am Ende an der Datei gemessen, nicht behauptet. */
     $o = array();
     $cfg = rk_config();
+    $pfad = rk_paths()['config'];
+    $vorher = is_file($pfad) ? (string) @file_get_contents($pfad) : null;
+    $b = rk_sicherung_beschreibung();
+    $bean = function ($r) {
+        $a = array();
+        foreach ($r['beanstandet'] as $x) { $a[] = '   ' . strip_tags($x['name'] . ': ' . $x['text']); }
+        return $a;
+    };
 
     $o[] = '--- Fall 1: die eigene Ausgabe wieder einlesen ---';
-    $eigen = rk_sicherung_bauen($cfg);
+    $eigen = sicherung_json(rk_sicherung_daten(null));
     $o[] = 'erzeugt: ' . strlen($eigen) . ' Zeichen';
-    list($n1, $m1, $c1, $z1) = rk_sicherung_lesen($eigen);
-    if ($n1 === null) {
+    $r1 = sicherung_lesen($b, $eigen, $cfg);
+    if (!$r1['ok']) {
         $o[] = 'FEHLGESCHLAGEN - die eigene Datei wird abgewiesen:';
-        foreach ($m1 as $m) { $o[] = '   ' . strip_tags($m); }
+        foreach ($bean($r1) as $z) { $o[] = $z; }
     } else {
-        $o[] = 'uebernommen, ' . $c1 . ' Werte. In Ordnung.';
+        $o[] = 'uebernommen, ' . (int) $r1['anzahl'] . ' Werte. In Ordnung.';
         $abw = array();
+        $n = 0;
         foreach (rk_vorgaben() as $k => $v) {
+            /* Nie aus einer Datei: der Vermerk ansage_token_herkunft; die Sprechtoken im Block tts stehen in
+             * keiner Sicherung - verglichen wird der Block ohne sie. */
+            if ($k === 'ansage_token_herkunft') { continue; }
+            $n++;
             $a = isset($cfg[$k]) ? $cfg[$k] : $v;
-            if (json_encode($a) !== json_encode($n1[$k])) { $abw[] = $k; }
+            $z = (is_array($r1['neu']) && array_key_exists($k, $r1['neu'])) ? $r1['neu'][$k] : null;
+            if ($k === 'tts' && is_array($a) && is_array($z)) {
+                $a = ansage_sicherung_bereinigen($a);
+                $z = ansage_sicherung_bereinigen($z);
+            }
+            if (json_encode($a) !== json_encode($z)) { $abw[] = $k; }
         }
         $o[] = $abw
-            ? 'ACHTUNG: ' . count($abw) . ' Wert(e) kamen anders zurueck: '
-              . implode(', ', array_slice($abw, 0, 8))
-            : 'Alle ' . count(rk_vorgaben()) . ' Werte kamen zeichengenau zurueck.';
+            ? 'ACHTUNG: ' . count($abw) . ' Wert(e) kamen anders zurueck: ' . implode(', ', array_slice($abw, 0, 8))
+            : 'Alle ' . $n . ' Werte kamen zeichengenau zurueck (die Sprechtoken stehen nie in einer Sicherung).';
     }
 
     $o[] = '';
@@ -473,18 +509,19 @@ function rk_test_sicherung()
     /* Erfundene Zugangsdaten, nicht die echten: der Reiter Test darf kein
      * Passwort auf den Bildschirm bringen, das jemand mitliest. */
     $probe = array('benutzer' => 'probe', 'passwort' => 'nur-fuer-den-test');
-    $mit = rk_sicherung_bauen($cfg, $probe);
-    list($nm, $mm, $cm, $zm) = rk_sicherung_lesen($mit);
-    if ($nm === null) {
+    $mit = sicherung_json(rk_sicherung_daten($probe));
+    $rm = sicherung_lesen($b, $mit, $cfg);
+    if (!$rm['ok']) {
         $o[] = 'FEHLGESCHLAGEN - die eigene Datei mit Zugangsdaten wird abgewiesen:';
-        foreach ($mm as $m) { $o[] = '   ' . strip_tags($m); }
+        foreach ($bean($rm) as $z) { $o[] = $z; }
     } else {
-        $o[] = 'uebernommen, ' . $cm . ' Werte.';
-        $o[] = is_array($zm) && $zm['benutzer'] === 'probe'
-                 && $zm['passwort'] === 'nur-fuer-den-test'
+        $o[] = 'uebernommen, ' . (int) $rm['anzahl'] . ' Werte.';
+        $zm = isset($rm['teile']['zugang']) ? $rm['teile']['zugang'] : null;
+        $o[] = (is_array($zm) && isset($zm['benutzer'], $zm['passwort']) && $zm['benutzer'] === 'probe'
+                && $zm['passwort'] === 'nur-fuer-den-test')
             ? 'Zugangsdaten kamen zeichengenau zurueck.'
             : 'ACHTUNG: die Zugangsdaten kamen NICHT zurueck.';
-        $o[] = array_key_exists('zugang', $nm)
+        $o[] = (is_array($rm['neu']) && array_key_exists('zugang', $rm['neu']))
             ? 'ACHTUNG: die Zugangsdaten stehen in der KONFIGURATION - sie'
               . ' gehoeren nach geheim.json, nicht in raumklima.json.'
             : 'Und sie stehen richtigerweise NICHT in der Konfiguration.';
@@ -494,35 +531,35 @@ function rk_test_sicherung()
                 : 'ACHTUNG - er verschweigt sie.')
             : 'ACHTUNG: das Passwort steht gar nicht in der Datei.';
     }
-    /* Geprueft wird die STRUKTUR, nicht ein Wort.
-     *
-     * Die erste Fassung dieser Zeile suchte mit strpos() nach 'zugang' und
-     * schlug dabei auf den eigenen Kopfschluessel '_zugangsdaten' an - sie
-     * meldete "ohne Haken stehen trotzdem Zugangsdaten darin", obwohl kein
-     * Passwort in der Datei war. Eine Wache, die ein Wort zaehlt, schlaegt
-     * auf den eigenen Text an; das steht zweimal in REGELN_1. */
-    $ohne = json_decode(rk_sicherung_bauen($cfg, null), true);
+    /* Geprueft wird die STRUKTUR, nicht ein Wort (bis 0.11.2 schlug strpos() auf den eigenen Kopfschluessel
+     * '_zugangsdaten' an). */
+    $ohne = rk_sicherung_daten(null);
     $o[] = (is_array($ohne) && !array_key_exists('zugang', $ohne)
             && isset($ohne['_zugangsdaten']) && $ohne['_zugangsdaten'] === 'nein')
         ? 'KONTROLLFALL ohne Haken: kein Schluessel zugang, und der Kopf sagt es.'
         : 'ACHTUNG: ohne Haken stehen trotzdem Zugangsdaten darin.';
 
     $o[] = '';
-    $o[] = '--- Fall 2: eine halb gueltige Datei ---';
-    $halb = json_encode(array('takt' => 600, 'mindest' => 0.5, 'fremdes_feld' => 1));
-    list($n2, $m2, $c2) = rk_sicherung_lesen($halb);
-    $o[] = $n2 === null
-        ? 'richtig ABGEWIESEN, ' . count($m2) . ' Beanstandung(en):'
+    $o[] = '--- Fall 2: eine halb gueltige eigene Datei ---';
+    /* Ein gueltiger Wert, ein ungueltiger und ein unbekannter Schluessel: das Modul verwirft den unbekannten mit
+     * Namen und weist die Datei wegen des ungueltigen ab - eine halb gueltige Datei aendert nichts. */
+    $r2 = sicherung_lesen($b, json_encode(array('_plugin' => 'raumklima', 'takt' => 600, 'mindest' => 99,
+                                                'fremdes_feld' => 1)), $cfg);
+    $o[] = !$r2['ok']
+        ? 'richtig ABGEWIESEN, ' . count($r2['beanstandet']) . ' Beanstandung(en):'
         : 'FEHLGESCHLAGEN - eine halb gueltige Datei wurde uebernommen.';
-    foreach ($m2 as $m) { $o[] = '   ' . strip_tags($m); }
+    foreach ($bean($r2) as $z) { $o[] = $z; }
+    $o[] = in_array('fremdes_feld', (array) $r2['verworfen'], true)
+        ? 'Der unbekannte Schluessel fremdes_feld wird verworfen und genannt.'
+        : 'ACHTUNG: der unbekannte Schluessel fremdes_feld wird nicht genannt.';
 
     $o[] = '';
     $o[] = '--- Fall 3: eine fremde Sicherung ---';
-    list($n3, $m3, $c3) = rk_sicherung_lesen(json_encode(
-        array('wi_host' => 'x', 'wi_port' => 8080)));
-    $o[] = $n3 === null
-        ? 'richtig ABGEWIESEN, ' . count($m3) . ' Beanstandung(en).'
-        : 'FEHLGESCHLAGEN - eine fremde Sicherung wurde uebernommen.';
+    foreach (array('Kennzeichen eines anderen Plugins' => array('_plugin' => 'wifiscanner', 'wi_host' => 'x'),
+                   'ganz ohne Kennzeichen' => array('wi_host' => 'x', 'wi_port' => 8080)) as $bez => $d) {
+        $r3 = sicherung_lesen($b, json_encode($d), $cfg);
+        $o[] = sprintf('  %-32s %s', $bez, !$r3['ok'] ? 'richtig ABGEWIESEN' : 'FEHLGESCHLAGEN - uebernommen');
+    }
 
     $o[] = '';
     $o[] = '--- Fall 4: Werte, die das Formular abweisen wuerde ---';
@@ -530,16 +567,17 @@ function rk_test_sicherung()
                    '{"quelle":"file:///etc/passwd"}'   => 'Adresse ohne http',
                    '{"raeume":5}'                      => 'raeume als Zahl',
                    '{"aktionstoken":{"x":1}}'          => 'Wortzeichen als Feld',
-                   '{"zugang":"nur ein Wort"}'         => 'Zugangsdaten als Zeichenkette',
-                   '{"zugang":{"benutzer":"a","rolle":"root"}}' => 'Zugangsdaten mit drittem Schluessel') as $roh => $bez) {
-        list($nx, $mx, $cx) = rk_sicherung_lesen($roh);
-        $o[] = sprintf('  %-32s %s', $bez,
-            $nx === null ? 'abgewiesen' : 'DURCHGELASSEN - das ist ein Fehler');
+                   '{"zugang":"nur ein Wort"}'         => 'Zugangsdaten als Zeichenkette') as $roh => $bez) {
+        $d = json_decode($roh, true);
+        $rx = sicherung_lesen($b, json_encode(array('_plugin' => 'raumklima') + $d), $cfg);
+        $o[] = sprintf('  %-32s %s', $bez, !$rx['ok'] ? 'abgewiesen' : 'DURCHGELASSEN - das ist ein Fehler');
     }
 
     $o[] = '';
-    $o[] = 'Geschrieben wurde bei diesem Test nichts. Die Konfiguration steht';
-    $o[] = 'unveraendert da.';
+    $nachher = is_file($pfad) ? (string) @file_get_contents($pfad) : null;
+    $o[] = $nachher === $vorher
+        ? 'Geschrieben wurde bei diesem Test nichts: die Konfiguration ist byte-gleich mit dem Stand davor.'
+        : 'ACHTUNG: die Konfiguration hat sich waehrend des Tests veraendert.';
     return implode("\n", $o);
 }
 

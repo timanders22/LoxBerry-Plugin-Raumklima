@@ -112,6 +112,11 @@ function rk_ui_raumspalten()
         'ruhe_von'     => array('r_ruhe_von', rk_t('EINST.RUHE_VON')),
         'ruhe_bis'     => array('r_ruhe_bis', rk_t('EINST.RUHE_BIS')),
         'personen'     => array('r_personen', rk_t('EINST.PERSONEN')),
+        /* 0.11.40 (Haus-Themen): Quellenart, Name unter haus/klima, Raum der Fensterbilanz. Der Haken "Ansage fuer
+         * diesen Raum" steht NICHT hier: ein Haken schickt abgehakt nichts mit (eigene Behandlung mit Merkfeld). */
+        'quelle_art'   => array('r_quelle_art', rk_t('EINST.QUELLE_ART')),
+        'haus_name'    => array('r_haus_name', rk_t('EINST.HAUS_NAME')),
+        'sonne_raum'   => array('r_sonne_raum', rk_t('EINST.SONNE_RAUM')),
     );
 }
 
@@ -127,6 +132,7 @@ function rk_ui_einzelfelder()
         'aussen_quelle' => 'EINST.AUSSEN_QUELLE',
         'aussen_t'      => 'EINST.AUSSEN_T',
         'aussen_rf'     => 'EINST.AUSSEN_RF',
+        'aussen_haus_name' => 'EINST.AUSSEN_HAUS_NAME',     // 0.11.40 (haus/wetter)
         'aussen_einheit_t'  => 'EINST.EINHEIT',
         'aussen_einheit_rf' => 'EINST.EINHEIT',
         'mindest'       => 'EINST.MINDEST',
@@ -156,14 +162,15 @@ function rk_ui_einzelfelder()
 /** Die Felder eines Formulars, deren Eingaben zurueckreisen duerfen (ohne Kennwort). */
 function rk_eingabe_felder($formular)
 {
-    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_topic'); }
+    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_topic', 'haus_raumklima_ein'); }     // 0.11.40 (R4)
     if ($formular !== 'einst') { return array(); }
     $aus = array();
     foreach (rk_ui_raumspalten() as $sp) {
         for ($i = 0; $i < RK_RAEUME; $i++) { $aus[] = $sp[0] . '[' . $i . ']'; }
     }
+    for ($i = 0; $i < RK_RAEUME; $i++) { $aus[] = 'r_ansage[' . $i . ']'; }     // 0.11.40 (R1)
     return array_merge($aus, array_keys(rk_ui_einzelfelder()),
-                       array('zug_benutzer', 'zug_loeschen', 'verlauf_ein'),
+                       array('zug_benutzer', 'zug_loeschen', 'verlauf_ein', 'sonne_ein'),     // 0.11.40 (R5): sonne_ein
                        /* Sprachausgabe (seit 0.11.15): ansage_x2_felder() nennt nie die Sprechtoken. */
                        ansage_x2_felder(rk_ansage_opt()), array('ansage_lueften', 'ansage_schimmel'), ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     /* 0.11.26: Tafel und HomePod dazu: ansage_regeln_formular() beanstandet sie, ohne Eintrag hier ging die Beanstandung samt Eingaben verloren. */
                        /* Welle Mehrfach-Ziele (0.11.22): die Tabelle als name[N], nur wenn die Linie sie anbietet. */
@@ -186,12 +193,17 @@ function rk_eingaben_sammeln($formular, array $falsch)
 {
     $werte = array();
     foreach (rk_eingabe_felder($formular) as $f) {
-        if (in_array($f, array('mqtt_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel', 'ansage_tafel_ein', 'ansage_homepod_ein',     // 0.11.26: Stamm 1.4.1 zeigt den Haken wie abgeschickt
+        if (in_array($f, array('mqtt_ein', 'haus_raumklima_ein', 'verlauf_ein', 'zug_loeschen', 'ansage_lueften', 'ansage_schimmel', 'ansage_tafel_ein', 'ansage_homepod_ein',     // 0.11.26: Stamm 1.4.1 zeigt den Haken wie abgeschickt
                                'tts_alexa_token_loeschen', 'tts_google_token_loeschen',
                                // 0.11.30 (Bestandspruefung 09.11.2026): auch der Haken "Ruhezeit" des Regelblocks - als Text
                                // behandelt reiste er abgehakt nicht mit, und rk_haken() zeigte den gespeicherten Stand.
-                               'ansage_ruhe_ein'), true)) {
+                               'ansage_ruhe_ein', 'sonne_ein'), true)) {     // 0.11.40 (R5): sonne_ein
             $werte[$f] = !empty($_POST[$f]) ? '1' : '0';
+            continue;
+        }
+        /* 0.11.40 (R1): der Haken je Raum reist wie abgeschickt zurueck - nur, wenn sein Merkfeld mitkam. */
+        if (preg_match('/^r_ansage\[(\d+)\]$/', $f, $rk_am)) {
+            if (rk_post_wert('r_ansage_da[' . $rk_am[1] . ']') !== null) { $werte[$f] = !empty(rk_post_wert($f)) ? '1' : '0'; }
             continue;
         }
         $v = rk_post_wert($f);
@@ -442,6 +454,10 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
     } else {
         $rk_zug_ok = null;
         $rk_b = rk_sicherung_beschreibung();
+        /* 0.11.40 (A10): das Modul liest, prueft und speichert unter der Konfigurationssperre; nachgezogen wird
+         * danach (sicherung_zurueckspielen() gibt sie vor 'nachziehen' frei). */
+        $rk_b['sperre'] = 'rk_config_sperre';
+        $rk_b['freigeben'] = 'rk_config_freigeben';
         $rk_b['speichern'] = function ($neu, $jetzt, $r) use (&$rk_stoerung, &$rk_zug_ok) {
             if (!rk_config_speichern($neu)) { return false; }
             /* Die Zugangsdaten wandern nach geheim.json, NICHT in die Konfiguration - wie bis
@@ -628,7 +644,11 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                 }
             }
             if (isset($_POST['ms_uebernehmen']) && $rk_voll
-                && !empty($rk_ass['probe']['ok'])) {
+                && rk_ass_uebernehmbar($rk_ass)) {      // 0.11.40 (A2): je Raum, nicht an der ersten Probe
+                /* 0.11.40 (A10): Lesen-Aendern-Schreiben unter der Konfigurationssperre - erst nach den Proben am
+                 * Miniserver geholt und die Konfiguration neu gelesen, damit ein Netzabruf die Sperre nicht haelt. */
+                $rk_sperre = rk_config_sperre();
+                $rk_cfg0 = rk_config();
                 $rk_neu2 = $rk_cfg0['raeume'];
                 $rk_frei = array();
                 /* Belegte Plaetze bleiben belegt. Ein Assistent, der einen
@@ -674,11 +694,16 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                     $rk_neu2[$rk_i]['pfad_rf'] = $rk_prf['pfad'];
                     $rk_n2++;
                 }
+                $rk_gesp = false;
+                if ($rk_n2 > 0) {
+                    $rk_cfg0['raeume'] = $rk_neu2;
+                    $rk_gesp = rk_config_speichern($rk_cfg0);
+                }
+                rk_config_freigeben($rk_sperre);
                 if ($rk_n2 === 0) {
                     $rk_meldungen[] = rk_t('EINST.MS_NICHTS_NEU');
                 } else {
-                    $rk_cfg0['raeume'] = $rk_neu2;
-                    if (rk_config_speichern($rk_cfg0)) {
+                    if ($rk_gesp) {
                         $rk_ass['geschrieben'] = $rk_n2;
                         $rk_meldungen[] = sprintf(rk_t('EINST.MS_UEBERNOMMEN'), $rk_n2);
                         /* WAS NICHT HINEINPASSTE, WIRD GENANNT. Bis 0.11.1
@@ -721,9 +746,15 @@ if ($rk_post && (isset($_POST['ms_suchen']) || isset($_POST['ms_uebernehmen'])))
                             $rk_stoerung[] = sprintf(rk_t('EINST.MS_ZUGANG_FREMD'),
                                 $rk_g2['benutzer'], $rk_ms['user']);
                         }
+                        /* 0.11.40 (A2): die Pfade der GELUNGENEN Temperaturproben - die erste Probe kann die
+                         * gescheiterte sein. */
+                        $rk_tpf = array();
+                        foreach ($rk_ass['proben']['t'] as $rk_tp) {
+                            if (!empty($rk_tp['ok'])) { $rk_tpf[] = (string) $rk_tp['pfad']; }
+                        }
                         rk_log('Einrichtungs-Assistent: ' . $rk_n2 . ' Raum/Raeume vom '
                                . 'Miniserver uebernommen (Pfad T '
-                               . $rk_ass['probe']['pfad'] . ', ' . $rk_ass['kein_platz']
+                               . implode('/', array_unique($rk_tpf)) . ', ' . $rk_ass['kein_platz']
                                . ' ohne Platz, ' . $rk_ass['mehrdeutig'] . ' mehrdeutig).');
                         list($rk_lief2, $rk_s2) = rk_ui_abrufen();
                         if (!$rk_lief2) {
@@ -812,11 +843,11 @@ if ($rk_post && isset($_POST['pd_datei_lesen'])) {
     if ($rk_pdd === null) {
         $rk_fehler[] = rk_t('EINST.PD_DATEI_WEG');
     } else {
-        $rk_gr = rk_grenzen();
-        if ($rk_gr['memory_limit'][1] < $rk_pdd['groesse'] * 4) {
-            /* Faktor 4 gewaehlt, nicht gemessen (Bauart Fensterbilanz). */
+        /* 0.11.40 (A9): Bedarf = belegter Speicher + 2 x Datei (rk_speicher_reicht(), Form Fensterbilanz 0.12.37). */
+        list($rk_sp_ok, $rk_bedarf, $rk_grenze) = rk_speicher_reicht($rk_pdd['groesse']);
+        if (!$rk_sp_ok) {
             $rk_stoerung[] = sprintf(rk_t('EINST.PD_SPEICHER'), $rk_pdd['name'],
-                $rk_pdd['groesse'] / 1048576.0, $rk_gr['memory_limit'][0]);
+                $rk_pdd['groesse'] / 1048576.0, $rk_grenze, $rk_bedarf / 1048576.0);
         } else {
             $rk_pd = $rk_pd_auswerten(rk_holen_datei($rk_pdd['pfad']), $rk_pdd['pfad']);
         }
@@ -837,8 +868,17 @@ if ($rk_post && isset($_POST['pd_hochladen'])) {
         $rk_fehler[] = rk_t('EINST.PD_KEINE_ABSENDUNG');
     } else {
         $rk_pdn = isset($_FILES['pd_upload']['name']) ? basename((string) $_FILES['pd_upload']['name']) : '';
-        $rk_pd = $rk_pd_auswerten(rk_holen_datei((string) $_FILES['pd_upload']['tmp_name']),
-                                  rk_text_saeubern($rk_pdn));
+        /* 0.11.40 (A9): auch die hochgeladene Datei erst lesen, wenn der Speicher reicht - bis 0.11.39 wurde sie
+         * ohne Pruefung gelesen, und ein Abbruch mitten im Lesen sah aus wie eine kaputte Datei. */
+        $rk_pdg = (int) @filesize((string) $_FILES['pd_upload']['tmp_name']);
+        list($rk_sp_ok, $rk_bedarf, $rk_grenze) = rk_speicher_reicht($rk_pdg);
+        if (!$rk_sp_ok) {
+            $rk_stoerung[] = sprintf(rk_t('EINST.PD_SPEICHER'), rk_text_saeubern($rk_pdn),
+                $rk_pdg / 1048576.0, $rk_grenze, $rk_bedarf / 1048576.0);
+        } else {
+            $rk_pd = $rk_pd_auswerten(rk_holen_datei((string) $_FILES['pd_upload']['tmp_name']),
+                                      rk_text_saeubern($rk_pdn));
+        }
     }
 }
 if ($rk_post && isset($_POST['pd_uebernehmen'])) {
@@ -878,6 +918,9 @@ if ($rk_post && isset($_POST['pd_uebernehmen'])) {
         $rk_namen = array();
         foreach ($rk_zeilen as $rk_z) { $rk_namen[] = $rk_z['t']; $rk_namen[] = $rk_z['rf']; }
         $rk_pr = rk_projekt_proben($rk_ms, $rk_namen);
+        /* 0.11.40 (A10): nach den Proben unter der Konfigurationssperre neu lesen. */
+        $rk_sperre = rk_config_sperre();
+        $rk_cfg0 = rk_config();
         $rk_neu2 = $rk_cfg0['raeume'];
         $rk_frei = array();
         for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) {
@@ -911,11 +954,16 @@ if ($rk_post && isset($_POST['pd_uebernehmen'])) {
         if ($rk_ohne_platz > 0) {
             $rk_stoerung[] = sprintf(rk_t('EINST.MS_KEIN_PLATZ_N'), $rk_ohne_platz, RK_RAEUME);
         }
+        $rk_gesp = false;
+        if ($rk_n2 > 0) {
+            $rk_cfg0['raeume'] = $rk_neu2;
+            $rk_gesp = rk_config_speichern($rk_cfg0);
+        }
+        rk_config_freigeben($rk_sperre);
         if ($rk_n2 === 0) {
             $rk_meldungen[] = rk_t('EINST.MS_NICHTS_NEU');
         } else {
-            $rk_cfg0['raeume'] = $rk_neu2;
-            if (rk_config_speichern($rk_cfg0)) {
+            if ($rk_gesp) {
                 $rk_meldungen[] = sprintf(rk_t('EINST.PD_UEBERNOMMEN'), $rk_n2);
                 /* Zugangsdaten wie im ersten Weg: ohne sie antwortet der
                  * Miniserver beim Abruf mit 401. */
@@ -996,6 +1044,8 @@ if ($rk_post && isset($_POST['speichern'])) {
             || str_replace(',', '.', trim($_POST['laenge'])) === $rk_pm[2])) {
         $_POST['breite'] = $rk_pm[1]; $_POST['laenge'] = $rk_pm[2];
     }
+    /* 0.11.40 (A10): Lesen-Aendern-Schreiben unter der Konfigurationssperre, freigegeben am Ende des Handlers. */
+    $rk_sperre = rk_config_sperre();
     $rk_cfg = rk_config();
     $rk_hat_einst = isset($_POST['feld_einst']);
     $rk_hat_mqtt  = isset($_POST['feld_mqtt']);
@@ -1032,6 +1082,11 @@ if ($rk_post && isset($_POST['speichern'])) {
                 list($rk_gut, $rk_w) = $rk_pruefe($rk_regeln_r[$rk_k], $rk_f, $rk_bez0 . ' / ' . $rk_sp[1]);
                 if ($rk_gut) { $rk_r[$rk_k] = $rk_w; }
             }
+            /* 0.11.40 (R1): der Haken "Ansage fuer diesen Raum" - nur wenn sein Merkfeld mitkam, sonst bleibt der
+             * gespeicherte Wert ("nicht mitgeschickt" ist bei einem Haken nicht "aus"). */
+            if (rk_post_wert('r_ansage_da[' . $rk_i . ']') !== null) {
+                $rk_r['ansage'] = !empty(rk_post_wert('r_ansage[' . $rk_i . ']')) ? 1 : 0;
+            }
             /* Name ohne Pfad, Pfad ohne Name, Korridor verkehrt - dieselbe
              * Pruefung wie beim Zurueckspielen (rk_raum_quer_pruefen()). */
             $rk_q = rk_raum_quer_pruefen($rk_r);
@@ -1049,6 +1104,11 @@ if ($rk_post && isset($_POST['speichern'])) {
             list($rk_gut, $rk_w) = $rk_pruefe($rk_k, $rk_k, rk_t($rk_bez));
             if ($rk_gut) { $rk_cfg[$rk_k] = $rk_w; }
         }
+        /* 0.11.40 (R3): haus/wetter ohne Namen liefert nie etwas - beanstanden, nicht still Open-Meteo nehmen. */
+        if ($rk_cfg['aussen_art'] === 'haus' && $rk_cfg['aussen_haus_name'] === '') {
+            $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_HAUSNAME');
+            $rk_falsch[] = 'aussen_haus_name';
+        }
         if ($rk_cfg['aussen_art'] === 'eigen' && $rk_cfg['aussen_quelle'] === '') {
             $rk_fehler[] = rk_t('FEHLER.AUSSEN_OHNE_QUELLE');
             $rk_falsch[] = 'aussen_quelle';
@@ -1063,6 +1123,7 @@ if ($rk_post && isset($_POST['speichern'])) {
         /* Ein Haken schickt nichts mit, wenn er aus ist - das darf hier
          * gelesen werden, weil das Formular sich als zustaendig gemeldet hat. */
         $rk_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
+        $rk_cfg['sonne_ein'] = !empty($_POST['sonne_ein']) ? 1 : 0;     // 0.11.40 (R5)
 
         /* --- Zugangsdaten: eigene Datei, 0600 ---
          * U4 (Durchgang 01.10.2026): hoechstens 256 Zeichen wie beim
@@ -1117,6 +1178,7 @@ if ($rk_post && isset($_POST['speichern'])) {
     /* ===================== Felder des Reiters MQTT ===================== */
     if ($rk_hat_mqtt) {
         $rk_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+        $rk_cfg['haus_raumklima_ein'] = !empty($_POST['haus_raumklima_ein']) ? 1 : 0;     // 0.11.40 (R4)
         /* Ein leeres Thema wird beanstandet, nicht still zu 'raumklima' (U3):
          * jedes MQTT-Abo in Loxone bliebe danach stumm. */
         list($rk_gut, $rk_w) = $rk_pruefe('mqtt_topic', 'mqtt_topic', rk_t('MQTT.THEMA'));
@@ -1151,6 +1213,7 @@ if ($rk_post && isset($_POST['speichern'])) {
             $rk_stoerung[] = rk_t('FEHLER.SPEICHERN');
         }
     }
+    rk_config_freigeben($rk_sperre);
     $rk_tab = isset($_POST['activetab']) && preg_match($rk_muster, (string) $_POST['activetab'])
         ? (string) $_POST['activetab'] : 'tab-settings';
 }
@@ -1178,9 +1241,12 @@ if ($rk_post && isset($_POST['abrufen'])) {
  * Bericht oberflaeche Nr. 9) - der Anwender importierte die Vorlage neu und
  * suchte den Fehler danach an der falschen Stelle. */
 if ($rk_post && isset($_POST['token_neu'])) {
+    $rk_sperre = rk_config_sperre();     // 0.11.40 (A10)
     $rk_cfg = rk_config();
     $rk_cfg['aktionstoken'] = rk_token_erzeugen();
-    if (rk_config_speichern($rk_cfg)) {
+    $rk_tok_ok = rk_config_speichern($rk_cfg);
+    rk_config_freigeben($rk_sperre);
+    if ($rk_tok_ok) {
         $rk_meldungen[] = rk_t('LOX.TOKEN_NEU_OK');
         rk_log('Neues Wortzeichen erzeugt.');
     } else {
@@ -1193,7 +1259,11 @@ if ($rk_post && isset($_POST['token_neu'])) {
 /* ---------------- Protokoll leeren ----------------
  * U8 (Durchgang 01.10.2026): "geleert" nur, wenn geleert wurde. */
 if ($rk_post && isset($_POST['log_leeren'])) {
-    if (@file_put_contents($rk_p['log'], '') === false) {
+    if (empty($_POST['log_bestaetigt'])) {
+        /* 0.11.40 (fremder Pruefer A8): ein loeschender Knopf braucht einen Bestaetigungshaken (Regeln/04), in
+         * derselben Form wie Fensterbilanz; ohne ihn geschieht nichts. */
+        $rk_fehler[] = rk_t('LOG.NICHT_BESTAETIGT');
+    } elseif (@file_put_contents($rk_p['log'], '') === false) {
         $rk_stoerung[] = rk_t('LOG.NICHT_GELEERT');
     } else {
         rk_log('Protokoll geleert.');
@@ -1315,7 +1385,8 @@ $rk_ft = rk_e(rk_formtoken());
 $rk_lage = rk_config_lage_anfang();
 
 if ($rk_rahmen) {
-    LBWeb::lbheader('Raumklima', 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Raumklima', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
@@ -1582,6 +1653,7 @@ if ($rk_lage === 'kaputt') { ?>
     <?php if ($rk_r['feucht']) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.ZU_FEUCHT')) ?></span><?php } ?>
     <?php if ($rk_r['trocken']) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.ZU_TROCKEN')) ?></span><?php } ?>
     <?php if (!empty($rk_r['steht'])) { ?><br><span class="sm-aus"><?= rk_e(rk_t('TAB.STEHT')) ?></span><?php } ?>
+    <?php if (isset($rk_r['haus_lage']) && $rk_r['haus_lage'] !== 'frisch') { ?><br><span class="sm-aus"><?= rk_e(sprintf(rk_t('TAB.HAUS_LAGE'), rk_haus_lage_text($rk_r['haus_lage']))) ?></span><?php } ?>
     <?php if (!$rk_r['ok'] && isset($rk_r['alter']) && $rk_r['alter'] > 0) { ?>
     <br><span class="sm-aus"><?= sprintf(rk_e(rk_t('TAB.OHNE_SEIT')), (int) round($rk_r['alter'] / 60)) ?></span>
     <?php } ?>
@@ -1618,6 +1690,8 @@ if ($rk_lage === 'kaputt') { ?>
     <?php } else { ?>
       <?= rk_e(rk_t('MELD.' . strtoupper($rk_r['grund']))) ?>
     <?php } ?>
+    <?php $rk_st = rk_haus_sonne_text($rk_r);     // 0.11.40 (R5): Hinweis, keine Wirkung auf das Urteil
+    if ($rk_st !== '') { ?><br><span class="sm-hilfe"><?= rk_e($rk_st) ?></span><?php } ?>
   </td>
 </tr>
 <?php } ?>
@@ -1726,8 +1800,7 @@ foreach ($rk_ass['vorschlag'] as $rk_v) {
 <?php } ?>
 </table>
 </div>
-<?php if ($rk_ass['voll'] && $rk_ass['probe'] !== null && $rk_ass['probe']['ok']
-          && !$rk_ass['geschrieben']) { ?>
+<?php if (rk_ass_uebernehmbar($rk_ass) && !$rk_ass['geschrieben']) {      // 0.11.40 (A2) ?>
 <div class="sm-warnung"><?= rk_t('EINST.MS_VOR_UEBERNAHME') ?></div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1921,6 +1994,38 @@ foreach ($rk_pd['irr'] as $rk_px) {
 </table>
 </div>
 
+<h3><?= rk_e(rk_t('EINST.H_HAUS')) ?></h3>
+<div class="sm-step"><?= rk_t('EINST.HAUS_ERKLAERUNG') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr>
+  <th><?= rk_e(rk_t('EINST.RAUM')) ?></th>
+  <th><?= rk_e(rk_t('EINST.QUELLE_ART')) ?></th>
+  <th><?= rk_e(rk_t('EINST.HAUS_NAME')) ?></th>
+  <th><?= rk_e(rk_t('EINST.SONNE_RAUM')) ?></th>
+  <th><?= rk_e(rk_t('EINST.ANSAGE_RAUM')) ?></th>
+</tr>
+<?php for ($rk_i = 0; $rk_i < RK_RAEUME; $rk_i++) { $rk_r = $rk_cfg['raeume'][$rk_i]; ?>
+<tr>
+  <td><?= $rk_i + 1 ?><?= $rk_r['name'] !== '' ? ' ' . rk_e($rk_r['name']) : '' ?></td>
+  <td><select data-role="none" name="r_quelle_art[<?= $rk_i ?>]"<?= rk_mark('r_quelle_art[' . $rk_i . ']') ?>>
+    <option value="adresse"<?= rk_ein('r_quelle_art[' . $rk_i . ']', $rk_r['quelle_art']) === 'adresse' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.QA_ADRESSE')) ?></option>
+    <option value="haus"<?= rk_ein('r_quelle_art[' . $rk_i . ']', $rk_r['quelle_art']) === 'haus' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.QA_HAUS')) ?></option>
+  </select></td>
+  <td><input data-role="none" type="text" size="14" name="r_haus_name[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_haus_name[' . $rk_i . ']', $rk_r['haus_name'])) ?>"<?= rk_mark('r_haus_name[' . $rk_i . ']') ?>></td>
+  <td><input data-role="none" type="text" size="14" name="r_sonne_raum[<?= $rk_i ?>]" value="<?= rk_e(rk_ein('r_sonne_raum[' . $rk_i . ']', $rk_r['sonne_raum'])) ?>"<?= rk_mark('r_sonne_raum[' . $rk_i . ']') ?>></td>
+  <td><?php /* 0.11.40: das Merkfeld sagt dem Speichern, dass der Haken dieser Zeile im Formular stand - "nicht
+               mitgeschickt" heisst dann "aus"; ohne Merkfeld bleibt der gespeicherte Wert. */ ?><input data-role="none" type="hidden" name="r_ansage_da[<?= $rk_i ?>]" value="1"><label><input data-role="none" type="checkbox" name="r_ansage[<?= $rk_i ?>]" value="1"<?= rk_haken('r_ansage[' . $rk_i . ']', !empty($rk_r['ansage'])) ?><?= rk_mark('r_ansage[' . $rk_i . ']') ?>> <?= rk_e(rk_t('EINST.ANSAGE_JA')) ?></label></td>
+</tr>
+<?php } ?>
+</table>
+</div>
+<p class="sm-hilfe"><?= rk_t('EINST.HAUS_TABELLE_HILFE') ?></p>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="sonne_ein" value="1"<?= rk_haken('sonne_ein', !empty($rk_cfg['sonne_ein'])) ?><?= rk_mark('sonne_ein') ?>> <?= rk_e(rk_t('EINST.SONNE_EIN')) ?></label>
+  <p class="sm-hilfe"><?= rk_t('EINST.SONNE_HILFE') ?></p>
+</div>
+
 <h3><?= rk_e(rk_t('EINST.H_EIGENSCHAFTEN')) ?></h3>
 <div class="sm-breit">
 <table class="sm-tbl">
@@ -1993,7 +2098,13 @@ foreach ($rk_pd['irr'] as $rk_px) {
   <select data-role="none" id="rk_aart" name="aussen_art"<?= rk_mark('aussen_art') ?>>
     <option value="meteo"<?= rk_ein('aussen_art', $rk_cfg['aussen_art']) === 'meteo' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_METEO')) ?></option>
     <option value="eigen"<?= rk_ein('aussen_art', $rk_cfg['aussen_art']) === 'eigen' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_EIGEN')) ?></option>
+    <option value="haus"<?= rk_ein('aussen_art', $rk_cfg['aussen_art']) === 'haus' ? ' selected' : '' ?>><?= rk_e(rk_t('EINST.ART_HAUS')) ?></option>
   </select>
+</div>
+<div class="sm-feld">
+  <label for="rk_ahn"><?= rk_e(rk_t('EINST.AUSSEN_HAUS_NAME')) ?></label>
+  <input data-role="none" type="text" id="rk_ahn" name="aussen_haus_name" value="<?= rk_e(rk_ein('aussen_haus_name', $rk_cfg['aussen_haus_name'])) ?>"<?= rk_mark('aussen_haus_name') ?>>
+  <p class="sm-hilfe"><?= rk_t('EINST.AUSSEN_HAUS_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="rk_breite"><?= rk_e(rk_t('EINST.BREITE')) ?></label>
@@ -2160,6 +2271,10 @@ foreach ($rk_pd['irr'] as $rk_px) {
   <label><input data-role="none" type="checkbox" name="ansage_schimmel" value="1"<?= rk_haken('ansage_schimmel', !empty($rk_cfg['ansage_schimmel'])) ?><?= rk_mark('ansage_schimmel') ?>> <?= rk_e(rk_t('EINST.ANSAGE_SCHIMMEL')) ?></label>
   <p class="sm-hilfe"><?= rk_e(rk_t('EINST.ANSAGE_ANLAESSE_HILFE')) ?></p>
 </div>
+<?php $rk_ub = rk_ansage_unbeheizt($rk_stand);      // 0.11.40 (B2): melden, nicht abschalten
+if ($rk_ub) { ?>
+<div class="sm-hinweis"><?= rk_e(sprintf(rk_t('EINST.ANSAGE_UNBEHEIZT'), rk_ansage_unbeheizt_text($rk_ub))) ?></div>
+<?php } ?>
 <?= ansage_regeln_html(rk_ansage_regeln(), array(), array(), array(
     'w' => function ($n, $g) { return rk_ein($n, $g); },
     'm' => function ($n) { return rk_mark($n); },
@@ -2266,6 +2381,10 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
   <input data-role="none" type="text" id="rk_thema" name="mqtt_topic" value="<?= rk_e(rk_ein('mqtt_topic', $rk_cfg['mqtt_topic'])) ?>"<?= rk_mark('mqtt_topic') ?>>
   <p class="sm-hilfe"><?= rk_t('MQTT.THEMA_HILFE') ?></p>
 </div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="haus_raumklima_ein" value="1"<?= rk_haken('haus_raumklima_ein', !empty($rk_cfg['haus_raumklima_ein'])) ?>> <?= rk_e(rk_t('MQTT.HAUS_EIN')) ?></label>
+  <p class="sm-hilfe"><?= rk_t('MQTT.HAUS_HILFE') ?></p>
+</div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i><?= rk_t('LEGENDE.AKTION_SPEICHERN') ?></span>
 </div>
@@ -2291,6 +2410,20 @@ $rk_gwf = (int) $rk_mqtt['fassung'];
 </table>
 <p class="sm-hilfe"><?= rk_t('MQTT.RETAIN_HILFE') ?></p>
 <p class="sm-hilfe"><?= rk_t('MQTT.RAUMN_HILFE') ?></p>
+
+<h3><?= rk_e(rk_t('MQTT.H_HAUS')) ?></h3>
+<table class="sm-tbl">
+<?php /* 0.11.40: der Themenvertrag des Anbieters aus rk_haus_anbieter_vertrag() - dieselbe Liste wie der Sendeweg. */ ?>
+<tr><th><?= rk_e(rk_t('MQTT.SP_THEMA')) ?></th><th><?= rk_e(rk_t('MQTT.SP_BEDEUTUNG')) ?></th><th><?= rk_e(rk_t('MQTT.SP_RETAIN')) ?></th></tr>
+<?php foreach (rk_haus_anbieter_vertrag() as $rk_k => $rk_hv) { ?>
+<tr>
+  <td><span class="sm-mono"><?= rk_e($rk_k) ?></span></td>
+  <td><?= rk_e(rk_t($rk_hv[0])) ?></td>
+  <td><?= $rk_hv[1] ? rk_e(rk_t('ALLG.JA')) : rk_e(rk_t('ALLG.NEIN')) ?></td>
+</tr>
+<?php } ?>
+</table>
+<p class="sm-hilfe"><?= rk_t('MQTT.HAUS_TABELLE') ?></p>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
@@ -2692,6 +2825,7 @@ if ($rk_pz[0] > 0) { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $rk_ft ?>">
+    <label><input data-role="none" type="checkbox" name="log_bestaetigt" value="1"> <?= rk_e(rk_t('LOG.BESTAETIGEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= rk_e(rk_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>
