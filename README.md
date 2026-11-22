@@ -3,9 +3,13 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.40 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.41 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.41
+
+- **Geändert – Raumnamen unter `haus/raumklima/raum/` nach der gemeinsamen Namensregel (Entscheidung des Hausherrn 22.11.2026):** Der Name entsteht jetzt wie in allen Plugins: klein, Umlaute ausgeschrieben, jede Folge anderer Zeichen außer a–z, 0–9, `_` und `-` wird ein einziges `_`, ein `_` am Anfang und am Ende fällt weg, höchstens 40 Zeichen. Bisher wurde jedes Zeichen einzeln ersetzt. **Ein Raumname mit mehreren Leer- oder Sonderzeichen hintereinander oder mit solchen Zeichen am Anfang oder Ende ändert sich deshalb** (Beispiel: „Küche  2“ war `kueche__2`, ist jetzt `kueche_2`); zwei Räume, die jetzt denselben Namen ergeben, gehen wie bisher beide nicht hinaus und werden gemeldet. Nach dem Update leert das Plugin einmal die zurückbehaltenen Raumthemen unter dem alten Namen. Wer den Namen in einem anderen Plugin oder in Loxone eingetragen hat, trägt den neuen ein. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4); am Gerät nicht gemessen.
 
 ## Neu in 0.11.40
 

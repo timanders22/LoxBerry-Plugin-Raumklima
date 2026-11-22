@@ -3693,15 +3693,18 @@ function rk_haus_name_ok($n, $bereich = 'klima')
 }
 
 /**
- * Ein Raumname als <name> nach der Namensregel (Regeln/07; wortgleich fb_sonne_raumname(), Fensterbilanz 0.12.37):
- * klein, ae/oe/ue/ss, jedes andere Zeichen ausser a-z, 0-9, _ und - wird _, hoechstens 40 Zeichen; '' = unbrauchbar.
+ * Ein Raumname als <name> nach der gemeinsamen Namensregel (Regeln/07 Nr. 15, Entscheidung des Hausherrn 22.11.2026), wie
+ * ew_haus_name() (Ecowitt-Weiche), hausName() (Zigbee2MqttNG) und klima_name() (BLE-Scanner NG): klein, ae/oe/ue/ss,
+ * jede Folge anderer Zeichen ausser a-z, 0-9, _ und - wird ein _, _ am Rand faellt weg, hoechstens 40 Zeichen
+ * (danach rechts kein _); '' = unbrauchbar.
+ * Wortgleich fb_sonne_raumname() (Fensterbilanz 0.12.39). Bis 0.11.40: rk_haus_name_alt().
  */
 function rk_haus_name($text)
 {
-    $t = strtr((string) $text, array('Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'));
-    $t = preg_replace('/[^a-z0-9_\-]/u', '_', strtolower($t));
-    if (!is_string($t)) { return ''; }
-    $t = substr($t, 0, 40);
+    $t = str_replace(array("\u{00E4}", "\u{00F6}", "\u{00FC}", "\u{00DF}", "\u{00C4}", "\u{00D6}", "\u{00DC}"),
+                     array('ae', 'oe', 'ue', 'ss', 'ae', 'oe', 'ue'), (string) $text);
+    $t = preg_replace('/[^a-z0-9_-]+/', '_', strtolower($t));
+    $t = rtrim(substr(trim((string) $t, '_'), 0, 40), '_');
     return rk_haus_name_ok($t, 'klima') ? $t : '';
 }
 
@@ -4154,6 +4157,41 @@ function rk_haus_sonne(array $c, $raum, $jetzt)
     return $aus;
 }
 
+/** Der <name> nach der Regel bis 0.11.40 (jedes Zeichen einzeln zu _, am Rand nichts entfernt) - nur fuer
+ *  rk_haus_altthemen(), um nach dem Update die Themen unter dem alten Namen einmal abzuraeumen. */
+function rk_haus_name_alt($text)
+{
+    $t = strtr((string) $text, array('Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'));
+    $t = preg_replace('/[^a-z0-9_\-]/u', '_', strtolower($t));
+    if (!is_string($t)) { return ''; }
+    $t = substr($t, 0, 40);
+    return rk_haus_name_ok($t, 'klima') ? $t : '';
+}
+
+/**
+ * 22.11.2026 (gemeinsame Namensregel): die Raumthemen, unter denen dieses Plugin bis 0.11.40 gesendet haben kann - je
+ * Raum, dessen alter Name anders lautet; ohne die Themen, die jetzt gelten ($w). Gebraucht nur ohne Merker (er liegt
+ * im Datenordner und faellt beim Update weg).
+ */
+function rk_haus_altthemen(array $w)
+{
+    $kopf = 'haus/raumklima/raum/<name>/';
+    $felder = array();
+    foreach (array_keys(rk_haus_anbieter_vertrag()) as $t) {
+        if (strpos($t, $kopf) === 0) { $felder[] = substr($t, strlen($kopf)); }
+    }
+    $aus = array();
+    foreach (rk_raeume() as $r) {
+        $a = rk_haus_name_alt($r['name']);
+        if ($a === '' || $a === rk_haus_name($r['name'])) { continue; }
+        foreach ($felder as $f) {
+            $t = 'haus/raumklima/raum/' . $a . '/' . $f;
+            if (!isset($w[$t]) && !in_array($t, $aus, true)) { $aus[] = $t; }
+        }
+    }
+    return $aus;
+}
+
 /**
  * Der Themenvertrag des Anbieters haus/raumklima - EINE Liste fuer Senden, Reiter MQTT und README: Thema =>
  * array(Sprachschluessel, retained). <name> ist der Raumname nach der Namensregel (rk_haus_name()).
@@ -4293,6 +4331,10 @@ function rk_haus_anbieter(array $stand)
     $voll = !isset($m['voll']) || (int) $m['voll'] > $jetzt || $jetzt - (int) $m['voll'] >= 1800;
     $n = isset($m['zaehler']) ? (((int) $m['zaehler']) + 1) % 1000 : 0;
     $weg = array_values(array_diff(array_keys($alt), array_keys($w)));
+    /* 22.11.2026 (gemeinsame Namensregel): ohne Merker einmal die Raumthemen unter dem Namen bis 0.11.40 leeren. */
+    if (!isset($m['werte'])) {
+        foreach (rk_haus_altthemen($w) as $t) { if (!in_array($t, $weg, true)) { $weg[] = $t; } }
+    }
     $senden = array();
     foreach ($weg as $t) { $senden[$t] = array('', true); }
     foreach ($w as $t => $v) {
