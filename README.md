@@ -3,9 +3,13 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.42 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.43 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.43
+
+- **Neu – Gültigkeitsfrist des Anbieters (`haus/klima/<name>/frist`):** Ein Raum mit der Quelle `haus/klima` übernimmt einen Wert bisher nur, solange `zeit` jünger als eine Stunde ist. Nennt der Anbieter unter `haus/klima/<name>/frist` eine eigene Frist in Sekunden, gilt jetzt diese – aber nur eine ganze Zahl von 3600 bis 43200; fehlt sie, ist sie leer oder liegt sie außerhalb, bleibt es bei einer Stunde. Anlass: Die Shelly H&T Gen3 melden alle zwei Stunden (gemessen 22.11.2026, größter Abstand 241 Minuten); die Shelly-Weiche nennt deshalb 16200 Sekunden (4 h 30 min). Ohne einen Anbieter, der `frist` sendet, ändert sich nichts. Die Frist wird in derselben Sitzung gelesen; ist die Grenze von 50 Themen erreicht, fällt sie vor den Sonnenwerten und CO₂ weg, und es gilt wieder eine Stunde.
 
 ## Neu in 0.11.42
 

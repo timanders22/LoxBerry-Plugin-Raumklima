@@ -3644,7 +3644,7 @@ function rk_abrufen($erzwingen = false)
 /* ==================================================================
  * Haus-Themen (0.11.40, Entscheidungen des Hausherrn 21.11.2026: "Raumklima, Ansage je Raum bauen"; "Setze
  * Raum-Themen unter haus/raumklima um. Mache die Kopplung.") - alles ab Werk aus bzw. ohne Verhaltensaenderung:
- *   Lesen  haus/klima/<name>/temperatur|feuchte|co2|zeit|anbieter je Raum mit der Quellenart "haus/klima",
+ *   Lesen  haus/klima/<name>/temperatur|feuchte|co2|zeit|anbieter|frist je Raum mit der Quellenart "haus/klima",
  *          haus/wetter/<name>/temperatur|feuchte|zeit|anbieter fuer die Aussenluft (aussen_art 'haus'),
  *          haus/sonne/ts und haus/sonne/raum/<raum>/watt_rein|watt30|wh_heute (Fensterbilanz 0.12.37, sonne_ein),
  *          dazu die Zaehler haus/klima|wetter/zaehler/<anbieter> der gemeldeten Anbieter.
@@ -3661,8 +3661,12 @@ function rk_abrufen($erzwingen = false)
 
 /** Frist der Haus-Themen (Regeln/07 Nr. 15): ein Zaehler, der sich binnen 120 s nicht aendert, heisst "schweigt". */
 if (!defined('RK_HAUS_FRIST')) { define('RK_HAUS_FRIST', 120); }
-/** haus/klima und haus/wetter: Werte nur, solange zeit juenger als eine Stunde ist (Regeln/07). */
+/** haus/klima und haus/wetter: Werte nur, solange zeit juenger als eine Stunde ist (Regeln/07) - die Vorgabe, wenn
+ *  der Anbieter keine gueltige frist nennt. */
 if (!defined('RK_HAUS_KLIMA_ALTER')) { define('RK_HAUS_KLIMA_ALTER', 3600); }
+/** haus/klima/<name>/frist (Regeln/07 Nr. 15, 0.11.43): nur eine ganze Zahl von RK_HAUS_KLIMA_ALTER bis zu dieser
+ *  Grenze (Sekunden) gilt; alles andere heisst eine Stunde. */
+if (!defined('RK_HAUS_FRIST_MAX')) { define('RK_HAUS_FRIST_MAX', 43200); }
 /** haus/sonne: der Satz gilt, solange ts juenger als 15 Minuten ist (Regeln/07, Fensterbilanz). */
 if (!defined('RK_HAUS_SONNE_ALTER')) { define('RK_HAUS_SONNE_ALTER', 900); }
 /** Hoechstens so viele genaue Themen in einer Sitzung (wie ABFAHRT_HAUS_THEMEN_MAX). */
@@ -3969,13 +3973,14 @@ function rk_haus_bedarf()
 
 /**
  * Die Themen der Lesesitzung in Rangfolge - was ueber der Grenze liegt, faellt von hinten weg: zuerst je Raum
- * Temperatur, Feuchte, Zeit und Anbieter, dann die Aussenluft, dann haus/sonne/ts, dann die Sonnenwerte je Raum, zuletzt
- * CO2.
+ * Temperatur, Feuchte, Zeit und Anbieter, dann die Aussenluft, dann haus/sonne/ts, dann die Frist je Raum (0.11.43;
+ * faellt sie weg, gilt eine Stunde - strenger, nie laenger), dann die Sonnenwerte je Raum, zuletzt CO2.
  */
 function rk_haus_lesethemen(array $b)
 {
     $kern = array();
     $spaet = array();
+    foreach ($b['klima'] as $n) { $spaet[] = 'haus/klima/' . $n . '/frist'; }
     foreach ($b['klima'] as $n) {
         foreach (array('temperatur', 'feuchte', 'zeit', 'anbieter') as $f) { $kern[] = 'haus/klima/' . $n . '/' . $f; }
     }
@@ -4096,14 +4101,29 @@ function rk_haus_sitzung_frisch(array $c, $jetzt)
 }
 
 /**
+ * Die Gueltigkeitsfrist eines Namens in Sekunden (Regeln/07 Nr. 15, 0.11.43): unter haus/klima die retained frist des
+ * Anbieters, wenn sie eine ganze Zahl von RK_HAUS_KLIMA_ALTER bis RK_HAUS_FRIST_MAX ist; fehlt sie, ist sie leer oder
+ * liegt sie ausserhalb, und unter haus/wetter immer: RK_HAUS_KLIMA_ALTER. Nie eine laengere Frist als angegeben.
+ */
+function rk_haus_frist($roh, $bereich)
+{
+    if ($bereich !== 'klima' || !is_scalar($roh)) { return RK_HAUS_KLIMA_ALTER; }
+    $s = trim((string) $roh);
+    if (!preg_match('/^[0-9]{1,6}$/', $s)) { return RK_HAUS_KLIMA_ALTER; }
+    $f = (int) $s;
+    return ($f >= RK_HAUS_KLIMA_ALTER && $f <= RK_HAUS_FRIST_MAX) ? $f : RK_HAUS_KLIMA_ALTER;
+}
+
+/**
  * Die Werte eines Namens unter haus/klima bzw. haus/wetter. Rueckgabe array('lage' => frisch | nie | kein_broker |
- * kein_anbieter | schweigt | alt | ohne, 't', 'rf', 'co2', 'zeit', 'anbieter'). Nur 'frisch' traegt Werte; ein
- * schweigender Anbieter, eine alte Meldung oder eine Aussage ohne Wert (-999, -1) liefern keine - nie alte Werte als
- * frische.
+ * kein_anbieter | schweigt | alt | ohne, 't', 'rf', 'co2', 'zeit', 'anbieter', 'frist'). Nur 'frisch' traegt Werte; ein
+ * schweigender Anbieter, eine alte Meldung (aelter als die Frist, rk_haus_frist()) oder eine Aussage ohne Wert (-999,
+ * -1) liefern keine - nie alte Werte als frische.
  */
 function rk_haus_wert(array $c, $bereich, $name, $jetzt)
 {
-    $aus = array('lage' => 'nie', 't' => null, 'rf' => null, 'co2' => null, 'zeit' => 0, 'anbieter' => '');
+    $aus = array('lage' => 'nie', 't' => null, 'rf' => null, 'co2' => null, 'zeit' => 0, 'anbieter' => '',
+                 'frist' => RK_HAUS_KLIMA_ALTER);
     if (!isset($c['sitzung']) || !is_array($c['sitzung'])) { return $aus; }
     if (!rk_haus_sitzung_frisch($c, $jetzt)) { $aus['lage'] = 'schweigt'; return $aus; }
     $b = 'haus/' . $bereich . '/' . $name . '/';
@@ -4122,7 +4142,8 @@ function rk_haus_wert(array $c, $bereich, $name, $jetzt)
     if (!($seit > 0 && $seit <= $sz && $sz - $seit <= RK_HAUS_FRIST)) { $aus['lage'] = 'schweigt'; return $aus; }
     $zeit = isset($w[$b . 'zeit']) && is_numeric($w[$b . 'zeit']) ? (int) $w[$b . 'zeit'] : -1;
     $aus['zeit'] = $zeit;
-    if ($zeit <= 0 || $zeit > (int) $jetzt + 60 || (int) $jetzt - $zeit > RK_HAUS_KLIMA_ALTER) {
+    $aus['frist'] = rk_haus_frist(isset($w[$b . 'frist']) ? $w[$b . 'frist'] : null, $bereich);
+    if ($zeit <= 0 || $zeit > (int) $jetzt + 60 || (int) $jetzt - $zeit > $aus['frist']) {
         $aus['lage'] = 'alt';
         return $aus;
     }
