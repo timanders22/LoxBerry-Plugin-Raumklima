@@ -259,7 +259,21 @@ function rk_haken($feld, $gespeichert)
 function rk_mark($feld)
 {
     $e = rk_eingaben_aktiv();
-    return in_array((string) $feld, $e['falsch'], true) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+    /* 0.11.44: auch ein GESPEICHERTER Name unter haus/, der die Namensregel nicht erfuellt - solange fuer das Feld
+     * keine Eingabe zurueckgereist ist (dann zeigt das Feld sie, und ihre Beanstandung steht in 'falsch'). */
+    $g = !array_key_exists((string) $feld, $e['werte']) && in_array((string) $feld, rk_haus_namen_felder(), true);
+    return (in_array((string) $feld, $e['falsch'], true) || $g) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
+/** 0.11.44: Die Formularfelder der gespeicherten, ungueltigen Namen unter haus/ - einmal je Seitenaufbau gelesen. */
+function rk_haus_namen_felder()
+{
+    static $f = null;
+    if ($f === null) {
+        $f = array();
+        foreach (rk_haus_namen_ungueltig() as $x) { $f[] = $x['feld']; }
+    }
+    return $f;
 }
 
 /**
@@ -1996,6 +2010,11 @@ foreach ($rk_pd['irr'] as $rk_px) {
 
 <h3><?= rk_e(rk_t('EINST.H_HAUS')) ?></h3>
 <div class="sm-step"><?= rk_t('EINST.HAUS_ERKLAERUNG') ?></div>
+<?php /* 0.11.44: gespeicherte Namen, die die Namensregel nicht erfuellen - sie bleiben stehen, werden nicht benutzt. */
+$rk_hnu = rk_haus_namen_ungueltig();
+if ($rk_hnu) { ?>
+<div class="sm-warnung" id="rk-hausnamen-ungueltig"><?= rk_e(rk_t('EINST.HN_GESPEICHERT')) ?><br><?= implode('<br>', array_map(function ($x) { return rk_e(rk_haus_namen_text($x)); }, $rk_hnu)) ?></div>
+<?php } ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr>
@@ -2105,6 +2124,7 @@ foreach ($rk_pd['irr'] as $rk_px) {
   <label for="rk_ahn"><?= rk_e(rk_t('EINST.AUSSEN_HAUS_NAME')) ?></label>
   <input data-role="none" type="text" id="rk_ahn" name="aussen_haus_name" value="<?= rk_e(rk_ein('aussen_haus_name', $rk_cfg['aussen_haus_name'])) ?>"<?= rk_mark('aussen_haus_name') ?>>
   <p class="sm-hilfe"><?= rk_t('EINST.AUSSEN_HAUS_HILFE') ?></p>
+  <?php foreach ($rk_hnu as $rk_x) { if ((int) $rk_x['raum'] === 0) { /* 0.11.44 */ ?><p class="sm-hilfe"><span class="sm-aus"><?= rk_e(rk_haus_namen_text($rk_x)) ?></span></p><?php } } ?>
 </div>
 <div class="sm-feld">
   <label for="rk_breite"><?= rk_e(rk_t('EINST.BREITE')) ?></label>

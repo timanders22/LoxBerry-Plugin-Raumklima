@@ -3,9 +3,15 @@
 Taupunkt, absolute Feuchte, Schimmelrisiko und eine Lüftungsempfehlung **mit
 Uhrzeit** — für beliebig viele Räume und beliebige Sensor-Hardware.
 
-Version 0.11.43 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
+Version 0.11.44 · benötigt LoxBerry ab 3.0.0 · reines PHP (7.4 und 8.x)
 
 ---
+
+## Neu in 0.11.44
+
+- **Berichtigt – reservierter Name `datum_text`:** Als Name eines Außenfühlers unter `haus/wetter/` wird `datum_text` jetzt wie `datum` oder `heute` abgewiesen (Formular beanstandet). Weatherdata sendet seit 0.9.13 das Thema `haus/wetter/datum_text`; der Name fehlte in der Liste der reservierten Namen (Regeln/07).
+
+- **Berichtigt – ungültige gespeicherte Namen unter `haus/` werden nicht mehr still geleert:** Erfüllte ein gespeicherter Name unter `haus/klima` (je Raum), der Raum der Fensterbilanz oder der Name unter `haus/wetter` die Namensregel nicht – etwa `datum_text` nach dem Update auf diese Fassung –, leerte das Plugin ihn bisher beim Laden ohne Meldung, und das nächste Speichern schrieb das Leere in die Konfiguration. Jetzt bleibt er gespeichert, unter ihm wird nichts gelesen, das Feld im Reiter *Einstellungen* ist rot umrandet und über der Tabelle mit Raum, Feld und Wert genannt, und die neue Zeile „Erfüllen die gespeicherten Namen unter haus/ die Namensregel?“ im Reiter *Test* meldet ihn rot. Speichern weist ihn wie bisher ab, bis er berichtigt oder geleert ist. Eine Sicherung aus diesem Zustand trägt den Vermerk `_warnung` und würde beim Zurückspielen abgewiesen, wie bei jedem anderen ungültigen Wert.
 
 ## Neu in 0.11.43
 

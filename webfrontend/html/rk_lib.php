@@ -1134,9 +1134,12 @@ function rk_config($heilen = true)
         /* 0.11.40 (Haus-Themen): wie die Felder darueber. */
         $r['ansage'] = !empty($r['ansage']) ? 1 : 0;
         if (!in_array($r['quelle_art'], array('adresse', 'haus'), true)) { $r['quelle_art'] = 'adresse'; }
+        /* 0.11.44: ein gespeicherter Name, der die Namensregel nicht erfuellt, bleibt stehen. Bis 0.11.43 wurde er
+         * hier still geleert, und das naechste Speichern oder Vervollstaendigen schrieb das Leere in die Datei. Gelesen
+         * wird unter ihm nichts (rk_raeume() nimmt rk_haus_name_gilt()); Reiter Test und Seite nennen ihn
+         * (rk_haus_namen_ungueltig()), Speichern weist ihn ab wie bisher. */
         foreach (array('haus_name', 'sonne_raum') as $hk) {
             $r[$hk] = is_string($r[$hk]) ? trim($r[$hk]) : '';
-            if ($r[$hk] !== '' && !rk_haus_name_ok($r[$hk], 'klima')) { $r[$hk] = ''; }
         }
         $cfg['raeume'][$i] = $r;
     }
@@ -1213,9 +1216,9 @@ function rk_config($heilen = true)
     list($cfg['tts']) = ansage_vervollstaendigen(is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
     $cfg['ansage_lueften'] = !empty($cfg['ansage_lueften']) ? 1 : 0;
     $cfg['ansage_schimmel'] = !empty($cfg['ansage_schimmel']) ? 1 : 0;
-    /* 0.11.40 (Haus-Themen) */
+    /* 0.11.40 (Haus-Themen). 0.11.44: ein ungueltiger gespeicherter Name bleibt stehen wie je Raum; gelesen wird nur
+     * unter rk_aussen_haus_name(), gemeldet von rk_haus_namen_ungueltig(). */
     $cfg['aussen_haus_name'] = is_string($cfg['aussen_haus_name']) ? trim($cfg['aussen_haus_name']) : '';
-    if ($cfg['aussen_haus_name'] !== '' && !rk_haus_name_ok($cfg['aussen_haus_name'], 'wetter')) { $cfg['aussen_haus_name'] = ''; }
     $cfg['sonne_ein'] = !empty($cfg['sonne_ein']) ? 1 : 0;
     $cfg['haus_raumklima_ein'] = !empty($cfg['haus_raumklima_ein']) ? 1 : 0;
     foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis') as $rz) {
@@ -1401,6 +1404,10 @@ function rk_raeume()
     $out = array();
     foreach ($cfg['raeume'] as $i => $r) {
         if (trim((string) $r['name']) === '') { continue; }
+        /* 0.11.44: unter einem ungueltigen gespeicherten Namen wird nichts gelesen - wie bis 0.11.43, als rk_config()
+         * ihn leerte; jetzt bleibt er in der Konfiguration stehen und wird gemeldet. */
+        $r['haus_name'] = rk_haus_name_gilt($r['haus_name'], 'klima');
+        $r['sonne_raum'] = rk_haus_name_gilt($r['sonne_raum'], 'klima');
         /* 0.11.40: ein Raum mit der Quellenart haus/klima ist mit seinem Namen unter haus/klima eingerichtet. */
         $rk_hr = isset($r['quelle_art']) && $r['quelle_art'] === 'haus' && trim((string) $r['haus_name']) !== '';
         if (!$rk_hr && trim((string) $r['pfad_t']) === '' && trim((string) $r['pfad_rf']) === '') { continue; }
@@ -3390,7 +3397,7 @@ function rk_abrufen($erzwingen = false)
      * Regeln/07), und die Meldung sagt es; ohne Standort steht die Aussenluft dann ohne Werte da. */
     $stand['aussen_quelle'] = '';
     if ($cfg['aussen_art'] === 'haus') {
-        $rk_aw = rk_haus_wert($hq, 'wetter', (string) $cfg['aussen_haus_name'], $jetzt);
+        $rk_aw = rk_haus_wert($hq, 'wetter', rk_aussen_haus_name($cfg), $jetzt);
         if ($rk_aw['lage'] === 'frisch' && $rk_aw['t'] !== null && $rk_aw['rf'] !== null && rk_t_gueltig($rk_aw['t'])
             && $rk_aw['rf'] >= RK_RF_MIN && $rk_aw['rf'] <= 100.0) {
             $stand['aussen'] = array_merge(is_array($stand['aussen']) ? $stand['aussen'] : array(),
@@ -3681,7 +3688,7 @@ function rk_haus_reserviert($bereich)
 {
     $r = array('zaehler', 'anbieter');
     if ($bereich === 'wetter') {
-        $r = array_merge($r, array('jetzt', 'heute', 'morgen', 'warnung', 'pollen', 'ok', 'datum', 'zeit', 'sprache'));
+        $r = array_merge($r, array('jetzt', 'heute', 'morgen', 'warnung', 'pollen', 'ok', 'datum', 'datum_text', 'zeit', 'sprache'));
     }
     return $r;
 }
@@ -3694,6 +3701,83 @@ function rk_haus_name_ok($n, $bereich = 'klima')
 {
     $n = (string) $n;
     return (bool) preg_match('/^[a-z0-9_\-]{1,40}$/', $n) && !in_array($n, rk_haus_reserviert($bereich), true);
+}
+
+/**
+ * 0.11.44: Der Name, unter dem gelesen wird: der gespeicherte, wenn er die Namensregel erfuellt, sonst ''. Ein
+ * ungueltiger gespeicherter Name bleibt in der Konfiguration stehen (rk_config() leert ihn nicht mehr still) und wird
+ * im Reiter Test und am Feld gemeldet (rk_haus_namen_ungueltig()).
+ */
+function rk_haus_name_gilt($n, $bereich = 'klima')
+{
+    $n = is_string($n) ? $n : '';
+    return ($n !== '' && rk_haus_name_ok($n, $bereich)) ? $n : '';
+}
+
+/** 0.11.44: Der Name unter haus/wetter, unter dem gelesen wird ('' = keiner oder ungueltig). */
+function rk_aussen_haus_name($cfg)
+{
+    return rk_haus_name_gilt(isset($cfg['aussen_haus_name']) ? $cfg['aussen_haus_name'] : '', 'wetter');
+}
+
+/**
+ * 0.11.44: Die GESPEICHERTEN Namen unter haus/, die die Namensregel nicht erfuellen - je Fund array('feld' =>
+ * Formularfeld, 'raum' => Nummer (0 = Aussenluft), 'raumname', 'schluessel', 'wert'); leer = keiner. Liest die
+ * Konfiguration ohne zu schreiben (rk_config(false)).
+ */
+function rk_haus_namen_ungueltig($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = rk_config(false); }
+    $aus = array();
+    foreach ((isset($cfg['raeume']) && is_array($cfg['raeume'])) ? $cfg['raeume'] : array() as $i => $r) {
+        if (!is_array($r)) { continue; }
+        foreach (array('haus_name' => 'r_haus_name', 'sonne_raum' => 'r_sonne_raum') as $k => $f) {
+            $w = (isset($r[$k]) && is_string($r[$k])) ? $r[$k] : '';
+            if ($w !== '' && rk_haus_name_gilt($w, 'klima') === '') {
+                $aus[] = array('feld' => $f . '[' . (int) $i . ']', 'raum' => (int) $i + 1,
+                               'raumname' => isset($r['name']) ? (string) $r['name'] : '', 'schluessel' => $k, 'wert' => $w);
+            }
+        }
+    }
+    $w = (isset($cfg['aussen_haus_name']) && is_string($cfg['aussen_haus_name'])) ? $cfg['aussen_haus_name'] : '';
+    if ($w !== '' && rk_haus_name_gilt($w, 'wetter') === '') {
+        $aus[] = array('feld' => 'aussen_haus_name', 'raum' => 0, 'raumname' => '', 'schluessel' => 'aussen_haus_name',
+                       'wert' => $w);
+    }
+    return $aus;
+}
+
+/** 0.11.44: Ein Fund aus rk_haus_namen_ungueltig() als Klartext - roh, maskiert wird bei der Ausgabe. */
+function rk_haus_namen_text(array $x)
+{
+    $feld = array('haus_name' => 'EINST.HAUS_NAME', 'sonne_raum' => 'EINST.SONNE_RAUM',
+                  'aussen_haus_name' => 'EINST.AUSSEN_HAUS_NAME');
+    $wert = rk_zeichen_kuerzen((string) $x['wert'], 60);
+    if ((int) $x['raum'] === 0) {
+        return sprintf(rk_t('EINST.HN_AUSSEN'), rk_t($feld[$x['schluessel']]), $wert);
+    }
+    return sprintf(rk_t('EINST.HN_RAUM'), (int) $x['raum'], ((string) $x['raumname'] !== '') ? ' (' . $x['raumname'] . ')' : '',
+                   rk_t($feld[$x['schluessel']]), $wert);
+}
+
+/**
+ * 0.11.44: Zeile des Reiters Test - erfuellen die gespeicherten Namen unter haus/ die Namensregel? 0 Kreuz mit Raum,
+ * Feld und Wert; 1 Haken mit der Zahl der angesehenen Namen; 2 Strich, wenn keiner eingetragen ist (leere Menge).
+ */
+function rk_pruefe_haus_namen($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = rk_config(false); }
+    $n = 0;
+    foreach ((isset($cfg['raeume']) && is_array($cfg['raeume'])) ? $cfg['raeume'] : array() as $r) {
+        foreach (array('haus_name', 'sonne_raum') as $k) {
+            if (is_array($r) && isset($r[$k]) && is_string($r[$k]) && $r[$k] !== '') { $n++; }
+        }
+    }
+    if (isset($cfg['aussen_haus_name']) && is_string($cfg['aussen_haus_name']) && $cfg['aussen_haus_name'] !== '') { $n++; }
+    if ($n === 0) { return array(2, rk_t('PRUEFTEXT.HN_KEINE')); }
+    $f = rk_haus_namen_ungueltig($cfg);
+    if (!$f) { return array(1, sprintf(rk_t('PRUEFTEXT.HN_OK'), $n)); }
+    return array(0, sprintf(rk_t('PRUEFTEXT.HN_FALSCH'), count($f), $n, implode('; ', array_map('rk_haus_namen_text', $f))));
 }
 
 /**
@@ -3967,7 +4051,7 @@ function rk_haus_bedarf()
         if (!empty($cfg['sonne_ein']) && $r['sonne_raum'] !== '') { $so[$r['sonne_raum']] = true; }
     }
     return array('klima' => array_keys($k), 'co2' => array_keys($co2),
-                 'wetter' => ($cfg['aussen_art'] === 'haus' ? (string) $cfg['aussen_haus_name'] : ''),
+                 'wetter' => ($cfg['aussen_art'] === 'haus' ? rk_aussen_haus_name($cfg) : ''),
                  'sonne' => array_keys($so));
 }
 
@@ -4457,6 +4541,10 @@ function rk_pruefe_haus_wetter()
 {
     $cfg = rk_config();
     if ($cfg['aussen_art'] !== 'haus') { return array(2, rk_t('PRUEFTEXT.HW_AUS')); }
+    /* 0.11.44: ein ungueltiger gespeicherter Name wird nicht gelesen - das sagt die Zeile, statt "nie gesehen". */
+    if (rk_aussen_haus_name($cfg) !== (string) $cfg['aussen_haus_name']) {
+        return array(0, sprintf(rk_t('PRUEFTEXT.HW_UNGUELTIG'), (string) $cfg['aussen_haus_name']));
+    }
     $c = rk_haus_quellen();
     if (!isset($c['sitzung'])) { return array(0, rk_t('PRUEFTEXT.HK_NIE')); }
     $hw = rk_haus_wert($c, 'wetter', (string) $cfg['aussen_haus_name'], time());

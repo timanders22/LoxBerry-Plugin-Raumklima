@@ -327,6 +327,9 @@ function rk_selbstpruefung()
     /* ---- 15. Sonnenlast der Fensterbilanz (0.11.40, R5) ---- */
     list($rk_hs, $rk_hst) = rk_pruefe_haus_sonne();
     $add('PRUEF.HAUS_SONNE', $rk_hs, $rk_hst);
+    /* ---- 16. Gespeicherte Namen unter haus/ (0.11.44): ein ungueltiger bleibt stehen, wird nicht benutzt, hier rot ---- */
+    list($rk_hn, $rk_hnt) = rk_pruefe_haus_namen($cfg);
+    $add('PRUEF.HAUS_NAMEN', $rk_hn, $rk_hnt);
 
     return $z;
 }
