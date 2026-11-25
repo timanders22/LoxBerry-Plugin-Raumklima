@@ -473,7 +473,7 @@ if ($rk_post && isset($_POST['rk_zurueck'])) {
         $rk_b['sperre'] = 'rk_config_sperre';
         $rk_b['freigeben'] = 'rk_config_freigeben';
         $rk_b['speichern'] = function ($neu, $jetzt, $r) use (&$rk_stoerung, &$rk_zug_ok) {
-            if (!rk_config_speichern($neu)) { return false; }
+            if (!rk_config_speichern($neu, false)) { return false; }     // 0.11.45: Werte einer Sicherung sind ausdruecklich
             /* Die Zugangsdaten wandern nach geheim.json, NICHT in die Konfiguration - wie bis
              * 0.11.35 nach der Konfiguration; scheitern sie, stehen die uebrigen Einstellungen. */
             $zg = (isset($r['teile']['zugang']) && is_array($r['teile']['zugang'])) ? $r['teile']['zugang'] : null;
@@ -1183,6 +1183,8 @@ if ($rk_post && isset($_POST['speichern'])) {
         $rk_rm = array();
         $rk_rb = array();
         list($rk_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, rk_ansage_regeln(rk_config()), array(), $rk_rm, $rk_rb, rk_ansage_k());
+        // 0.11.45: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+        $rk_cfg['meldung'] = meld_formular_lesen($_POST, isset($rk_cfg['meldung']) ? $rk_cfg['meldung'] : null, rk_meld_anlaesse(), $rk_rm, $rk_rb, rk_meld_k(), rk_meld_haken_vorgabe());
         // 0.11.26: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.11.25 ueberschrieb es der naechste Abgleich.
         $rk_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($rk_cfg['ansage_token_herkunft']) ? $rk_cfg['ansage_token_herkunft'] : array());
         foreach ($rk_rm as $rk_rx) { $rk_fehler[] = $rk_rx['text']; }
@@ -1196,6 +1198,16 @@ if ($rk_post && isset($_POST['speichern'])) {
         /* Ein leeres Thema wird beanstandet, nicht still zu 'raumklima' (U3):
          * jedes MQTT-Abo in Loxone bliebe danach stumm. */
         list($rk_gut, $rk_w) = $rk_pruefe('mqtt_topic', 'mqtt_topic', rk_t('MQTT.THEMA'));
+        /* 0.11.45 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        if ($rk_gut && hb_bereich((string) $rk_w) !== ''
+            && (string) $rk_w !== trim((string) $rk_cfg['mqtt_topic'], '/')) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+            // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+            $rk_falsch[] = 'mqtt_topic';
+            $rk_fehler[] = sprintf(rk_t('HAUSBEREICH.FEHLER'), (string) $rk_w, hb_bereich((string) $rk_w));
+            $rk_gut = false;
+        }
         if ($rk_gut) { $rk_cfg['mqtt_topic'] = $rk_w; }
     }
 
@@ -1294,6 +1306,12 @@ if ($rk_post && isset($_POST['test'])) {
 
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 0.11.45: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($rk_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = rk_meld_test();
+    if ($meld_ok) { $rk_testausgabe = $meld_satz; } else { $rk_testausgabe = $meld_satz; }
+    $rk_tab = 'tab-test';
+}
 if ($rk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     /* Testansage (Nr. 36 b) wie rk_test_ansage(): ins Protokoll nur die Kurzform, nie Text oder Token. */
     $rk_tk = rk_ansage_k();
@@ -1323,6 +1341,32 @@ if ($rk_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
  * Wiederholung des POST verstehen). Laesst sich die Einmalmeldung nicht
  * schreiben, wird wie bisher unmittelbar gerendert - lieber ein
  * Neuladen-Risiko als eine verlorene Fehlermeldung. */
+/* 0.11.45: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Unter der Konfigurationssperre, geschrieben ohne
+ * "Dateiwert behalten". */
+if ($rk_war_post && sicherung_lade_eingang($_POST) !== '' && rk_formtoken_ok()) {
+    $rk_lb = rk_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $rk_fehler[] = sicherung_t('K_LADE_HAKEN_FEHLT', $rk_lb);
+    } else {
+        $rk_lsp = rk_config_sperre();
+        $rk_ld = rk_lade_roh();
+        $rk_lv = rk_config(false);
+        $rk_un = array();
+        if ($rk_ld !== null) {
+            list($rk_lneu, $rk_un) = sicherung_lade_uebernehmen_stand($rk_ld, $rk_lv, sicherung_lade_beanstandungen($rk_lb, $rk_ld, $rk_lv));
+            if ($rk_un && !rk_config_speichern($rk_lneu, false)) {
+                $rk_fehler[] = sicherung_t('K_SCHREIBFEHLER', $rk_lb);
+                $rk_un = array();
+            }
+        }
+        rk_config_freigeben($rk_lsp);
+        if ($rk_un) {
+            rk_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $rk_un)));
+            $rk_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $rk_lb), implode(', ', $rk_un));
+        }
+    }
+}
 if ($rk_war_post) {
     if (rk_flash_schreiben(array('tab' => $rk_tab, 'meldungen' => $rk_meldungen,
                                  'fehler' => $rk_fehler, 'stoerung' => $rk_stoerung,
@@ -1552,6 +1596,11 @@ if ($rk_rahmen) {
 <?php if ($rk_fehler) { ?>
 <div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_fehler)) ?></div>
 <?php } ?>
+<?php /* 0.11.45: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$rk_lade = rk_lade_beanstandungen();
+rk_lade_melden($rk_lade); ?>
+<?= sicherung_lade_kasten(rk_lade_b(true), isset($rk_lade) ? $rk_lade : rk_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="formtoken" value="' . $rk_ft . '"><input data-role="none" type="hidden" name="activetab" value="' . rk_e($rk_tab) . '">') ?>
 <?php if ($rk_stoerung) { ?>
 <div class="sm-warnung"><b><?= rk_e(rk_t('ALLG.NICHT_GELUNGEN')) ?></b><br><?= implode('<br>', array_map('rk_e', $rk_stoerung)) ?></div>
 <?php } ?>
@@ -2300,6 +2349,7 @@ if ($rk_ub) { ?>
     'm' => function ($n) { return rk_mark($n); },
     'c' => function ($n, $g) { return rk_haken($n, $g) !== ''; },
     'token_vor_ort' => true), rk_ansage_k()) ?>
+<?= rk_meld_form_html($rk_cfg) ?>
 <p class="sm-hilfe"><?= rk_e(sprintf(rk_t('EINST.ANSAGE_TEST_HINWEIS'), rk_t('REITER.TEST'))) ?></p>
 
 <div class="sm-knopfreihe">

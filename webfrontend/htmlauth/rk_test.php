@@ -213,6 +213,10 @@ function rk_selbstpruefung()
     list($mok, $mtext) = rk_test_themen_vergleich();
     $add('PRUEF.THEMEN', $mok, $mtext);
 
+    // 0.11.45: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $rk_hb = rk_pruef_praefix_haus($cfg);
+    $add('HAUSBEREICH.F_TEST', $rk_hb[0] === -1 ? 2 : $rk_hb[0], $rk_hb[1]);
+
     /* ---- 7a. Gruppe 3 / MQTT (0.11.21): ist jeder Name der Namenstabelle ein gesendetes Thema? ---- */
     list($nok, $ntext) = rk_test_namen_vergleich();
     $add('PRUEF.NAMEN', $nok, $ntext);
@@ -330,6 +334,12 @@ function rk_selbstpruefung()
     /* ---- 16. Gespeicherte Namen unter haus/ (0.11.44): ein ungueltiger bleibt stehen, wird nicht benutzt, hier rot ---- */
     list($rk_hn, $rk_hnt) = rk_pruefe_haus_namen($cfg);
     $add('PRUEF.HAUS_NAMEN', $rk_hn, $rk_hnt);
+    /* ---- 17. Lade-Beanstandungen (0.11.45; Regeln/05, Sicherungsmodul 1.3.0): rot, solange ein gespeicherter Wert beim
+     * Laden nicht so gilt, wie er gespeichert ist ---- */
+    $rk_lb = rk_lade_b(false);
+    $rk_la = rk_lade_beanstandungen(null, false);
+    $add('SICHERUNG.K_LADE_FRAGE', $rk_la ? 0 : 1,
+        $rk_la ? implode(' ', sicherung_lade_saetze($rk_lb, $rk_la)) : sicherung_t('K_LADE_KEINE', $rk_lb));
 
     return $z;
 }

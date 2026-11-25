@@ -97,7 +97,7 @@ if (rk_upgrade_laeuft()) {
 
 /* Einmal je Lauf nachsehen, ob der Konfiguration Schluessel fehlen, und
  * sie dann mit Protokollzeile ergaenzen - siehe rk_config_vervollstaendigen(). */
-rk_config_vervollstaendigen();
+rk_dienst_pflege();     // 0.11.45: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 
 /* 0.11.40 (Haus-Themen): die Lesesitzung am Broker VOR dem Rechnen - nur wenn eine Haus-Quelle eingeschaltet ist und der
  * Abruf faellig wird (dieselbe Schranke wie rk_abrufen(): Takt minus 30 s). Bis zu RK_HAUS_FENSTER s, bis jeder

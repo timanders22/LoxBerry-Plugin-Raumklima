@@ -46,10 +46,12 @@ require_once __DIR__ . '/rk_klima.php';
  * mit weiteren Ausgabezielen, rk_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.11.45)
 /* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 0.11.36): "Einstellungen
  * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
  * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.11.45, Regeln/07)
 
 /** Wie viele Raeume die Oberflaeche fuehrt. */
 define('RK_RAEUME', 12);
@@ -488,6 +490,7 @@ function rk_vorgaben()
         'tts'             => ansage_werk_block(),
         'ansage_lueften'  => 1,
         'ansage_schimmel' => 1,
+        'meldung'         => meld_vorgaben(rk_meld_anlaesse(), rk_meld_haken_vorgabe()),     // 0.11.45: Meldungen an SignalBot, ab Werk aus
         /* Ruhezeit der Ansagen (seit 08.10.2026), HH:MM; ab Werk leer = keine. */
         'ansage_ruhe_von' => '',
         'ansage_ruhe_bis' => '',
@@ -1209,7 +1212,11 @@ function rk_config($heilen = true)
     /* Ein Aktionstoken, der kein Wort ist, ergibt beim Vergleich 'Array' -
      * und damit ein Wortzeichen, das jeder kennt. Gemessen: HTTP 200. */
     list($tok, $m) = rk_wert_pruefen('aktionstoken', $cfg['aktionstoken']);
-    $cfg['aktionstoken'] = ($m === '') ? $tok : '';
+    /* 0.11.45 (Lade-Beanstandungen, Regeln/05): ein vorhandenes Token in falscher Form bleibt (gemeldet,
+     * rk_lade_beanstandungen()); bis 0.11.44 wurde es geleert, und rk_token() wuerfelte ein neues - jede Adresse in
+     * Loxone bekam 403. Ein Nicht-Text bleibt "kein Token" (sonst 'Array'). */
+    $cfg['aktionstoken'] = ($m === '') ? $tok
+        : ((is_string($cfg['aktionstoken']) && trim($cfg['aktionstoken']) !== '') ? $cfg['aktionstoken'] : '');
     $cfg['mqtt_ein'] = !empty($cfg['mqtt_ein']) ? 1 : 0;
     /* Sprachausgabe (seit 0.11.15): der Block wird vervollstaendigt, nicht ersetzt. Ungueltige
      * Werte bleiben stehen - das Modul prueft sie vor jedem Senden erneut (Heimnetz). */
@@ -1271,7 +1278,21 @@ function rk_config_vervollstaendigen()
     if (!$fehlt) { return array(); }
     $rk_sp = rk_config_sperre();     // 0.11.40 (A10): Lesen-Aendern-Schreiben unter der Konfigurationssperre
     $cfg = rk_config();
-    $rk_ok = rk_config_lage() === 'ok' ? rk_config_speichern($cfg) : null;
+    /* 0.11.45 (Lade-Beanstandungen, Regeln/05 "Vervollstaendigen, Bauform Docker NG"): geschrieben werden die WERTE AUS
+     * DER DATEI plus die fehlenden Schluessel (oben der Wert nach der Lese-Regel von rk_config(), je Raum und im Block
+     * tts die Vorgabe). Bis 0.11.44 die ganze normierte Konfiguration (gemessen 23.11.2026, M1: takt 60 -> 300). */
+    list($rk_vd, ) = rk_json_lage(rk_paths()['config']);
+    $rk_neu = is_array($rk_vd) ? $rk_vd : array();
+    foreach (array_keys(array_diff_key(rk_vorgaben(), $rk_neu)) as $rk_vk) {
+        $rk_neu[$rk_vk] = array_key_exists($rk_vk, $cfg) ? $cfg[$rk_vk] : rk_vorgaben()[$rk_vk];
+    }
+    if (isset($rk_neu['raeume']) && is_array($rk_neu['raeume'])) {
+        foreach ($rk_neu['raeume'] as $rk_vi => $rk_vr) {
+            if (is_array($rk_vr)) { $rk_neu['raeume'][$rk_vi] = $rk_vr + rk_raum_vorgabe(); }
+        }
+    }
+    if (isset($rk_neu['tts']) && is_array($rk_neu['tts'])) { $rk_neu['tts'] = $rk_neu['tts'] + ansage_vorgaben('aus'); }
+    $rk_ok = rk_config_lage() === 'ok' ? rk_config_speichern($rk_neu, false) : null;
     rk_config_freigeben($rk_sp);
     if ($rk_ok === null) { return array(); }
     if (!$rk_ok) {
@@ -1342,9 +1363,13 @@ function rk_config_freigeben($fp)
     if ($fp) { @flock($fp, LOCK_UN); fclose($fp); $GLOBALS['rk_config_sperre_tiefe'] = 0; }
 }
 
-function rk_config_speichern($cfg)
+function rk_config_speichern($cfg, $lade_behalten = true)
 {
     $p = rk_paths();
+    /* 0.11.45 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen, beim Vervollstaendigen (schreibt Dateiwerte) und beim Knopf "Angezeigte Werte uebernehmen". */
+    if ($lade_behalten && is_array($cfg)) { $cfg = rk_lade_behalten($cfg); }
     /* M3 (Durchgang 01.10.2026): das bisherige Praefix VOR dem Schreiben lesen.
      * Eine Konfiguration ohne Schluessel mqtt_topic sendete unter der Vorgabe. */
     $vorher = rk_json_lesen($p['config']);
@@ -1353,8 +1378,11 @@ function rk_config_speichern($cfg)
         $alt_pr = (isset($vorher['mqtt_topic']) && is_string($vorher['mqtt_topic']))
             ? trim($vorher['mqtt_topic'], '/') : 'raumklima';
     }
-    $neu_pr = isset($cfg['mqtt_topic']) ? trim((string) $cfg['mqtt_topic'], '/') : '';
+    /* 0.11.45 (Lade-Beanstandungen): Abodatei und Praefixwechsel folgen dem GELTENDEN Praefix (rk_config(false), schreibt
+     * nichts), nicht dem gespeicherten Wert - der kann seit "Dateiwert behalten" ein beanstandeter sein. */
+    if ($alt_pr !== '') { $alt_pr = trim((string) rk_config(false)['mqtt_topic'], '/'); }
     if (!rk_json_schreiben($p['config'], $cfg, 0600)) { return false; }
+    $neu_pr = trim((string) rk_config(false)['mqtt_topic'], '/');
     if (rk_config_lage() !== 'kaputt') {
         rk_sicherung_schreiben($cfg);
         rk_config_lage('ok');
@@ -1368,6 +1396,71 @@ function rk_config_speichern($cfg)
 }
 
 /** Zugangsdaten - eigene Datei mit 0600, nie in der Oberflaeche sichtbar. */
+/* ==================================================================
+ * Lade-Beanstandungen (0.11.45; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * rk_config() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Grenzen. Das bleibt - aber jede solche
+ * Ersetzung wird gemeldet (Reiter Test rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben.
+ * Die Haus-Namen meldet die Linie seit 0.11.44 zusaetzlich mit eigener Zeile (rk_pruefe_haus_namen()).
+ * ================================================================== */
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function rk_lade_roh()
+{
+    list($d, $lage) = rk_json_lage(rk_paths()['config']);
+    return ($lage === 'ok' && is_array($d)) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen; geheim sind die Sprechtoken und der Teil zugang (aktionstoken immer).
+ *  $maskiert = true fuer den gelben Kasten (gibt unmittelbar aus), false fuer Tabelle und Meldungen (die Seite maskiert). */
+function rk_lade_b($maskiert = true)
+{
+    $b = rk_sicherung_beschreibung();
+    $b['geheim'] = array_merge(array('zugang'), array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    if ($maskiert) {
+        $b['e'] = 'rk_e';
+    } else {
+        $b['e'] = function ($s) { return (string) $s; };
+    }
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst rk_config(false)). */
+function rk_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = rk_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(rk_lade_b($maskiert), $d, is_array($cfg) ? $cfg : rk_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function rk_lade_behalten(array $cfg)
+{
+    $d = rk_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = rk_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(rk_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Abruf (bin/raumklima_abruf.php): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden. */
+function rk_dienst_pflege()
+{
+    $r = rk_config_vervollstaendigen();
+    rk_lade_melden(rk_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function rk_lade_melden(array $beanst)
+{
+    $d = rk_paths()['datadir'];
+    if ($d === '' || !is_dir($d)) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        rk_log(sicherung_lade_protokollzeile($beanst));
+    }
+}
+
 function rk_geheim()
 {
     return array_merge(array('benutzer' => '', 'passwort' => ''),
@@ -4859,6 +4952,8 @@ function rk_ansage_senden($jetzt = null)
         $conf = rk_config();
         rk_ansage_token_pflegen($conf);
         $conf = rk_config();
+        rk_meld_senden($frisch, $conf);     // 0.11.45: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = rk_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, rk_tts($conf), rk_ansage_regeln($conf), rk_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -5018,7 +5113,7 @@ function rk_ansage_lauf($stand)
     $p = rk_paths();
     if ($p['home'] === '') { return 0; }
     $datei = $p['datadir'] . '/ansage_zustand.json';
-    if (!rk_ansage_an()) {
+    if (!rk_ansage_an() && !rk_meld_aktiv()) {     // 0.11.45: auch fuer die Meldung an SignalBot
         if (is_file($datei)) { @unlink($datei); }
         return 0;
     }
@@ -5035,7 +5130,7 @@ function rk_ansage_lauf($stand)
     $neu = array();
     $sprechen = array();
     foreach (rk_ansage_anlaesse() as $anlass => $haken) {
-        if (empty($cfg[$haken])) { continue; }
+        if (!rk_meld_will($anlass, $cfg)) { continue; }     // 0.11.45: Ansage oder Meldung an SignalBot (der Raum-Haken gilt fuer beide)
         $neu[$anlass] = array();
         $namen = array();
         $nummern = array();
@@ -5204,6 +5299,7 @@ function rk_mqtt_senden($stand, $alt_stand = null, $voll_erzwingen = false)
 {
     $cfg = rk_config();
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    rk_praefix_haus_melden($cfg);   // 0.11.45: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $p = rk_paths();
     /* M5 (Durchgang 01.10.2026): die Abodatei folgt dem Praefix - in jedem
      * Lauf nachgesehen, geschrieben nur, wenn sie abweicht. */
@@ -7484,6 +7580,7 @@ function rk_sicherung_beschreibung($mit_zugang = false)
                          $g = '';
                          return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, rk_ansage_modi());
                      }),
+        'meldung' => meld_sicherung_knoten(rk_meld_anlaesse(), rk_meld_k()),     // 0.11.45
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben()))
                  + array(
                      'pruefen' => function ($w) {
@@ -7573,6 +7670,10 @@ function rk_sicherung_spaete_schluessel()
 function rk_sicherung_pruefen($k, $w)
 {
     $e = rk_wert_pruefen((string) $k, $w);
+    /* 0.11.45: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+    if ($e[1] === '' && (string) $k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+        return (string) $k . ': ' . sprintf(rk_t('HAUSBEREICH.SICH_W'), hb_bereich($w));
+    }
     if ($e[1] === '') { return ''; }
     return rk_sicherung_mangeltext((string) $k, $w, $e[1], isset($e[2]) ? $e[2] : null);
 }
@@ -8208,4 +8309,158 @@ function rk_grenzen()
     }
     $g['grenze'] = min($g['upload_max_filesize'][1], $g['post_max_size'][1]);
     return $g;
+}
+
+/**
+ * 0.11.45 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function rk_pruef_praefix_haus($cfg)
+{
+    $p = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : 'raumklima'), '/');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(rk_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(rk_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(rk_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 0.11.45: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function rk_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : 'raumklima'), '/');
+    if ($merk === null) {
+        $merk = rk_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        rk_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('rk_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.11.45, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (rk_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (rk_meld_will()); der Sender trennt die Wege wieder (rk_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function rk_meld_anlaesse()
+{
+    return array('lueften' => rk_t('EINST.ANSAGE_LUEFTEN'), 'schimmel' => rk_t('EINST.ANSAGE_SCHIMMEL'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function rk_meld_haken_vorgabe()
+{
+    return array('lueften' => 1, 'schimmel' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function rk_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    $anl = rk_ansage_anlaesse(); return isset($anl[$a]) && is_array($cfg) && !empty($cfg[$anl[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function rk_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, rk_meld_anlaesse(), rk_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function rk_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, rk_meld_anlaesse(), rk_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function rk_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(rk_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function rk_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    return rk_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(rk_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function rk_meld_k()
+{
+    return rk_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function rk_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    $anl = rk_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !rk_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function rk_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    $b = rk_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, rk_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        rk_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function rk_meld_test()
+{
+    $r = meld_testmeldung(rk_meld_k());
+    rk_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function rk_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = rk_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = rk_meld_k();
+    $o = array();
+    /* 0.11.45: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" name="speichern" value="1" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(rk_meld_block($cfg), rk_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(rk_meld_block($cfg), rk_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }
